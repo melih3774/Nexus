@@ -51,6 +51,13 @@ public static class ErrorCodes
     /// </summary>
     public const string AuthenticationFailed = "authentication_failed";
 
+    /// <summary>
+    /// The caller is authenticated but not permitted to invoke this action. Distinct from
+    /// <see cref="UnknownAction"/> on purpose: a remote device being told "you may not" rather than
+    /// "no such thing" makes the denial diagnosable, and the action names are not secret.
+    /// </summary>
+    public const string NotAuthorized = "not_authorized";
+
     /// <summary>An unexpected fault. Details are deliberately suppressed.</summary>
     public const string InternalError = "internal_error";
 }

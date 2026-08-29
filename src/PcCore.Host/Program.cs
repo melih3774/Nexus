@@ -12,6 +12,7 @@ using PcCore.Capabilities.Security;
 using PcCore.Capabilities.Storage;
 using PcCore.Capabilities.System;
 using PcCore.Transport.Loopback;
+using PcCore.Transport.Remote;
 using PcCore.Windows;
 
 [assembly: SupportedOSPlatform("windows")]
@@ -31,6 +32,16 @@ public static class Program
         if (TryHandleStartupCommand(args, out var startupExitCode))
         {
             return startupExitCode;
+        }
+
+        // The development phone simulator is a client, not a server: it never opens a listener.
+        if (args.Contains("--simulate-phone") || args.Contains("--simulate-phone-pair"))
+        {
+            using var simulatorLogs = LoggerFactory.Create(b => b.AddSimpleConsole(c => c.SingleLine = true));
+
+            return args.Contains("--simulate-phone-pair")
+                ? await PhoneSimulator.PairAsync(args, simulatorLogs).ConfigureAwait(false)
+                : await PhoneSimulator.RunAsync(args, simulatorLogs).ConfigureAwait(false);
         }
 
         // Must run before any GDI work. Without it Windows DPI-virtualises the process on a scaled
@@ -61,6 +72,7 @@ public static class Program
         var screenOptions = Bind<ScreenOptions>(builder.Configuration, ScreenOptions.SectionName);
         var pairingOptions = Bind<PairingOptions>(builder.Configuration, PairingOptions.SectionName);
         var autoStartOptions = Bind<AutoStartOptions>(builder.Configuration, AutoStartOptions.SectionName);
+        var remoteOptions = Bind<RemoteTransportOptions>(builder.Configuration, RemoteTransportOptions.SectionName);
 
         var token = SessionToken.Generate();
 
@@ -68,6 +80,7 @@ public static class Program
         builder.Services.AddLoopbackTransport(transportOptions, token);
 
         RegisterCapabilities(builder.Services, filesOptions, screenOptions, pairingOptions);
+        RegisterRemoteTransport(builder.Services, remoteOptions);
 
         var app = builder.Build();
 
@@ -121,8 +134,11 @@ public static class Program
             primaryPhone is null ? "not paired" : $"{primaryPhone.DeviceId} ({primaryPhone.DisplayName})");
 
         logger.LogInformation("Security state: {State}", app.Services.GetRequiredService<ISecurityStateService>().Current.State);
+        logger.LogInformation("Remote transport port: {Port} (Tailscale only)", remoteOptions.Port);
 
         ApplyAutoStart(app.Services, autoStartOptions, logger);
+
+        LogRemoteTransportIntent(remoteOptions, app.Services, logger);
 
         var endpoint = LoopbackTransport.DescribeEndpoint(transportOptions);
         logger.LogInformation("Listening on {Endpoint} (loopback only)", endpoint);
@@ -191,6 +207,9 @@ public static class Program
         services.AddSingleton<IEventPublisher>(p => p.GetRequiredService<EventBus>());
         services.AddSingleton<IEventStream>(p => p.GetRequiredService<EventBus>());
         services.AddSingleton<ICapabilityRegistry>(p => new CapabilityRegistry(p.GetServices<ICapabilityAction>()));
+        // The first real caller distinction: local keeps everything, the Primary Phone gets an
+        // explicit allowlist. Evaluated inside the dispatcher, so both transports share it.
+        services.AddSingleton<ICapabilityPolicy, DefaultCapabilityPolicy>();
         services.AddSingleton<ICapabilityDispatcher, CapabilityDispatcher>();
 
         // --- Capabilities exposed by v0.1 -------------------------------------------------------
@@ -206,6 +225,22 @@ public static class Program
         services.AddSingleton<ICapabilityAction, BeginPairingAction>();
         services.AddSingleton<ICapabilityAction, CancelPairingAction>();
         services.AddSingleton<ICapabilityAction, UnpairPrimaryDeviceAction>();
+    }
+
+    /// <summary>
+    /// The authenticated remote transport. It resolves the dispatcher from the same container the
+    /// loopback transport uses, so remote requests run the identical capabilities under the
+    /// identical policy — nothing is duplicated for remote callers.
+    /// </summary>
+    private static void RegisterRemoteTransport(IServiceCollection services, RemoteTransportOptions options)
+    {
+        services.AddSingleton(options);
+        services.AddSingleton<INetworkInterfaceProvider, SystemNetworkInterfaceProvider>();
+        services.AddSingleton<TailscaleAddressDetector>();
+        services.AddSingleton<RemoteSessionRegistry>();
+        services.AddSingleton<RemoteTransport>();
+        services.AddSingleton<RemoteTransportService>();
+        services.AddHostedService(p => p.GetRequiredService<RemoteTransportService>());
     }
 
     private static T Bind<T>(IConfiguration configuration, string section) where T : new()
@@ -248,6 +283,41 @@ public static class Program
         {
             logger.LogWarning(ex, "Test page could not be read; '/' will return 404.");
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Reports what the remote transport will attempt, before the hosted service starts. The
+    /// address itself is logged by the transport once it actually binds.
+    /// </summary>
+    private static void LogRemoteTransportIntent(
+        RemoteTransportOptions options,
+        IServiceProvider services,
+        ILogger logger)
+    {
+        if (!options.Enabled)
+        {
+            logger.LogInformation("Remote transport: disabled by configuration.");
+            return;
+        }
+
+        var detection = services.GetRequiredService<TailscaleAddressDetector>().Detect(options.Port);
+
+        if (detection.Found)
+        {
+            logger.LogInformation(
+                "Remote transport: Tailscale address {Address} found; listening on port {Port}.",
+                detection.Endpoint!.Address,
+                options.Port);
+        }
+        else
+        {
+            // Not an error: Tailscale is the owner's to run. The hosted service keeps checking.
+            logger.LogWarning(
+                "Remote transport: unavailable ({Diagnostic}). Re-checking every {Seconds}s; "
+                + "no remote listener will be opened until a Tailscale address exists.",
+                detection.Diagnostic,
+                Math.Max(5, options.AvailabilityCheckSeconds));
         }
     }
 

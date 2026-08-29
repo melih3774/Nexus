@@ -22,11 +22,16 @@ public interface ICapabilityDispatcher
 public sealed class CapabilityDispatcher : ICapabilityDispatcher
 {
     private readonly ICapabilityRegistry _registry;
+    private readonly ICapabilityPolicy _policy;
     private readonly ILogger<CapabilityDispatcher> _logger;
 
-    public CapabilityDispatcher(ICapabilityRegistry registry, ILogger<CapabilityDispatcher> logger)
+    public CapabilityDispatcher(
+        ICapabilityRegistry registry,
+        ICapabilityPolicy policy,
+        ILogger<CapabilityDispatcher> logger)
     {
         _registry = registry;
+        _policy = policy;
         _logger = logger;
     }
 
@@ -54,6 +59,27 @@ public sealed class CapabilityDispatcher : ICapabilityDispatcher
                 new ProtocolError(
                     ErrorCodes.UnknownAction,
                     $"No capability is registered for action '{request.Action}'."));
+        }
+
+        // Policy runs before parameters are bound and before any capability code executes, so a
+        // denied action performs no part of its work. This is the seam v0.2 documented and left
+        // empty; v0.4 is the first milestone with two kinds of caller to distinguish.
+        var decision = _policy.Evaluate(request.Action, caller);
+        if (!decision.Allowed)
+        {
+            _logger.LogWarning(
+                "Denied {Action} for {Caller} (request {RequestId}): {Reason}",
+                request.Action,
+                caller,
+                request.Id,
+                decision.DeniedReason);
+
+            return Failure(
+                request,
+                stopwatch,
+                new ProtocolError(
+                    ErrorCodes.NotAuthorized,
+                    $"Action '{request.Action}' is not available to this caller."));
         }
 
         if (!ProtocolCodec.TryBindParameters(request.Params, capability.ParameterType, out var parameters, out var bindError))

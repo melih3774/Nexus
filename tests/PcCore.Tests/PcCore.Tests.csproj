@@ -19,6 +19,7 @@
     <ProjectReference Include="..\..\src\PcCore.Capabilities\PcCore.Capabilities.csproj" />
     <ProjectReference Include="..\..\src\PcCore.Protocol\PcCore.Protocol.csproj" />
     <ProjectReference Include="..\..\src\PcCore.Transport.Loopback\PcCore.Transport.Loopback.csproj" />
+    <ProjectReference Include="..\..\src\PcCore.Transport.Remote\PcCore.Transport.Remote.csproj" />
     <ProjectReference Include="..\..\src\PcCore.Windows\PcCore.Windows.csproj" />
   </ItemGroup>
 

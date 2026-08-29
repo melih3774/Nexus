@@ -34,7 +34,7 @@ public sealed class SecurityCapabilityTests
         ]);
 
         return new Harness(
-            new CapabilityDispatcher(registry, TestLog.For<CapabilityDispatcher>()),
+            new CapabilityDispatcher(registry, new DefaultCapabilityPolicy(), TestLog.For<CapabilityDispatcher>()),
             state,
             events);
     }

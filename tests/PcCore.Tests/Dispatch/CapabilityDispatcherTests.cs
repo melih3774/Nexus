@@ -47,7 +47,9 @@ public sealed class CapabilityDispatcherTests
     private static (ICapabilityDispatcher Dispatcher, CapabilityRegistry Registry) Build(params ICapabilityAction[] actions)
     {
         var registry = new CapabilityRegistry(actions);
-        return (new CapabilityDispatcher(registry, TestLog.For<CapabilityDispatcher>()), registry);
+        return (
+            new CapabilityDispatcher(registry, new DefaultCapabilityPolicy(), TestLog.For<CapabilityDispatcher>()),
+            registry);
     }
 
     private static RequestEnvelope Request(string action, string? paramsJson = null) => new()

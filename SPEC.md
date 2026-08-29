@@ -1,15 +1,16 @@
 # PC Core — Specification
 
-**Current version: v0.3 (Personal Device Pairing, Persistence, and Startup).**
+**Current version: v0.4 (Authenticated Tailscale Remote Transport).**
 
-This document is cumulative. Sections 1–11 describe the v0.1 foundation, section 12 covers v0.2, and **sections 13–25 cover v0.3**. Throughout, what is *implemented* is separated from what is *deliberately postponed* — nothing here describes behaviour that does not exist.
+This document is cumulative. Sections 1–11 describe the v0.1 foundation, 12 covers v0.2, 13–25 cover v0.3, and **26–37 cover v0.4**. Throughout, what is *implemented* is separated from what is *deliberately postponed* — nothing here describes behaviour that does not exist.
 
 | Milestone | Adds | Status |
 |---|---|---|
 | v0.1 | Protocol, capability layer, filesystem boundary, loopback transport, five read-only capabilities | shipped |
 | v0.2 | Security-state service, three `security.*` capabilities, `security.state_changed`, typed caller identity | shipped (§12) |
 | v0.3 | State persistence, event-lock refactor, PC identity, one Primary Phone, HMAC authentication, Windows auto-start | shipped (§13–25) |
-| later | Remote transport, Android client, policy decision point, security recording | not started |
+| v0.4 | Tailscale-bound remote transport, session authentication, LOCAL/DEVICE capability policy, remote events | shipped (§26–37) |
+| later | Android client, security recording, activity detection, AI bridge | not started |
 
 **Scope note.** From v0.3 onward this is explicitly a personal-use system: one owner, one Windows PC, one Android phone. Narrower designs were chosen over more general ones throughout (§13).
 
@@ -528,7 +529,7 @@ A future policy decision point belongs in exactly one place: **`CapabilityDispat
 - requested capability — `capability.Name`
 - current security state — inject `ISecurityStateService`
 
-**v0.2 implements none of it.** No RBAC, no ACLs, no permission catalogue, no interception. The seam is named here so the next milestone does not have to invent one.
+**v0.2 implemented none of it.** **v0.4 occupies this seam** — see §31. The policy remains a small typed rule set rather than RBAC or a permission catalogue.
 
 ### 12.9 Testing added in v0.2
 
@@ -908,3 +909,190 @@ models; and loopback callers remaining `LOCAL` with a null device id.
 
 The v0.2 security-state semantics are unchanged in every respect except that state now persists:
 same three states, same four-edge table, same idempotency, same refusal of invalid transitions.
+
+---
+
+# v0.4 — Authenticated Tailscale Remote Transport
+
+## 26. What v0.4 adds
+
+The paired Primary Phone can now reach PC Core over the owner's Tailscale network, authenticate with the credential established in v0.3, and drive a restricted set of capabilities. The Android application is still not implemented; a protocol-level simulator stands in for it.
+
+```
+Primary Phone
+     │  Tailscale (WireGuard)
+     ▼
+PcCore.Transport.Remote          ← binds ONE Tailscale address, nothing else
+     │  HMAC-SHA-256 challenge/response (v0.3 authenticator)
+     ▼
+CallerDescriptor(ActorType.Device, DeviceId)
+     │
+     ▼
+ICapabilityPolicy                ← the seam v0.2 documented, now occupied
+     │
+     ▼
+CapabilityDispatcher             ← unchanged choke point
+     │
+     ▼
+The same capability instances the loopback transport uses
+```
+
+No capability is duplicated for remote use, no transport contains Windows-control logic, and `PcCore.Windows` was not touched: network interface enumeration comes from `System.Net.NetworkInformation` in the BCL.
+
+## 27. Network exposure
+
+### 27.1 The invariant
+
+**PC Core must never open the remote port on an ordinary LAN or WAN interface.** This is enforced structurally, not by convention.
+
+`RemoteEndpoint` — the only type that can name a bind address — has an `internal` constructor. In production the only code that calls it is `TailscaleAddressDetector`, after the address passes every check below. There is no configuration setting for a bind address, no wildcard path, and no fallback.
+
+### 27.2 Detection
+
+Two independent facts must agree, or nothing is produced:
+
+1. **Interface identity.** The adapter name or description contains `tailscale` (on Windows: adapter `Tailscale`, description `Tailscale Tunnel`), and it is operationally up.
+2. **Address range.** The address is inside `100.64.0.0/10`, evaluated with integer arithmetic on the address bytes — not a `"100."` string prefix. `100.0.0.1` and `100.128.0.1` are ordinary public addresses outside the range and are rejected.
+
+Requiring both makes the check safe in either direction: a LAN adapter someone renamed "Tailscale" still fails the range test, and a machine holding a CGNAT address on a real WAN link (some ISPs do this) still fails the identity test.
+
+The Tailscale CLI is deliberately not invoked: it is not reliably on `PATH`, shelling out on a timer is fragile, and the OS already answers the question directly. No elevation is required.
+
+### 27.3 Determinism and failure
+
+Several qualifying addresses → the numerically lowest is chosen, so the bind address does not change between boots. No candidate → **no endpoint and no listener**, with a diagnostic naming the reason.
+
+```
+127.0.0.1     → loopback development transport (port 47811, unchanged)
+100.x.x.x     → authenticated remote transport (port 47812)
+192.168.x.x   → NOT listening
+172.x / WAN   → NOT listening
+0.0.0.0       → never, under any configuration
+```
+
+### 27.4 Port
+
+**47812**, fixed, adjacent to the loopback transport's 47811. Configurable via `PcCore:RemoteTransport:Port` for the unlikely case of a conflict, but not dynamic — a phone should not have to rediscover the port after every reboot. It requires no router port forwarding: it is reachable only through the bound Tailscale address.
+
+## 28. Transport and why no TLS
+
+WebSocket at `ws://<tailscale-ip>:47812/nexus`, subprotocol `nexus.v1`.
+
+The protocol has three message types and the third — events — cannot be expressed over request/response HTTP. The phone needs a persistent bidirectional connection regardless: it authenticates once per connection rather than per request, and must receive `security.state_changed` without polling. A later screen-streaming milestone wants the same channel. The existing typed envelopes and `ProtocolCodec` are reused verbatim, so both transports share one serialization model; no custom binary framing was introduced.
+
+**No TLS.** Every byte already travels inside a WireGuard tunnel that Tailscale authenticates and encrypts end to end, and PC Core independently proves the peer holds the Primary Phone secret before accepting a command. Adding a certificate would mean generation, trust distribution, renewal, and a pinning story in the Android client — real lifecycle complexity buying a second encryption layer inside the first, and self-signed certificates would make the Android client harder to write, not easier. If this transport were ever exposed outside a tailnet that calculation reverses completely, which is precisely why the listener cannot bind anything but a Tailscale address.
+
+## 29. Authentication
+
+No second credential was created. The v0.3 `IDeviceAuthenticator` and Primary Phone shared secret are used unchanged; the transport contains no competing authentication logic.
+
+```
+Phone                                   PC Core
+  ── connect ──────────────────────────▶
+                    ◀── auth.challenge (event: challenge_id, challenge, expiry)
+  ── auth.authenticate ────────────────▶  (challenge_id, device_id, proof)
+                                          Verify() → AuthenticatedDevice
+                    ◀── response: authenticated, actor_type DEVICE, device_id
+  ── system.get_info, files.list, … ───▶  (identity inherited from the session)
+```
+
+The signed message is unchanged from v0.3:
+
+```
+"nexus-auth-v1" 0x00 <PcInstanceId> 0x00 <DeviceId> 0x00 <challenge>
+```
+
+**Replay resistance** comes from the v0.3 challenge lifecycle: challenges are cryptographically random, expire, and are consumed on the first verification attempt whether it succeeds or fails. A captured proof cannot establish a later session.
+
+**An unpaired PC is not short-circuited.** It issues a challenge and fails at verification like any other rejection. Refusing earlier would give a different reply shape and timing, telling anyone on the tailnet whether a phone is paired.
+
+### 29.1 How a trusted DEVICE caller is created
+
+```csharp
+AuthenticatedDevice device = _authenticator.Verify(challengeId, deviceId, proof);  // throws otherwise
+_caller = device.ToCaller(RemoteTransport.TransportName, _connectionId);           // ActorType.Device
+```
+
+`AuthenticatedDevice` has no public constructor (v0.3), so this is the only route to a `DEVICE` identity anywhere in the system. Nothing in a request body can reach it: parameters bind to a capability's own parameter record, never to the caller identity, which the transport stamps. Before the handshake completes, the dispatcher is not invoked at all — the only action a connection can send is `auth.authenticate`.
+
+## 30. Sessions
+
+Authentication happens **once per connection**. Every later request on that connection inherits the identity established at handshake; there is no per-request HMAC.
+
+- A session is a property of an open socket. Closing the connection ends it; reconnecting requires a fresh challenge and a fresh proof.
+- Sessions are in-memory and connection-bound. Nothing is persisted or shared between processes.
+- An unauthenticated connection is closed after 15 seconds, so a peer that never proves anything cannot hold a socket open indefinitely.
+- Re-authenticating on a live session is refused rather than passed to the dispatcher, so it cannot burn a challenge.
+
+**Simultaneous connections: 4** (`PcCore:RemoteTransport:MaxSessions`). Not one: a phone that loses signal leaves a session the PC has not yet noticed is dead, and an exclusive-session rule would lock the owner out until a timeout elapsed. Four absorbs reconnect races and a foreground/background split while bounding memory. At the limit the **oldest** session is closed rather than the newest refused, because the newest connection is the one the owner is actually looking at.
+
+## 31. Capability policy
+
+The first real distinction between callers, evaluated in `CapabilityDispatcher` before parameters are bound and before any capability code runs — so a denied action performs no part of its work.
+
+| Actor | Policy |
+|---|---|
+| `LOCAL` | Everything. Unchanged from v0.1–v0.3. |
+| `DEVICE` | An **allowlist** of eight actions. |
+| `AI` | Nothing. No AI adapter exists; failing closed means its access will be a deliberate decision. |
+
+Allowed remotely: `system.get_info`, `system.list_processes`, `files.list`, `files.stat`, `screen.capture`, `security.get_state`, `security.arm`, `security.disarm`.
+
+Denied remotely: `pairing.begin`, `pairing.cancel`, `device.unpair_primary`, `device.get_primary`, and anything added in future milestones until it is named here.
+
+**The phone is a controller for the PC, not the authority that decides which phone is trusted.** Device management stays local-only, so possession of a phone credential can never be escalated into enrolling another device. That asymmetry is why this is an allowlist: a capability added later is denied to the phone by default.
+
+It is a small typed rule set — a `FrozenSet` and a `switch` — not RBAC, not a permission catalogue, not a grant model. There is one owner and one phone.
+
+**Denials** return `not_authorized` with a stable code and no internal detail. The action name is not treated as a secret (pretending it does not exist would make diagnostics worse), the connection is not dropped for one refusal, and the session remains usable.
+
+Policy does **not** widen any existing boundary: `files.list` remotely is still constrained by the allowed roots, verified by test.
+
+## 32. Events
+
+An authenticated session subscribes to the existing `IEventStream`; no second event system was introduced. Delivery is filtered by a small allowlist — event names beginning `security.` — rather than a subscription language. Anything else, present or future, must be named there deliberately rather than reach the network because it happened to be published. Pairing and internal events are not deliverable.
+
+Unauthenticated connections receive no event stream at all: the subscription is created inside the handshake, after verification.
+
+Idempotent state transitions still publish nothing (v0.2 behaviour), so a remote client sees exactly one event per real change.
+
+## 33. Tailscale outage and recovery
+
+`RemoteTransportService` is a hosted service that reconciles on a 30-second timer:
+
+- No Tailscale address → no listener; if one was running, it is stopped. The reason is logged once per distinct diagnostic, not once per tick.
+- Address appears → the listener starts automatically. **No PC Core restart is required.**
+- Address changes → the listener rebinds.
+- A bind failure is caught, logged, and retried on the next tick rather than killing the loop.
+
+One timer and one detector call: a poll for an interface appearing, not a network monitoring subsystem.
+
+## 34. Diagnostics
+
+Startup logs the port, whether a Tailscale address was found, and if not, exactly why and how often it will re-check. `RemoteTransportService.GetStatus()` reports enabled/available/address/port/diagnostic/paired/session-count. The public protocol was not expanded for debugging: no capability was added to expose this.
+
+Logged: transport start/stop, selected address, connection open/close, authentication success with device id, authentication failure with a reason, denied actions, and recoverable errors. **Never logged:** the shared secret, the protected blob, proof values, or challenge material — verified by inspection of every log statement in the transport and by scanning real run logs for the live secret.
+
+## 35. Development simulator
+
+`PcCore.Host.exe --simulate-phone-pair <NEXUS1.…>` completes pairing through the real device endpoint and stores the phone's half of the credential in `dev-phone-simulator.json`, DPAPI-protected — a deliberately separate file from `primary-phone.json`, since conflating the two halves would blur the boundary the design depends on.
+
+`PcCore.Host.exe --simulate-phone ws://<tailscale-ip>:47812/nexus` then runs the full conversation: connect, challenge, authenticate, confirm `DEVICE`, `system.get_info`, `files.list`, `screen.capture`, `security.get_state`, arm, receive `security.state_changed`, disarm, confirm `device.unpair_primary` is denied, disconnect, reconnect and authenticate again.
+
+The protocol client itself (`RemotePhoneClient`) lives in the transport assembly as the reference implementation the Android client will port, so the handshake has one definition that both the server tests and the simulator exercise. It is development-only and is not the Android application.
+
+## 36. Testing added in v0.4
+
+63 tests, taking the suite from 277 to 340.
+
+- **Binding safety** — selects a genuine Tailscale interface; refuses the typical Wi-Fi/Ethernet/Hyper-V machine; refuses a non-CGNAT address even on an interface named "Tailscale"; refuses a CGNAT address on a non-Tailscale interface; refuses a down interface and one with no address; fails closed when enumeration returns nothing; CGNAT boundary arithmetic at `100.63.255.255` / `100.64.0.0` / `100.127.255.255` / `100.128.0.0` and the `100.0.0.1` case a string prefix would wrongly accept; deterministic choice independent of enumeration order; wildcard and broadcast never produced; `RemoteEndpoint` has no public constructor; and a check against this machine's real interfaces asserting the detector never yields an address the host holds on an ordinary interface.
+- **Authentication** — the paired phone establishes a DEVICE session; wrong secret; unknown device id; a proof bound to a different installation; a replayed proof on a new connection; a challenge from one connection answered on another; an unpaired system; and a request self-asserting `actor_type: DEVICE` before authenticating.
+- **Policy** — each allowed action succeeds; each device-management action returns `not_authorized`; the filesystem boundary still applies remotely; a denial neither closes the connection nor performs any part of the action; denials carry no internal detail; and the allowlist is pinned to exactly the eight documented actions.
+- **Sessions** — identity is connection-bound (a second connection gains nothing); disconnect cleans up; reconnect requires fresh authentication; the session limit evicts the oldest; malformed and unknown actions do not drop the session; re-authenticating a live session is refused.
+- **Events** — an authenticated device receives `security.state_changed` with the right payload; an idempotent transition produces no duplicate; an unauthenticated connection receives nothing even when a real transition occurs.
+- **Recovery** — stays offline with no Tailscale address; comes online by itself when one appears; `Enabled: false` never opens a port; the status readout contains no field a secret could hide in.
+- **Regression** — the entire v0.1–v0.3 suite, with the existing dispatcher tests now running under the real policy so LOCAL behaviour is verified unchanged.
+
+## 37. Explicitly NOT in v0.4
+
+Android app; public internet exposure; router port forwarding; Tailscale installation, login, or tailnet/ACL management; Tailscale Serve; STUN, TURN, ICE, custom NAT traversal, relays; remote keyboard or mouse input; live screen streaming; camera; microphone; AI, Claude Code, or Codex; notifications; security evidence recording; activity detection.

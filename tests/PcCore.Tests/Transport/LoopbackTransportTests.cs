@@ -92,6 +92,7 @@ public sealed class LoopbackTransportTests : IAsyncLifetime
         builder.Services.AddSingleton<ICapabilityAction, ArmSecurityAction>();
         builder.Services.AddSingleton<ICapabilityAction, DisarmSecurityAction>();
         builder.Services.AddSingleton<ICapabilityRegistry>(p => new CapabilityRegistry(p.GetServices<ICapabilityAction>()));
+        builder.Services.AddSingleton<ICapabilityPolicy, DefaultCapabilityPolicy>();
         builder.Services.AddSingleton<ICapabilityDispatcher, CapabilityDispatcher>();
 
         _app = builder.Build();

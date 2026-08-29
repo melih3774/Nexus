@@ -1,0 +1,482 @@
+using System.Buffers.Text;
+using System.Net.WebSockets;
+using System.Text;
+using Microsoft.Extensions.Logging;
+using PcCore.Capabilities.Abstractions;
+using PcCore.Capabilities.Identity;
+using PcCore.Protocol;
+
+namespace PcCore.Transport.Remote;
+
+/// <summary>Wire names used only by the remote handshake.</summary>
+public static class RemoteProtocol
+{
+    public const string Subprotocol = "nexus.v1";
+
+    /// <summary>Server -> client, immediately on connect. Payload: challenge_id, challenge, expires_at_utc.</summary>
+    public const string ChallengeEvent = "auth.challenge";
+
+    /// <summary>Client -> server. Params: device_id, proof. The only action accepted before authentication.</summary>
+    public const string AuthenticateAction = "auth.authenticate";
+
+    /// <summary>Server -> client, after a successful handshake.</summary>
+    public const string AuthenticatedEvent = "auth.authenticated";
+
+    /// <summary>
+    /// Events a remote device may receive.
+    /// <para>
+    /// An allowlist rather than a filter expression: the phone needs security state changes and
+    /// nothing else today, and anything added later should have to be named here deliberately
+    /// rather than reach the network because it happened to be published.
+    /// </para>
+    /// </summary>
+    public static bool IsDeliverableToDevice(string eventName) =>
+        eventName.StartsWith("security.", StringComparison.Ordinal);
+}
+
+/// <summary>
+/// One remote WebSocket connection: challenge, verify, then dispatch.
+/// <para>
+/// The connection owns the trust decision. Everything before a verified proof is refused, and the
+/// <see cref="CallerDescriptor"/> used for every later request is built once, here, from the
+/// <see cref="AuthenticatedDevice"/> the authenticator returned — never from anything in a request
+/// body.
+/// </para>
+/// </summary>
+internal sealed class RemoteConnection : IAsyncDisposable
+{
+    private const int ReceiveBufferSize = 8 * 1024;
+    private const int MaxConcurrentRequests = 4;
+
+    private readonly WebSocket _socket;
+    private readonly ICapabilityDispatcher _dispatcher;
+    private readonly IDeviceAuthenticator _authenticator;
+    private readonly IPrimaryPhoneRegistry _registry;
+    private readonly RemoteSessionRegistry _sessions;
+    private readonly RemoteTransportOptions _options;
+    private readonly ILogger _logger;
+    private readonly string _connectionId;
+
+    private readonly SemaphoreSlim _sendGate = new(1, 1);
+    private readonly SemaphoreSlim _concurrency = new(MaxConcurrentRequests, MaxConcurrentRequests);
+
+    private CallerDescriptor? _caller;
+    private RemoteSession? _session;
+    private IDisposable? _eventSubscription;
+
+    public RemoteConnection(
+        WebSocket socket,
+        string connectionId,
+        ICapabilityDispatcher dispatcher,
+        IDeviceAuthenticator authenticator,
+        IPrimaryPhoneRegistry registry,
+        RemoteSessionRegistry sessions,
+        RemoteTransportOptions options,
+        ILogger logger)
+    {
+        _socket = socket;
+        _connectionId = connectionId;
+        _dispatcher = dispatcher;
+        _authenticator = authenticator;
+        _registry = registry;
+        _sessions = sessions;
+        _options = options;
+        _logger = logger;
+    }
+
+    public async Task RunAsync(IEventStream events, CancellationToken cancellationToken)
+    {
+        using var authTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        authTimeout.CancelAfter(TimeSpan.FromSeconds(_options.AuthenticationTimeoutSeconds));
+
+        try
+        {
+            if (!await HandshakeAsync(events, authTimeout.Token).ConfigureAwait(false))
+            {
+                return;
+            }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // The unauthenticated grace period elapsed. Holding sockets open for callers that never
+            // prove anything is free resource consumption for an attacker.
+            _logger.LogWarning("Remote connection {ConnectionId} did not authenticate in time.", _connectionId);
+            await CloseAsync(WebSocketCloseStatus.PolicyViolation, "authentication timeout", CancellationToken.None)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        await PumpAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Challenge, verify, and bind the connection to the authenticated device.</summary>
+    private async Task<bool> HandshakeAsync(IEventStream events, CancellationToken cancellationToken)
+    {
+        if (_registry.Current is null)
+        {
+            // Logged for the operator, but deliberately *not* short-circuited. If an unpaired PC
+            // refused before issuing a challenge, its reply shape and timing would differ from a
+            // wrong-secret rejection, telling anyone on the tailnet whether a phone is paired.
+            // Letting it fail through the normal path keeps every rejection identical: the registry
+            // simply has no secret to verify against, and the caller gets the same opaque
+            // authentication_failed with a correlatable request id.
+            _logger.LogWarning(
+                "Remote connection {ConnectionId} cannot succeed: no primary phone is paired.", _connectionId);
+        }
+
+        var challenge = _authenticator.IssueChallenge();
+
+        await SendAsync(
+            ProtocolCodec.Encode(new EventEnvelope
+            {
+                Id = Guid.NewGuid().ToString("n"),
+                EventName = RemoteProtocol.ChallengeEvent,
+                Payload = new
+                {
+                    ChallengeId = challenge.ChallengeId,
+                    Challenge = challenge.Challenge,
+                    ExpiresAtUtc = challenge.ExpiresAtUtc,
+                },
+                TimestampUtc = DateTimeOffset.UtcNow,
+            }),
+            cancellationToken).ConfigureAwait(false);
+
+        var message = await ReceiveMessageAsync(cancellationToken).ConfigureAwait(false);
+        if (message is null)
+        {
+            return false;
+        }
+
+        var decoded = ProtocolCodec.DecodeRequest(message);
+        if (!decoded.IsSuccess)
+        {
+            await SendAsync(
+                ProtocolCodec.Encode(ResponseEnvelope.Fail(decoded.Id ?? string.Empty, null, decoded.Error)),
+                cancellationToken).ConfigureAwait(false);
+            await CloseAsync(WebSocketCloseStatus.ProtocolError, "malformed handshake", CancellationToken.None)
+                .ConfigureAwait(false);
+            return false;
+        }
+
+        var request = decoded.Request;
+
+        if (!string.Equals(request.Action, RemoteProtocol.AuthenticateAction, StringComparison.Ordinal))
+        {
+            // Nothing but the handshake is reachable before authentication — the dispatcher is
+            // never invoked for an unauthenticated connection.
+            _logger.LogWarning(
+                "Remote connection {ConnectionId} attempted {Action} before authenticating.",
+                _connectionId,
+                request.Action);
+
+            await SendAsync(FailureResponse(request.Id, ErrorCodes.AuthenticationFailed), cancellationToken)
+                .ConfigureAwait(false);
+            await CloseAsync(WebSocketCloseStatus.PolicyViolation, "not authenticated", CancellationToken.None)
+                .ConfigureAwait(false);
+            return false;
+        }
+
+        if (!ProtocolCodec.TryBindParameters(request.Params, typeof(AuthenticateParameters), out var bound, out _)
+            || bound is not AuthenticateParameters parameters)
+        {
+            await SendAsync(FailureResponse(request.Id, ErrorCodes.AuthenticationFailed), cancellationToken)
+                .ConfigureAwait(false);
+            await CloseAsync(WebSocketCloseStatus.PolicyViolation, "authentication failed", CancellationToken.None)
+                .ConfigureAwait(false);
+            return false;
+        }
+
+        AuthenticatedDevice device;
+        try
+        {
+            // The shared authenticator from v0.3 — this transport implements no competing
+            // authentication logic, so replay and expiry rules are the ones already tested there.
+            device = _authenticator.Verify(
+                parameters.ChallengeId ?? string.Empty,
+                parameters.DeviceId ?? string.Empty,
+                parameters.Proof ?? string.Empty);
+        }
+        catch (CapabilityException ex)
+        {
+            _logger.LogWarning(
+                "Remote authentication failed on {ConnectionId} for device {DeviceId}.",
+                _connectionId,
+                parameters.DeviceId);
+
+            await SendAsync(FailureResponse(request.Id, ex.Code), cancellationToken).ConfigureAwait(false);
+            await CloseAsync(WebSocketCloseStatus.PolicyViolation, "authentication failed", CancellationToken.None)
+                .ConfigureAwait(false);
+            return false;
+        }
+
+        // The trusted identity is minted here, from the verification result, and nowhere else.
+        _caller = device.ToCaller(RemoteTransport.TransportName, _connectionId);
+
+        _session = new RemoteSession(_connectionId, _caller, device.AuthenticatedAtUtc)
+        {
+            CloseAsync = () => CloseAsync(WebSocketCloseStatus.NormalClosure, "superseded", CancellationToken.None),
+        };
+
+        var evicted = _sessions.Add(_session);
+
+        // Subscribe before confirming, so no state change can slip through between the client
+        // learning it is authenticated and the stream being live.
+        _eventSubscription = events.Subscribe(OnEvent);
+
+        await SendAsync(
+            ProtocolCodec.Encode(ResponseEnvelope.Ok(request.Id, request.Action, new
+            {
+                Authenticated = true,
+                ActorType = _caller.ActorType,
+                DeviceId = _caller.DeviceId,
+                SessionId = _session.SessionId,
+                AuthenticatedAtUtc = device.AuthenticatedAtUtc,
+            })),
+            cancellationToken).ConfigureAwait(false);
+
+        _logger.LogInformation(
+            "Remote device authenticated: {Caller} (session {SessionId}, {Sessions} active).",
+            _caller,
+            _session.SessionId,
+            _sessions.Count);
+
+        foreach (var old in evicted)
+        {
+            _ = old.CloseAsync();
+        }
+
+        return true;
+    }
+
+    /// <summary>Post-authentication request loop.</summary>
+    private async Task PumpAsync(CancellationToken cancellationToken)
+    {
+        var pending = new List<Task>();
+
+        try
+        {
+            while (_socket.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested)
+            {
+                var message = await ReceiveMessageAsync(cancellationToken).ConfigureAwait(false);
+                if (message is null)
+                {
+                    break;
+                }
+
+                if (message.Length == 0)
+                {
+                    continue;
+                }
+
+                pending.RemoveAll(static t => t.IsCompleted);
+                pending.Add(HandleAsync(message, cancellationToken));
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Shutdown.
+        }
+        catch (WebSocketException ex)
+        {
+            _logger.LogDebug(ex, "Remote connection {ConnectionId} closed unexpectedly.", _connectionId);
+        }
+        finally
+        {
+            try
+            {
+                await Task.WhenAll(pending).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "In-flight remote requests faulted while closing {ConnectionId}.", _connectionId);
+            }
+        }
+    }
+
+    private async Task HandleAsync(string json, CancellationToken cancellationToken)
+    {
+        await _concurrency.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            var decoded = ProtocolCodec.DecodeRequest(json);
+
+            if (!decoded.IsSuccess)
+            {
+                await SendAsync(
+                    ProtocolCodec.Encode(ResponseEnvelope.Fail(decoded.Id ?? string.Empty, null, decoded.Error)),
+                    cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            // Re-authenticating on an established session is meaningless and would burn a
+            // challenge; refuse it rather than letting it reach the dispatcher as an unknown action.
+            if (string.Equals(decoded.Request.Action, RemoteProtocol.AuthenticateAction, StringComparison.Ordinal))
+            {
+                await SendAsync(
+                    ProtocolCodec.Encode(ResponseEnvelope.Fail(
+                        decoded.Request.Id,
+                        decoded.Request.Action,
+                        ErrorCodes.InvalidRequest,
+                        "This session is already authenticated.")),
+                    cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            // Every request on this connection inherits the identity established at handshake.
+            // The request body has no say in it.
+            var response = await _dispatcher
+                .DispatchAsync(decoded.Request, _caller!, cancellationToken)
+                .ConfigureAwait(false);
+
+            await SendAsync(ProtocolCodec.Encode(response), cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Shutdown.
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to handle a remote message on {ConnectionId}.", _connectionId);
+        }
+        finally
+        {
+            _concurrency.Release();
+        }
+    }
+
+    private void OnEvent(EventEnvelope envelope)
+    {
+        if (!RemoteProtocol.IsDeliverableToDevice(envelope.EventName))
+        {
+            return;
+        }
+
+        _ = SendAsync(ProtocolCodec.Encode(envelope), CancellationToken.None);
+    }
+
+    private async Task<string?> ReceiveMessageAsync(CancellationToken cancellationToken)
+    {
+        var buffer = new byte[ReceiveBufferSize];
+        using var message = new MemoryStream();
+
+        while (true)
+        {
+            var result = await _socket.ReceiveAsync(buffer, cancellationToken).ConfigureAwait(false);
+
+            if (result.MessageType == WebSocketMessageType.Close)
+            {
+                await CloseAsync(WebSocketCloseStatus.NormalClosure, "closing", CancellationToken.None)
+                    .ConfigureAwait(false);
+                return null;
+            }
+
+            if (result.MessageType == WebSocketMessageType.Binary)
+            {
+                await CloseAsync(WebSocketCloseStatus.InvalidMessageType, "text frames only", CancellationToken.None)
+                    .ConfigureAwait(false);
+                return null;
+            }
+
+            if (message.Length + result.Count > 64 * 1024)
+            {
+                await CloseAsync(WebSocketCloseStatus.MessageTooBig, "message too large", CancellationToken.None)
+                    .ConfigureAwait(false);
+                return null;
+            }
+
+            message.Write(buffer, 0, result.Count);
+
+            if (result.EndOfMessage)
+            {
+                return Encoding.UTF8.GetString(message.GetBuffer(), 0, (int)message.Length);
+            }
+        }
+    }
+
+    private async Task SendAsync(string payload, CancellationToken cancellationToken)
+    {
+        if (_socket.State != WebSocketState.Open)
+        {
+            return;
+        }
+
+        try
+        {
+            await _sendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
+        {
+            return;
+        }
+
+        try
+        {
+            if (_socket.State != WebSocketState.Open)
+            {
+                return;
+            }
+
+            await _socket.SendAsync(
+                Encoding.UTF8.GetBytes(payload),
+                WebSocketMessageType.Text,
+                endOfMessage: true,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is WebSocketException or ObjectDisposedException or OperationCanceledException)
+        {
+            _logger.LogDebug("Send failed on remote connection {ConnectionId}; client has gone away.", _connectionId);
+        }
+        finally
+        {
+            _sendGate.Release();
+        }
+    }
+
+    private async Task CloseAsync(WebSocketCloseStatus status, string description, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (_socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+            {
+                await _socket.CloseAsync(status, description, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex) when (ex is WebSocketException or ObjectDisposedException or OperationCanceledException)
+        {
+            // Peer already gone.
+        }
+    }
+
+    private static string FailureResponse(string id, string code) =>
+        ProtocolCodec.Encode(ResponseEnvelope.Fail(
+            id,
+            null,
+            code,
+            code == ErrorCodes.AuthenticationFailed ? "Authentication failed." : "Request refused."));
+
+    public ValueTask DisposeAsync()
+    {
+        // The session lives exactly as long as the connection. Nothing survives the socket.
+        _eventSubscription?.Dispose();
+
+        if (_session is not null)
+        {
+            _sessions.Remove(_session.SessionId);
+            _logger.LogInformation(
+                "Remote session {SessionId} ended ({Sessions} active).", _session.SessionId, _sessions.Count);
+        }
+
+        _sendGate.Dispose();
+        _concurrency.Dispose();
+        return ValueTask.CompletedTask;
+    }
+
+    /// <summary>Handshake parameters. Bound through the shared codec like any other typed params.</summary>
+    private sealed record AuthenticateParameters
+    {
+        public string? ChallengeId { get; init; }
+        public string? DeviceId { get; init; }
+        public string? Proof { get; init; }
+    }
+}

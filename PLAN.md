@@ -239,3 +239,60 @@ application, and a single dedicated storage layer with typed records does not vi
 - Nothing consumes `ActorType` or `DeviceId` for authorization. The policy seam
   (`CapabilityDispatcher.DispatchAsync`) is still empty by design.
 - Secret rotation is not implemented: replacing the credential means re-pairing.
+
+---
+
+# PC Core v0.4 — Authenticated Tailscale Remote Transport
+
+Derived from [SPEC.md §26–37](SPEC.md). **Status: complete, with one live condition noted below.**
+
+## Where the new code belongs
+
+| Concern | Location | Why there |
+|---|---|---|
+| Tailscale detection, remote listener, sessions, handshake | `src/PcCore.Transport.Remote/` | A transport, parallel to the loopback one; no capability logic, no Windows API |
+| Capability policy | `PcCore.Capabilities/Abstractions/CapabilityPolicy.cs` | Policy is a capability-layer decision; both transports get it by going through the dispatcher |
+| Reference protocol client | `PcCore.Transport.Remote/RemotePhoneClient.cs` | One definition of the handshake, shared by the server tests and the simulator |
+| Simulator CLI | `PcCore.Host/PhoneSimulator.cs` | Composition root; a client, never a listener |
+
+`PcCore.Windows` was **not** modified. Interface enumeration comes from `System.Net.NetworkInformation`, so networking needed no platform-specific code.
+
+## Steps as executed
+
+| # | Step | Verified by |
+|---|---|---|
+| 1 | Clean Release build + 277/277 on untouched v0.3; confirm clean tree at `v0.3-primary-device` | baseline green |
+| 2 | `TailscaleAddressDetector` + `RemoteEndpoint` with an internal constructor | 20 binding-safety tests |
+| 3 | `ICapabilityPolicy` + dispatcher integration; existing tests moved onto the real policy | 277/277 still green |
+| 4 | `RemoteTransport`, `RemoteConnection`, `RemoteSessionRegistry` | 30 end-to-end tests over a real socket |
+| 5 | `RemoteTransportService` reconciliation loop | 4 recovery tests |
+| 6 | `RemotePhoneClient` + `--simulate-phone` / `--simulate-phone-pair` | live pairing; live failure reporting |
+| 7 | Version 0.3.0 → 0.4.0; docs; commit; tag `v0.4-remote-transport` | 340/340, clean Release |
+
+## Decisions worth re-reading before v0.5
+
+1. **`RemoteEndpoint` has an internal constructor.** The bind address is not a configurable string; the only production caller is the detector. Same structural trick as `AuthenticatedDevice` in v0.3 — make the unsafe thing unconstructible rather than merely unwritten.
+2. **Detection requires interface identity AND the CGNAT range.** Either alone is unsafe in one direction; see SPEC §27.2.
+3. **No TLS inside the tunnel.** Reasoning in SPEC §28. Revisit only if this transport is ever exposed outside a tailnet, which the binding rule currently makes impossible.
+4. **An unpaired PC still issues a challenge.** Refusing earlier would leak pairing state through reply shape and timing.
+5. **Policy is an allowlist.** A capability added in v0.5 is denied to the phone until someone names it — the safe default when the capability surface is growing.
+6. **Four concurrent sessions, evicting the oldest.** Reconnect races must not lock the owner out of their own machine.
+7. **Events are filtered by prefix allowlist,** not a subscription DSL.
+
+## Live condition at completion
+
+Tailscale is **not installed** on this development machine: no CLI, no service, no adapter, no `100.64.0.0/10` address. The detector therefore correctly reports unavailable, PC Core opens **no** remote listener, and port 47812 refuses connections on every interface — which is itself the correct observed behaviour and was verified.
+
+Everything above the socket was exercised end to end against the real `RemoteTransport` over a real WebSocket, with the listener bound to loopback through the internal `RemoteEndpoint` constructor available only to the test assembly. What could not be verified live is the single line `kestrel.Listen(endpoint.Address, endpoint.Port)` receiving an actual tailnet address, and the phone traversing a real WireGuard tunnel.
+
+**To finish live verification** once Tailscale is installed and signed in on both devices:
+
+```
+PcCore.Host.exe                                     # logs the detected 100.x address
+PcCore.Host.exe --simulate-phone-pair NEXUS1....    # from the local test page
+PcCore.Host.exe --simulate-phone ws://100.x.x.x:47812/nexus
+```
+
+## Not started
+
+The Android client, security recording, activity detection, the AI bridge, and every deferred item in SPEC §37.

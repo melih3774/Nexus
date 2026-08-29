@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>PcCore.Transport.Remote</RootNamespace>
+  </PropertyGroup>
+
+  <!--
+    The authenticated remote transport. Like the loopback transport it may move bytes and
+    authenticate, but it contains no Windows-control logic and no capability implementations:
+    every request reaches the same ICapabilityDispatcher the local transport uses.
+
+    Note the absence of a reference to PcCore.Windows. Network interface enumeration comes from
+    System.Net.NetworkInformation in the BCL, so no Windows-specific code was needed for this.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\PcCore.Capabilities\PcCore.Capabilities.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Tests construct a RemoteEndpoint bound to loopback so the handshake, policy, session and
+      event behaviour can be exercised over a real socket without a live tailnet. Production code
+      can only obtain an endpoint from the Tailscale detector.
+    -->
+    <InternalsVisibleTo Include="PcCore.Tests" />
+  </ItemGroup>
+
+</Project>

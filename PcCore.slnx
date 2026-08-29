@@ -4,6 +4,7 @@
     <Project Path="src/PcCore.Host/PcCore.Host.csproj" />
     <Project Path="src/PcCore.Protocol/PcCore.Protocol.csproj" />
     <Project Path="src/PcCore.Transport.Loopback/PcCore.Transport.Loopback.csproj" />
+    <Project Path="src/PcCore.Transport.Remote/PcCore.Transport.Remote.csproj" />
     <Project Path="src/PcCore.Windows/PcCore.Windows.csproj" />
   </Folder>
   <Folder Name="/tests/">
