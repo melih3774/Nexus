@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>PcCore.Protocol</RootNamespace>
+  </PropertyGroup>
+
+  <!--
+    This project intentionally has NO project references and NO package references.
+    It is the shared contract every layer and every future caller agrees on, and it is
+    the only assembly permitted to touch System.Text.Json (see SPEC.md 4.4).
+  -->
+
+</Project>

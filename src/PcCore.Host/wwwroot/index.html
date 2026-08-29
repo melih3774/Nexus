@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PC Core v0.2 — developer test client</title>
+<style>
+  /* Deliberately plain. This is a debug tool, not the product UI. */
+  body { font: 13px/1.5 Consolas, monospace; margin: 0; padding: 16px; background: #14161a; color: #d8dee9; }
+  h1 { font-size: 15px; margin: 0 0 4px; }
+  .sub { color: #7a8494; margin-bottom: 16px; }
+  .cols { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+  .panel { flex: 1 1 380px; min-width: 320px; }
+  fieldset { border: 1px solid #2b3038; margin: 0 0 12px; padding: 10px; }
+  legend { color: #88c0d0; padding: 0 4px; }
+  button { font: inherit; background: #2b3038; color: #d8dee9; border: 1px solid #3b4250; padding: 4px 10px; cursor: pointer; margin: 2px 0; }
+  button:hover { background: #3b4250; }
+  input { font: inherit; background: #1c1f26; color: #d8dee9; border: 1px solid #3b4250; padding: 4px; width: 100%; box-sizing: border-box; }
+  label { display: block; color: #7a8494; margin-top: 6px; }
+  pre { background: #1c1f26; border: 1px solid #2b3038; padding: 10px; max-height: 460px; overflow: auto; white-space: pre-wrap; word-break: break-word; margin: 0; }
+  img { max-width: 100%; border: 1px solid #2b3038; margin-top: 8px; }
+  .ok { color: #a3be8c; } .err { color: #bf616a; } .ev { color: #ebcb8b; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+
+<h1>PC Core v0.2 — developer test client</h1>
+<div class="sub">Loopback only. Not the product UI; this exists to verify the capability contracts.</div>
+
+<div class="cols">
+  <div class="panel">
+    <fieldset>
+      <legend>system</legend>
+      <div class="row">
+        <button onclick="rpc('system.get_info')">system.get_info</button>
+        <button onclick="rpc('system.list_processes')">system.list_processes</button>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>files</legend>
+      <label>allowed roots (click to use)</label>
+      <div class="row" id="rootbar"></div>
+      <label for="path">path (must be inside a configured allowed root)</label>
+      <input id="path" value="">
+      <label><input type="checkbox" id="hidden" style="width:auto"> include hidden</label>
+      <div class="row" style="margin-top:8px">
+        <button onclick="rpc('files.list', { path: val('path'), include_hidden: document.getElementById('hidden').checked })">files.list</button>
+        <button onclick="rpc('files.stat', { path: val('path') })">files.stat</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button onclick="probe('C:\\Windows\\System32')">probe: outside roots</button>
+        <button onclick="probe(val('path') + '\\..\\..\\..\\Windows')">probe: traversal</button>
+        <button onclick="probe('..\\relative')">probe: relative</button>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>screen</legend>
+      <label for="display">display: virtual | primary | index</label>
+      <input id="display" value="virtual">
+      <label for="maxw">max_width (blank = full size)</label>
+      <input id="maxw" value="1280">
+      <div class="row" style="margin-top:8px">
+        <button onclick="capture()">screen.capture</button>
+      </div>
+      <div id="shot"></div>
+    </fieldset>
+
+    <fieldset>
+      <legend>security state</legend>
+      <div class="row">
+        <button onclick="rpc('security.get_state')">security.get_state</button>
+        <button onclick="rpc('security.arm')">security.arm</button>
+        <button onclick="rpc('security.disarm')">security.disarm</button>
+      </div>
+      <div class="sub" style="margin:6px 0 0">
+        Connect the WebSocket below to watch security.state_changed. Re-arming while already armed
+        succeeds without an event; arming during a SECURITY_SESSION is refused.
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>protocol errors</legend>
+      <div class="row">
+        <button onclick="rpc('does.not.exist')">unknown action</button>
+        <button onclick="raw('{ not json ')">malformed json</button>
+        <button onclick="raw(JSON.stringify({ protocol_version: 99, id: 'x', type: 'request', action: 'system.get_info' }))">bad version</button>
+        <button onclick="raw(JSON.stringify({ id: 'x', type: 'request' }))">missing action</button>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>websocket / events</legend>
+      <div class="row">
+        <button onclick="wsConnect()">connect</button>
+        <button onclick="wsClose()">disconnect</button>
+        <button onclick="wsSend('system.get_info')">send system.get_info over ws</button>
+      </div>
+      <div id="wsstate" class="sub" style="margin:6px 0 0">not connected</div>
+    </fieldset>
+  </div>
+
+  <div class="panel">
+    <fieldset>
+      <legend>output</legend>
+      <div class="row"><button onclick="document.getElementById('out').textContent=''">clear</button></div>
+      <pre id="out"></pre>
+    </fieldset>
+  </div>
+</div>
+
+<script>
+// The host substitutes the per-run session token when it serves this page, so local debugging
+// needs no copy-paste. A cross-origin page cannot read this response, and the server rejects
+// requests carrying a foreign Origin or Host header.
+const TOKEN = "__PCCORE_TOKEN__";
+let seq = 0, ws = null;
+
+const val = id => document.getElementById(id).value;
+
+function log(label, payload) {
+  const out = document.getElementById('out');
+  const text = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
+  out.textContent = `[${new Date().toLocaleTimeString()}] ${label}\n${text}\n\n` + out.textContent;
+}
+
+function envelope(action, params) {
+  return { protocol_version: 1, id: 'web-' + (++seq), type: 'request', action, params: params ?? null };
+}
+
+async function raw(body) {
+  try {
+    const res = await fetch('/rpc', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-PcCore-Token': TOKEN },
+      body
+    });
+    const json = await res.json();
+    log((json.success ? 'OK   ' : 'FAIL ') + (json.action ?? '(no action)'), json);
+    return json;
+  } catch (e) {
+    log('TRANSPORT ERROR', String(e));
+  }
+}
+
+const rpc = (action, params) => raw(JSON.stringify(envelope(action, params)));
+
+async function probe(path) {
+  const json = await rpc('files.list', { path });
+  if (json && json.success) log('!! PROBE UNEXPECTEDLY ALLOWED', path);
+}
+
+async function capture() {
+  const maxw = val('maxw').trim();
+  const params = { display: val('display') || 'virtual' };
+  if (maxw) params.max_width = parseInt(maxw, 10);
+
+  const json = await rpc('screen.capture', params);
+  const shot = document.getElementById('shot');
+  shot.innerHTML = '';
+
+  if (json && json.success) {
+    const r = json.result;
+    // Log everything except the base64 blob, which would bury the console.
+    log('screen.capture meta', { ...r, data: `<${r.data.length} base64 chars>` });
+    const img = new Image();
+    img.src = `data:${r.content_type};base64,${r.data}`;
+    shot.appendChild(img);
+  }
+}
+
+function wsConnect() {
+  if (ws) return;
+  // Browsers cannot set custom headers on a WebSocket handshake, so the token travels as a
+  // subprotocol entry rather than in the URL (where it would land in logs and history).
+  ws = new WebSocket(`ws://${location.host}/ws`, ['pccore.v1', 'pccore.token.' + TOKEN]);
+  ws.onopen = () => { document.getElementById('wsstate').textContent = 'connected (' + (ws.protocol || 'no subprotocol') + ')'; };
+  ws.onclose = () => { document.getElementById('wsstate').textContent = 'not connected'; ws = null; };
+  ws.onerror = () => log('WS ERROR', 'see browser console');
+  ws.onmessage = e => {
+    const msg = JSON.parse(e.data);
+    log(msg.type === 'event' ? 'EVENT ' + msg.event : 'WS ' + (msg.success ? 'OK' : 'FAIL'), msg);
+  };
+}
+
+function wsClose() { if (ws) ws.close(); }
+
+function wsSend(action, params) {
+  if (!ws || ws.readyState !== 1) { log('WS', 'not connected'); return; }
+  ws.send(JSON.stringify(envelope(action, params)));
+}
+
+// The host injects the resolved allowed roots so this page can offer valid paths without a
+// capability that enumerates them. They are the user's own configured directories.
+const ROOTS = __PCCORE_ROOTS__;
+
+(function initRoots() {
+  const box = document.getElementById('path');
+  if (ROOTS.length === 0) {
+    box.placeholder = 'no allowed roots configured - see appsettings.json';
+    return;
+  }
+
+  box.value = ROOTS[0];
+
+  const bar = document.getElementById('rootbar');
+  for (const root of ROOTS) {
+    const b = document.createElement('button');
+    b.textContent = root;
+    b.onclick = () => { box.value = root; };
+    bar.appendChild(b);
+  }
+})();
+</script>
+</body>
+</html>

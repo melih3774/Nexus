@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Windows 10 1809 is the floor: SetProcessDpiAwarenessContext needs 1703+. -->
+    <TargetFramework>net10.0-windows10.0.17763.0</TargetFramework>
+    <RootNamespace>PcCore.Windows</RootNamespace>
+    <!-- Required by the LibraryImport-generated marshalling stubs below. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <!--
+    The only project containing P/Invoke or System.Drawing. Everything here implements an
+    interface declared in PcCore.Capabilities, so the capability layer stays platform-neutral
+    and unit-testable with fakes.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\PcCore.Capabilities\PcCore.Capabilities.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Drawing.Common" Version="10.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The test project may reach internal helpers. These are implementation details that
+      deserve their own tests (extended-prefix stripping, display parsing) without being
+      promoted to public API.
+    -->
+    <InternalsVisibleTo Include="PcCore.Tests" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>PcCore.Transport.Loopback</RootNamespace>
+  </PropertyGroup>
+
+  <!--
+    Transport only. It may serialize, authenticate, and move bytes; it must never contain
+    Windows-control logic. Note the absence of a reference to PcCore.Windows: the compiler
+    enforces that separation, not a convention.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\PcCore.Capabilities\PcCore.Capabilities.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.17763.0</TargetFramework>
+    <RootNamespace>PcCore.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <!-- xunit v3 test projects run as their own process. -->
+    <OutputType>Exe</OutputType>
+    <!-- Opt in to the Microsoft.Testing.Platform runner used by `dotnet test`. -->
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+    <!-- Use xunit v3's Microsoft.Testing.Platform entry point rather than its
+         standalone console runner, so `dotnet test` can drive it. -->
+    <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\PcCore.Capabilities\PcCore.Capabilities.csproj" />
+    <ProjectReference Include="..\..\src\PcCore.Protocol\PcCore.Protocol.csproj" />
+    <ProjectReference Include="..\..\src\PcCore.Transport.Loopback\PcCore.Transport.Loopback.csproj" />
+    <ProjectReference Include="..\..\src\PcCore.Windows\PcCore.Windows.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="4.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Needed to host the loopback transport in-process for integration tests. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.17763.0</TargetFramework>
+    <RootNamespace>PcCore.Host</RootNamespace>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>PcCore.Host</AssemblyName>
+    <UserSecretsId>pccore-host</UserSecretsId>
+  </PropertyGroup>
+
+  <!--
+    The composition root: the only project that knows every layer. No layer knows it.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\PcCore.Capabilities\PcCore.Capabilities.csproj" />
+    <ProjectReference Include="..\PcCore.Protocol\PcCore.Protocol.csproj" />
+    <ProjectReference Include="..\PcCore.Transport.Loopback\PcCore.Transport.Loopback.csproj" />
+    <ProjectReference Include="..\PcCore.Windows\PcCore.Windows.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+    <!--
+      The Web SDK includes wwwroot for publish but not for the build output directory. The host
+      reads the test page from its own base directory, so it has to be copied there too.
+    -->
+    <Content Update="wwwroot\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>PcCore.Capabilities</RootNamespace>
+  </PropertyGroup>
+
+  <!--
+    Platform-neutral by design: no System.Drawing, no P/Invoke, no Windows API.
+    Everything platform-specific is reached through an interface implemented in PcCore.Windows,
+    which is what makes this project unit-testable with fakes.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\PcCore.Protocol\PcCore.Protocol.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The test project may reach internal helpers. These are implementation details that
+      deserve their own tests (extended-prefix stripping, display parsing) without being
+      promoted to public API.
+    -->
+    <InternalsVisibleTo Include="PcCore.Tests" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,30 @@
+# Build output
+bin/
+obj/
+artifacts/
+TestResults/
+
+# IDE / tooling
+*.user
+*.suo
+.vs/
+.idea/
+*.DotSettings.user
+
+# Local developer overrides
+appsettings.Development.json
+appsettings.Local.json
+
+# --- Runtime state and secrets -------------------------------------------------------------
+# PC Core keeps all mutable state — security state, PcInstanceId, and the Primary Phone's
+# shared secret — under %LOCALAPPDATA%\Nexus, deliberately outside the repository. These
+# patterns are a second line of defence in case a state directory is ever pointed at the
+# working tree during debugging. Nothing matching them may ever be committed.
+*.token
+*.secret
+*.key
+*.pfx
+secrets.json
+state/
+nexus-state/
+pc-core-state/
