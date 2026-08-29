@@ -43,8 +43,18 @@ public sealed record BeginPairingResult
     public required DateTimeOffset ExpiresAtUtc { get; init; }
     public required string PcInstanceId { get; init; }
 
-    /// <summary>The <c>NEXUS1.…</c> pairing code. Short-lived pairing material, not a permanent credential.</summary>
+    /// <summary>The <c>NEXUS2.…</c> pairing code. Short-lived pairing material, not a permanent credential.</summary>
     public required string Payload { get; init; }
+
+    /// <summary>The legacy <c>NEXUS1.…</c> code, for the loopback development simulator only.</summary>
+    public required string PayloadV1 { get; init; }
+
+    /// <summary>
+    /// The address the code points at, or <see langword="null"/> when no Tailscale address is
+    /// bound. A phone cannot use a code without one, so the owner is told here rather than
+    /// discovering it on the phone.
+    /// </summary>
+    public string? RemoteEndpoint { get; init; }
 }
 
 public sealed record CancelPairingResult
@@ -106,6 +116,8 @@ public sealed class BeginPairingAction : CapabilityAction<BeginPairingParameters
             ExpiresAtUtc = session.ExpiresAtUtc,
             PcInstanceId = session.PcInstanceId,
             Payload = session.Payload,
+            PayloadV1 = session.PayloadV1,
+            RemoteEndpoint = session.RemoteEndpoint,
         });
     }
 }

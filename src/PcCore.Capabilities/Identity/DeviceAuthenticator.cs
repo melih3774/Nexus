@@ -63,10 +63,23 @@ public interface IDeviceAuthenticator
     AuthenticatedDevice Verify(string challengeId, string deviceId, string proof);
 
     /// <summary>
-    /// The exact bytes that must be signed. Exposed so the development simulator and the future
-    /// Android client sign the same message the PC verifies, rather than reimplementing it.
+    /// The exact bytes that must be signed. Exposed so the development simulator and the Android
+    /// client sign the same message the PC verifies, rather than reimplementing it.
     /// </summary>
     byte[] BuildSignedMessage(string deviceId, ReadOnlySpan<byte> challenge);
+
+    /// <summary>
+    /// Takes a challenge out of circulation and returns its bytes, without checking any device
+    /// proof.
+    /// <para>
+    /// This exists for one caller: remote pairing enrollment, where the peer has no permanent
+    /// credential yet and proves possession of the short-lived pairing secret instead. The nonce is
+    /// still the PC's own, still single-use, and still expiring — enrollment reuses this machinery
+    /// rather than inventing a second replay defence. It grants nothing on its own: a caller
+    /// holding a challenge has proved nothing at all until a proof is checked against it.
+    /// </para>
+    /// </summary>
+    bool TryConsumeChallenge(string challengeId, out byte[] challenge);
 }
 
 public sealed class DeviceAuthenticator : IDeviceAuthenticator
@@ -164,6 +177,25 @@ public sealed class DeviceAuthenticator : IDeviceAuthenticator
 
         _logger.LogInformation("Device {DeviceId} authenticated.", deviceId);
         return new AuthenticatedDevice(deviceId, DateTimeOffset.UtcNow);
+    }
+
+    public bool TryConsumeChallenge(string challengeId, out byte[] challenge)
+    {
+        // Removed, not read: exactly like Verify, so a challenge spent on an enrollment attempt
+        // cannot then be spent on an authentication attempt or replayed by a listener.
+        if (challengeId is not null && _challenges.TryRemove(challengeId, out var pending))
+        {
+            if (DateTimeOffset.UtcNow < pending.ExpiresAtUtc)
+            {
+                challenge = pending.Challenge;
+                return true;
+            }
+
+            _logger.LogWarning("Challenge consumed after expiry.");
+        }
+
+        challenge = [];
+        return false;
     }
 
     public byte[] BuildSignedMessage(string deviceId, ReadOnlySpan<byte> challenge)

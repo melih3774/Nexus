@@ -233,7 +233,9 @@ async function pairBegin(replaceExisting) {
   const json = await rpc('pairing.begin', { replace_existing: replaceExisting });
   if (!json || !json.success) { refreshPairing(); return; }
 
-  document.getElementById('paste').value = json.result.payload;
+  // The simulator pairs over loopback and needs no endpoint, so it gets the v1 code; the QR and
+  // the copyable text below are the v2 code a phone scans.
+  document.getElementById('paste').value = json.result.payload_v1;
   renderPairing(json.result);
 }
 
@@ -289,6 +291,22 @@ function renderPairing(session) {
   expiry.className = 'sub';
   expiry.textContent = 'session ' + session.session_id + ' expires ' + new Date(session.expires_at_utc).toLocaleTimeString();
   box.appendChild(expiry);
+
+  // The code is a NEXUS2 payload: it carries the address the phone will connect back to. When no
+  // Tailscale address is bound there is nothing to carry, and a phone will refuse the code — so
+  // say that here rather than letting it be discovered on the phone.
+  const endpoint = document.createElement('div');
+  endpoint.className = 'sub';
+
+  if (session.remote_endpoint) {
+    endpoint.textContent = 'phone will connect to ws://' + session.remote_endpoint + '/nexus';
+  } else {
+    endpoint.textContent = 'NO TAILSCALE ADDRESS — a phone cannot use this code. '
+      + 'Connect Tailscale on this PC, then start pairing again.';
+    endpoint.style.color = '#d08770';
+  }
+
+  box.appendChild(endpoint);
 }
 
 function refreshPairing() { document.getElementById('pairbox').innerHTML = ''; }

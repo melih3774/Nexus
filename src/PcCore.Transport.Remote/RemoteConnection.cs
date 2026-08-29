@@ -16,8 +16,20 @@ public static class RemoteProtocol
     /// <summary>Server -> client, immediately on connect. Payload: challenge_id, challenge, expires_at_utc.</summary>
     public const string ChallengeEvent = "auth.challenge";
 
-    /// <summary>Client -> server. Params: device_id, proof. The only action accepted before authentication.</summary>
+    /// <summary>Client -> server. Params: challenge_id, device_id, proof.</summary>
     public const string AuthenticateAction = "auth.authenticate";
+
+    /// <summary>
+    /// Client -> server. Params: challenge_id, session_id, proof, display_name.
+    /// <para>
+    /// The remote pairing-enrollment path, and the only other thing accepted before authentication.
+    /// It exists solely on this transport — which binds to nothing but a Tailscale address — and is
+    /// authorised by the one-time pairing secret the owner generated locally, never by a device
+    /// identity. It does not reach <c>CapabilityDispatcher</c> and does not make the connection a
+    /// <c>DEVICE</c> session: the phone receives its credential and reconnects like any other time.
+    /// </para>
+    /// </summary>
+    public const string EnrollAction = "pairing.enroll";
 
     /// <summary>Server -> client, after a successful handshake.</summary>
     public const string AuthenticatedEvent = "auth.authenticated";
@@ -51,7 +63,10 @@ internal sealed class RemoteConnection : IAsyncDisposable
     private readonly WebSocket _socket;
     private readonly ICapabilityDispatcher _dispatcher;
     private readonly IDeviceAuthenticator _authenticator;
+    private readonly IRemoteEnrollmentService _enrollment;
     private readonly IPrimaryPhoneRegistry _registry;
+    private readonly IPcIdentityProvider _identity;
+    private readonly IReadOnlyList<string> _allowedRoots;
     private readonly RemoteSessionRegistry _sessions;
     private readonly RemoteTransportOptions _options;
     private readonly ILogger _logger;
@@ -69,7 +84,10 @@ internal sealed class RemoteConnection : IAsyncDisposable
         string connectionId,
         ICapabilityDispatcher dispatcher,
         IDeviceAuthenticator authenticator,
+        IRemoteEnrollmentService enrollment,
         IPrimaryPhoneRegistry registry,
+        IPcIdentityProvider identity,
+        IReadOnlyList<string> allowedRoots,
         RemoteSessionRegistry sessions,
         RemoteTransportOptions options,
         ILogger logger)
@@ -78,7 +96,10 @@ internal sealed class RemoteConnection : IAsyncDisposable
         _connectionId = connectionId;
         _dispatcher = dispatcher;
         _authenticator = authenticator;
+        _enrollment = enrollment;
         _registry = registry;
+        _identity = identity;
+        _allowedRoots = allowedRoots;
         _sessions = sessions;
         _options = options;
         _logger = logger;
@@ -160,6 +181,16 @@ internal sealed class RemoteConnection : IAsyncDisposable
 
         var request = decoded.Request;
 
+        if (string.Equals(request.Action, RemoteProtocol.EnrollAction, StringComparison.Ordinal))
+        {
+            // Enrollment ends the connection either way. It is a bootstrap, not a session: the
+            // phone leaves holding a credential, then connects again and authenticates with it like
+            // every subsequent time. Returning false here means the request pump is never entered,
+            // so an enrolled-but-unauthenticated socket cannot dispatch anything.
+            await EnrollAsync(request, cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+
         if (!string.Equals(request.Action, RemoteProtocol.AuthenticateAction, StringComparison.Ordinal))
         {
             // Nothing but the handshake is reachable before authentication — the dispatcher is
@@ -231,6 +262,18 @@ internal sealed class RemoteConnection : IAsyncDisposable
                 DeviceId = _caller.DeviceId,
                 SessionId = _session.SessionId,
                 AuthenticatedAtUtc = device.AuthenticatedAtUtc,
+
+                // Confirms which installation answered, so a client that stored a credential for
+                // one PC notices immediately if it reached another.
+                PcInstanceId = _identity.PcInstanceId,
+
+                // Session bootstrap, not a capability: the phone needs somewhere to start browsing,
+                // and the roots are the owner's own configured directories, which every files.list
+                // response already contains. Handing them over once at session setup mirrors how
+                // the local test page receives them, and avoids adding a capability whose only job
+                // would be to enumerate the boundary. It widens nothing — every path sent back is
+                // still authorised from scratch.
+                AllowedRoots = _allowedRoots,
             })),
             cancellationToken).ConfigureAwait(false);
 
@@ -246,6 +289,66 @@ internal sealed class RemoteConnection : IAsyncDisposable
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Remote pairing enrollment: the one thing an unpaired phone may do here.
+    /// <para>
+    /// The response carries the permanent shared secret. That is the single moment it is ever
+    /// transmitted, it happens inside the Tailscale tunnel, and it is never logged — here or
+    /// anywhere else.
+    /// </para>
+    /// </summary>
+    private async Task EnrollAsync(RequestEnvelope request, CancellationToken cancellationToken)
+    {
+        if (!ProtocolCodec.TryBindParameters(request.Params, typeof(EnrollParameters), out var bound, out _)
+            || bound is not EnrollParameters parameters)
+        {
+            await RefuseEnrollmentAsync(request, ErrorCodes.InvalidParameters, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        PairingCompletion completion;
+        try
+        {
+            completion = _enrollment.Enroll(
+                parameters.ChallengeId ?? string.Empty,
+                parameters.SessionId ?? string.Empty,
+                parameters.Proof ?? string.Empty,
+                parameters.DisplayName);
+        }
+        catch (CapabilityException ex)
+        {
+            await RefuseEnrollmentAsync(request, ex.Code, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        await SendAsync(
+            ProtocolCodec.Encode(ResponseEnvelope.Ok(request.Id, request.Action, new
+            {
+                completion.PcInstanceId,
+                completion.DeviceId,
+                completion.SharedSecret,
+                completion.PairedAtUtc,
+            })),
+            cancellationToken).ConfigureAwait(false);
+
+        _logger.LogInformation(
+            "Remote connection {ConnectionId} enrolled device {DeviceId}; closing so it can authenticate.",
+            _connectionId,
+            completion.DeviceId);
+
+        await CloseAsync(WebSocketCloseStatus.NormalClosure, "enrolled", CancellationToken.None).ConfigureAwait(false);
+    }
+
+    private async Task RefuseEnrollmentAsync(RequestEnvelope request, string code, CancellationToken cancellationToken)
+    {
+        await SendAsync(
+            ProtocolCodec.Encode(ResponseEnvelope.Fail(request.Id, request.Action, code, "Pairing failed.")),
+            cancellationToken).ConfigureAwait(false);
+
+        await CloseAsync(WebSocketCloseStatus.PolicyViolation, "pairing failed", CancellationToken.None)
+            .ConfigureAwait(false);
     }
 
     /// <summary>Post-authentication request loop.</summary>
@@ -310,8 +413,12 @@ internal sealed class RemoteConnection : IAsyncDisposable
             }
 
             // Re-authenticating on an established session is meaningless and would burn a
-            // challenge; refuse it rather than letting it reach the dispatcher as an unknown action.
-            if (string.Equals(decoded.Request.Action, RemoteProtocol.AuthenticateAction, StringComparison.Ordinal))
+            // challenge. Enrolling on one is worse: a phone that already holds a credential must
+            // never be able to mint another, or to re-enroll itself as the primary phone from the
+            // tailnet. Neither is a capability, so neither can reach the dispatcher — but refusing
+            // them explicitly says so rather than letting them read as an unknown action.
+            if (string.Equals(decoded.Request.Action, RemoteProtocol.AuthenticateAction, StringComparison.Ordinal)
+                || string.Equals(decoded.Request.Action, RemoteProtocol.EnrollAction, StringComparison.Ordinal))
             {
                 await SendAsync(
                     ProtocolCodec.Encode(ResponseEnvelope.Fail(
@@ -478,5 +585,18 @@ internal sealed class RemoteConnection : IAsyncDisposable
         public string? ChallengeId { get; init; }
         public string? DeviceId { get; init; }
         public string? Proof { get; init; }
+    }
+
+    /// <summary>
+    /// Enrollment parameters. Note what is absent: there is no device id and no actor type here,
+    /// because the caller does not get to name itself. The device id is minted by the PC when the
+    /// pairing succeeds.
+    /// </summary>
+    private sealed record EnrollParameters
+    {
+        public string? ChallengeId { get; init; }
+        public string? SessionId { get; init; }
+        public string? Proof { get; init; }
+        public string? DisplayName { get; init; }
     }
 }

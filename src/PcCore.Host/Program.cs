@@ -35,9 +35,16 @@ public static class Program
         }
 
         // The development phone simulator is a client, not a server: it never opens a listener.
-        if (args.Contains("--simulate-phone") || args.Contains("--simulate-phone-pair"))
+        if (args.Contains("--simulate-phone")
+            || args.Contains("--simulate-phone-pair")
+            || args.Contains("--simulate-phone-enroll"))
         {
             using var simulatorLogs = LoggerFactory.Create(b => b.AddSimpleConsole(c => c.SingleLine = true));
+
+            if (args.Contains("--simulate-phone-enroll"))
+            {
+                return await PhoneSimulator.EnrollAsync(args, simulatorLogs).ConfigureAwait(false);
+            }
 
             return args.Contains("--simulate-phone-pair")
                 ? await PhoneSimulator.PairAsync(args, simulatorLogs).ConfigureAwait(false)
@@ -188,6 +195,11 @@ public static class Program
         services.AddSingleton<IPairingService, PairingService>();
         services.AddSingleton<IDeviceAuthenticator, DeviceAuthenticator>();
 
+        // Remote pairing enrollment: not a capability, and deliberately not registered as one. The
+        // remote transport is its only caller (see RemoteConnection), which is what confines it to
+        // the Tailscale-bound listener.
+        services.AddSingleton<IRemoteEnrollmentService, RemoteEnrollmentService>();
+
         // --- Security boundary ----------------------------------------------------------------
         services.AddSingleton(screenOptions);
         services.AddSingleton(pairingOptions);
@@ -241,6 +253,11 @@ public static class Program
         services.AddSingleton<RemoteTransport>();
         services.AddSingleton<RemoteTransportService>();
         services.AddHostedService(p => p.GetRequiredService<RemoteTransportService>());
+
+        // Pairing codes describe where the phone should connect back to. The answer comes from the
+        // transport's live bound endpoint, so a code can never advertise an address that is not
+        // actually being served.
+        services.AddSingleton<IDeviceEndpointProvider, RemoteTransportEndpointProvider>();
     }
 
     private static T Bind<T>(IConfiguration configuration, string section) where T : new()

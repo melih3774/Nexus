@@ -14,6 +14,19 @@ public enum FileEntryType
 public sealed record FileEntry
 {
     public required string Name { get; init; }
+
+    /// <summary>
+    /// The entry's full path, as PC Core resolved it.
+    /// <para>
+    /// Added in v0.5 so a client never has to build a path itself. A phone browsing into a
+    /// subdirectory previously had to join the listing's path with this name and guess at the
+    /// separator — reconstruction that a client has no business doing when the server already knows
+    /// the answer. Every path a caller sends back is still re-authorised from scratch; this removes
+    /// a class of client bug, not a boundary check.
+    /// </para>
+    /// </summary>
+    public required string Path { get; init; }
+
     public required FileEntryType Type { get; init; }
 
     /// <summary>Size in bytes for files; <see langword="null"/> for directories.</summary>
@@ -71,6 +84,7 @@ internal static class FileMetadata
         return new FileEntry
         {
             Name = info.Name,
+            Path = info.FullName,
             Type = isDirectory ? FileEntryType.Directory : FileEntryType.File,
             SizeBytes = isDirectory ? null : SafeLength(info),
             ModifiedUtc = SafeTime(() => info.LastWriteTimeUtc),

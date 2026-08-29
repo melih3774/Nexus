@@ -1,4 +1,4 @@
-# PC Core v0.4
+# Nexus v0.5
 
 A user-level Windows process that exposes a **small, explicit set of capabilities** over a structured request/response/event protocol — locally over loopback, and remotely to one paired phone over Tailscale.
 
@@ -8,8 +8,9 @@ A user-level Windows process that exposes a **small, explicit set of capabilitie
 - **v0.2 — Security State Foundation:** one authoritative owner-presence state, three `security.*` capabilities, a `security.state_changed` event, typed caller identity.
 - **v0.3 — Personal Device Pairing, Persistence, and Startup:** security state persists across restarts, a persistent PC identity, pairing with exactly one Primary Phone over a 256-bit shared secret, HMAC-SHA-256 authentication, and per-user Windows auto-start.
 - **v0.4 — Authenticated Tailscale Remote Transport:** the Primary Phone can connect over your Tailscale network, authenticate with that credential, and drive a restricted capability set. The listener binds **only** to a detected Tailscale address, never LAN or wildcard.
+- **v0.5 — First Native Android Client:** the phone app. Pair by scanning a QR, store the credential in the Android Keystore, connect over Tailscale, and control the PC — screen, files, system, security — with live state updates.
 
-Still deliberately absent: no Android app, no AI, no activity detection, no recording, no internet exposure. See [SPEC.md](SPEC.md) (§26–37 cover v0.4) and [PLAN.md](PLAN.md).
+Still deliberately absent: no AI, no live screen streaming, no remote input, no activity detection, no recording, no internet exposure. See [SPEC.md](SPEC.md) (§38–48 cover v0.5) and [PLAN.md](PLAN.md).
 
 > **The rule:** external controllers interact with the computer *through capabilities*, never through arbitrary Windows functionality. If PC Core does not expose it, a caller cannot do it.
 
@@ -55,6 +56,19 @@ dotnet build PcCore.slnx -c Release
 ```bash
 dotnet run --project tests/PcCore.Tests -c Release
 ```
+
+For the Android app:
+
+```bash
+cd android/Nexus && ./gradlew :app:testDebugUnitTest
+```
+
+```bash
+cd android/Nexus && ./gradlew :app:connectedDebugAndroidTest
+```
+
+The second needs a device or emulator attached — it covers the Android Keystore, which a JVM stub
+could not meaningfully exercise.
 
 > **Note on `dotnet test`.** It does not work with this toolchain combination: the Microsoft.Testing.Platform build bundled with `xunit.v3` 4.0.0 does not expose the `--server` mode that the .NET 10.0.400 SDK's `dotnet test` uses to drive it, so the run reports "Zero tests ran". `dotnet run --project tests/PcCore.Tests` is a first-class xunit v3 execution path and runs the whole suite. `global.json` already carries the `Microsoft.Testing.Platform` opt-in, so `dotnet test` should start working once the packages catch up.
 
@@ -212,7 +226,8 @@ The phone is a **controller for the PC, not the authority that decides which pho
 
 ### Trying it with the development simulator
 
-The Android app does not exist yet. A protocol-level simulator stands in for it:
+The Android app is the real client now (see below). The protocol-level simulator remains for
+debugging the transport without a phone:
 
 ```bash
 dotnet run --project src/PcCore.Host -- --simulate-phone-pair NEXUS1....
@@ -222,7 +237,103 @@ dotnet run --project src/PcCore.Host -- --simulate-phone-pair NEXUS1....
 dotnet run --project src/PcCore.Host -- --simulate-phone ws://100.x.x.x:47812/nexus
 ```
 
-The first pairs it (copy the code from the local test page) and stores the phone's half of the credential DPAPI-protected in `dev-phone-simulator.json`. The second runs the full conversation — authenticate, confirm `DEVICE`, call the allowed capabilities, arm, receive `security.state_changed`, disarm, confirm a device-management call is denied, disconnect, reconnect.
+There is also `--simulate-phone-enroll NEXUS2....`, which pairs the way a real phone does — over the
+Tailscale transport, proving possession of the pairing secret rather than sending it — while
+`--simulate-phone-pair` pairs over loopback with the v1 code the local page still offers. Either
+stores the phone's half of the credential DPAPI-protected in `dev-phone-simulator.json`. The last
+runs the full conversation — authenticate, confirm `DEVICE`, call the allowed capabilities, arm, receive `security.state_changed`, disarm, confirm a device-management call is denied, disconnect, reconnect.
+
+## The Android app (v0.5)
+
+The phone app lives in `android/Nexus/` and is built with the Android Studio toolchain already on
+this machine — Gradle 9.4.1, AGP 9.2.1, Kotlin 2.2.10, JDK 21. It targets **Android 12 and later**.
+
+```bash
+cd android/Nexus && ./gradlew :app:assembleDebug
+```
+
+The APK lands at `android/Nexus/app/build/outputs/apk/debug/app-debug.apk`. Install it with
+`adb install -r <path>`, or copy it to the phone. It is not published anywhere: no Play Store, no
+app distribution service, no CI. This is one app for one phone.
+
+### Pairing a real phone
+
+1. Install Tailscale on **both** the PC and the phone and sign both into your tailnet. Nexus never
+   touches your Tailscale account and cannot set this up for you.
+2. Start PC Core. It logs the Tailscale address it bound, or explains why it did not.
+3. Open `http://127.0.0.1:47811/` on the PC and click **pairing.begin**. A QR appears, along with the
+   same text to copy. It expires in five minutes and works exactly once.
+4. Open Nexus on the phone and tap **Scan QR** — or **Paste pairing code** if the camera is
+   inconvenient. The camera permission is asked for at that moment and never at launch.
+5. The phone proves it holds the pairing secret, receives its permanent credential, and reconnects
+   as the Primary Phone.
+
+If the PC has no Tailscale address when you start pairing, the page says so and the code carries no
+address. The phone will say the same thing rather than failing vaguely.
+
+### What the app does
+
+| Screen | Uses | Notes |
+|---|---|---|
+| Home | `system.get_info` | Connection state and which machine answered |
+| Screen | `screen.capture` | One screenshot, fitted to the phone. Manual refresh — not streaming |
+| Files | `files.list`, `files.stat` | Read-only, confined to PC Core's allowed roots. No download, write, rename or delete |
+| System | `system.get_info`, `system.list_processes` | Filterable process list. Nothing can be started or killed |
+| Security | `security.get_state`, `security.arm`, `security.disarm` | Live: `security.state_changed` updates the screen without a refresh |
+
+### Where the credential lives
+
+An AES-256-GCM key generated in the Android Keystore seals the shared secret into app-private
+storage. The key cannot be exported, so the file is useless on any other device. The secret never
+reaches the UI, never appears in a log, and is excluded from cloud backup and device transfer. There
+is no analytics SDK and no crash reporter.
+
+**Forget this PC** on the home screen deletes the phone's copy. The PC keeps its own record until you
+unpair there — the phone is a controller, not the authority over which phone is trusted.
+
+### Why plain WebSocket is acceptable here
+
+The connection is `ws://100.x.x.x:47812/nexus` — no TLS — because it runs inside WireGuard, which
+Tailscale has already authenticated and encrypted, and because PC Core separately proves the phone
+holds the shared secret. That argument only holds while the traffic genuinely stays inside the
+tunnel, so the app enforces it:
+
+```
+100.64.0.0/10  → the only addresses Nexus will dial
+192.168.x.x    → refused
+a host name    → refused, and never resolved
+wss:// or another path → refused
+```
+
+Every endpoint — scanned, pasted, or restored from storage — goes through the same check. A pairing
+code that names `example.com` is rejected before a socket is opened.
+
+### Connection behaviour
+
+Nexus connects while the app is open and disconnects when it leaves the foreground. There is no
+background service: nothing in v0.5 needs to arrive while the app is closed, and security
+notifications will need a push channel designed for the purpose rather than a socket held open all
+day. Transient failures retry with a bounded backoff, from two seconds to thirty. A rejected
+credential does not retry at all — it will not become valid by trying again.
+
+When it cannot connect, it says which of these it is:
+
+- **No network** — the phone has no connection at all.
+- **Tailscale not connected** — the phone has no tailnet address of its own.
+- **PC unreachable** — the phone is on the tailnet and the PC did not answer.
+- **Authentication failed** — the PC rejected the credential; pair again.
+
+## Protocol vectors
+
+`shared/protocol/protocol-vectors.json` is generated from PC Core's own implementations and asserted
+against by both sides, so the C# and Kotlin halves cannot drift apart quietly. Regenerate it
+deliberately:
+
+```bash
+PCCORE_WRITE_VECTORS=1 dotnet run --project tests/PcCore.Tests -c Release --filter-class "PcCore.Tests.Protocol.ProtocolVectorTests"
+```
+
+Then run the Android tests and expect them to fail until they agree.
 
 ## Security boundary in one paragraph
 
@@ -265,7 +376,11 @@ src/
   PcCore.Transport.Remote/    Tailscale-bound WebSocket, device authentication, sessions
   PcCore.Host/                composition root, config, logging, device endpoints, QR, test page
 tests/
-  PcCore.Tests/               340 tests
+  PcCore.Tests/               357 tests
+android/
+  Nexus/                      the Android app: protocol/, data/, net/, ui/ (55 unit + 20 device tests)
+shared/
+  protocol/                   cross-language test vectors, generated by the PC test suite
 ```
 
 `PcCore.Capabilities` has no reference to `PcCore.Windows`, and `PcCore.Transport.Loopback` has no reference to it either. Those are compiler-enforced boundaries, not conventions: a capability cannot tell how a caller arrived, and a transport cannot control Windows.

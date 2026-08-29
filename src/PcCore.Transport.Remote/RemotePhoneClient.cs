@@ -39,6 +39,13 @@ public sealed class RemotePhoneClient : IAsyncDisposable
         _socket.Options.AddSubProtocol(RemoteProtocol.Subprotocol);
     }
 
+    /// <summary>What the PC returns once enrollment succeeds. The secret is permanent; guard it.</summary>
+    public sealed record Enrollment(
+        string PcInstanceId,
+        string DeviceId,
+        string SharedSecret,
+        DateTimeOffset PairedAtUtc);
+
     /// <summary>Set after a successful handshake.</summary>
     public string? PcInstanceId { get; private set; }
 
@@ -118,6 +125,125 @@ public sealed class RemotePhoneClient : IAsyncDisposable
         challenge.CopyTo(message.AsSpan(prefix.Length));
 
         return Base64Url.EncodeToString(HMACSHA256.HashData(_sharedSecret, message));
+    }
+
+    /// <summary>
+    /// Completes remote pairing enrollment on a fresh connection and returns the permanent
+    /// credential.
+    /// <para>
+    /// Static, and it opens its own socket, because at this point there is no device id and no
+    /// permanent secret — the very things an instance of this class is constructed from. That is
+    /// the bootstrap this path exists to resolve.
+    /// </para>
+    /// <para>
+    /// The pairing secret is not transmitted: it keys an HMAC over the PC's own single-use
+    /// challenge, bound to this installation and this pairing session.
+    /// </para>
+    /// </summary>
+    public static async Task<Enrollment> EnrollAsync(
+        Uri uri,
+        string pcInstanceId,
+        string sessionId,
+        string pairingSecret,
+        string? displayName,
+        CancellationToken cancellationToken)
+    {
+        using var socket = new ClientWebSocket();
+        socket.Options.AddSubProtocol(RemoteProtocol.Subprotocol);
+
+        await socket.ConnectAsync(uri, cancellationToken).ConfigureAwait(false);
+
+        var challengeMessage = await ReceiveAsync(socket, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("connection closed before a challenge arrived");
+
+        using var challengeDocument = JsonDocument.Parse(challengeMessage);
+        var challengeRoot = challengeDocument.RootElement;
+
+        if (challengeRoot.GetProperty("event").GetString() != RemoteProtocol.ChallengeEvent)
+        {
+            throw new InvalidOperationException($"expected {RemoteProtocol.ChallengeEvent}");
+        }
+
+        var payload = challengeRoot.GetProperty("payload");
+        var challengeId = payload.GetProperty("challenge_id").GetString()!;
+        var challenge = payload.GetProperty("challenge").GetString()!;
+
+        var envelope = JsonSerializer.Serialize(
+            new
+            {
+                protocol_version = ProtocolConstants.CurrentVersion,
+                id = "enroll-1",
+                type = MessageTypes.Request,
+                action = RemoteProtocol.EnrollAction,
+                @params = new
+                {
+                    challenge_id = challengeId,
+                    session_id = sessionId,
+                    proof = SignEnrollment(pcInstanceId, sessionId, pairingSecret, challenge),
+                    display_name = displayName,
+                },
+            },
+            ProtocolCodec.Options);
+
+        await socket.SendAsync(
+            Encoding.UTF8.GetBytes(envelope),
+            WebSocketMessageType.Text,
+            endOfMessage: true,
+            cancellationToken).ConfigureAwait(false);
+
+        var reply = await ReceiveAsync(socket, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("connection closed before an enrollment reply arrived");
+
+        using var replyDocument = JsonDocument.Parse(reply);
+        var replyRoot = replyDocument.RootElement;
+
+        if (!replyRoot.GetProperty("success").GetBoolean())
+        {
+            var code = replyRoot.GetProperty("error").GetProperty("code").GetString();
+            throw new InvalidOperationException($"enrollment refused: {code}");
+        }
+
+        var result = replyRoot.GetProperty("result");
+
+        try
+        {
+            if (socket.State is WebSocketState.Open)
+            {
+                await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "enrolled", cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex) when (ex is WebSocketException or ObjectDisposedException or OperationCanceledException)
+        {
+            // The PC closes from its side as soon as it has answered; either order is fine.
+        }
+
+        return new Enrollment(
+            result.GetProperty("pc_instance_id").GetString()!,
+            result.GetProperty("device_id").GetString()!,
+            result.GetProperty("shared_secret").GetString()!,
+            result.GetProperty("paired_at_utc").GetDateTimeOffset());
+    }
+
+    /// <summary>
+    /// Mirrors <c>RemoteEnrollmentService.BuildEnrollmentMessage</c>. The key is the UTF-8 bytes of
+    /// the pairing secret exactly as it appears in the pairing code — not its decoded form — because
+    /// that is what the PC stored when it created the session.
+    /// </summary>
+    public static string SignEnrollment(
+        string pcInstanceId,
+        string sessionId,
+        string pairingSecret,
+        string challengeBase64Url)
+    {
+        var prefix = Encoding.UTF8.GetBytes($"nexus-pair-v1\0{pcInstanceId}\0{sessionId}\0");
+        var challenge = Base64Url.DecodeFromChars(challengeBase64Url.AsSpan());
+
+        var message = new byte[prefix.Length + challenge.Length];
+        prefix.CopyTo(message, 0);
+        challenge.CopyTo(message.AsSpan(prefix.Length));
+
+        return Base64Url.EncodeToString(HMACSHA256.HashData(Encoding.UTF8.GetBytes(pairingSecret), message));
     }
 
     /// <summary>Sends a request and waits for the response with the matching id, buffering events.</summary>
@@ -226,7 +352,10 @@ public sealed class RemotePhoneClient : IAsyncDisposable
         return envelope;
     }
 
-    private async Task<string?> ReceiveAsync(CancellationToken cancellationToken)
+    private Task<string?> ReceiveAsync(CancellationToken cancellationToken) =>
+        ReceiveAsync(_socket, cancellationToken);
+
+    private static async Task<string?> ReceiveAsync(WebSocket socket, CancellationToken cancellationToken)
     {
         var buffer = new byte[16 * 1024];
         using var message = new MemoryStream();
@@ -236,7 +365,7 @@ public sealed class RemotePhoneClient : IAsyncDisposable
             WebSocketReceiveResult result;
             try
             {
-                result = await _socket.ReceiveAsync(buffer, cancellationToken).ConfigureAwait(false);
+                result = await socket.ReceiveAsync(buffer, cancellationToken).ConfigureAwait(false);
             }
             catch (WebSocketException)
             {

@@ -213,3 +213,17 @@ public sealed class PassThroughSecretProtector : ISecretProtector
 
     public byte[]? Unprotect(byte[] ciphertext) => (byte[])ciphertext.Clone();
 }
+
+/// <summary>
+/// A <see cref="IDeviceEndpointProvider"/> whose answer the test chooses, including "none".
+/// <para>
+/// The null case is the important one: it is what a real machine reports when Tailscale is not
+/// running, and pairing codes must stay honest about that rather than inventing an address.
+/// </para>
+/// </summary>
+public sealed class FixedDeviceEndpoint : IDeviceEndpointProvider
+{
+    public FixedDeviceEndpoint(DeviceEndpoint? endpoint = null) => Current = endpoint;
+
+    public DeviceEndpoint? Current { get; }
+}

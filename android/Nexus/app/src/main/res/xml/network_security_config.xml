@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Cleartext is permitted because the Nexus remote transport speaks plain WebSocket *inside* a
+  WireGuard tunnel (see SPEC.md 28): the bytes are already encrypted and mutually authenticated by
+  Tailscale before they reach the network, and PC Core independently proves the peer holds the
+  Primary Phone secret before accepting a single command. Adding TLS on top would mean certificate
+  generation, distribution, renewal and pinning inside this app for a second encryption layer
+  within the first.
+
+  Android's network security configuration cannot express a CIDR range, so this cannot be narrowed
+  to 100.64.0.0/10 declaratively. The real control is therefore in the application: every endpoint
+  — scanned, pasted, or restored from storage — must pass NexusEndpoint.parse, which accepts only
+  ws:// on an address inside the Tailscale CGNAT range with the Nexus path. A pairing payload that
+  names example.com, a LAN address, or a public IP is rejected before a socket is ever opened.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

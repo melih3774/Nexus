@@ -80,14 +80,84 @@ public static class PhoneSimulator
             Base64Url.EncodeToString(secretBytes)).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Completes remote pairing enrollment the way the Android app does: over the Tailscale
+    /// transport, proving possession of the pairing secret rather than sending it.
+    /// <para>
+    /// This is the counterpart of <see cref="PairAsync"/>, which pairs over loopback. Both exist
+    /// because they exercise genuinely different code: loopback pairing is the owner's local flow,
+    /// this is the bootstrap a physical phone actually uses.
+    /// </para>
+    /// </summary>
+    public static async Task<int> EnrollAsync(string[] args, ILoggerFactory loggerFactory)
+    {
+        var raw = args.SkipWhile(a => a != "--simulate-phone-enroll").Skip(1).FirstOrDefault();
+
+        if (!PairingPayloadV2.TryDecode(raw, out var payload))
+        {
+            Console.WriteLine("  Usage: PcCore.Host.exe --simulate-phone-enroll NEXUS2....");
+            Console.WriteLine("  Start pairing on the local test page and copy the code it shows.");
+            return 2;
+        }
+
+        if (!payload!.HasEndpoint)
+        {
+            // Exactly what the phone reports, for exactly the same reason.
+            Console.WriteLine("  This pairing code carries no endpoint: PC Core has no Tailscale address bound.");
+            Console.WriteLine("  Start Tailscale on this PC, then create a new pairing code.");
+            return 1;
+        }
+
+        var uri = new Uri($"ws://{payload.Host}:{payload.Port}{RemoteTransport.Path}");
+        Console.WriteLine();
+        Console.WriteLine($"  Enrolling with {uri}");
+
+        RemotePhoneClient.Enrollment enrollment;
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+            enrollment = await RemotePhoneClient.EnrollAsync(
+                uri,
+                payload.PcInstanceId,
+                payload.SessionId,
+                payload.PairingSecret,
+                "Dev Simulator",
+                cts.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            Console.WriteLine($"  Enrollment failed: {ex.GetType().Name}. {ex.Message}");
+            return 1;
+        }
+
+        Store(enrollment.PcInstanceId, enrollment.DeviceId, enrollment.SharedSecret, loggerFactory);
+
+        Console.WriteLine($"  Enrolled as device {enrollment.DeviceId}. Credential stored (protected).");
+        Console.WriteLine($"  Now run: PcCore.Host.exe --simulate-phone {uri}");
+        return 0;
+    }
+
     /// <summary>Completes pairing from a payload the owner copied out of the local test page.</summary>
     public static async Task<int> PairAsync(string[] args, ILoggerFactory loggerFactory)
     {
-        var payload = args.SkipWhile(a => a != "--simulate-phone-pair").Skip(1).FirstOrDefault();
+        var raw = args.SkipWhile(a => a != "--simulate-phone-pair").Skip(1).FirstOrDefault();
 
-        if (!PairingPayload.TryDecode(payload, out _, out var pcInstanceId, out var sessionId, out var pairingSecret))
+        // Either code form works here: the owner copies whichever one the page shows, and this
+        // client pairs over loopback regardless of what endpoint the v2 code names.
+        string pcInstanceId, sessionId, pairingSecret;
+
+        if (PairingPayloadV2.TryDecode(raw, out var v2))
         {
-            Console.WriteLine("  Usage: PcCore.Host.exe --simulate-phone-pair NEXUS1....");
+            (pcInstanceId, sessionId, pairingSecret) = (v2!.PcInstanceId, v2.SessionId, v2.PairingSecret);
+        }
+        else if (PairingPayload.TryDecode(raw, out _, out var pc, out var sid, out var psk))
+        {
+            (pcInstanceId, sessionId, pairingSecret) = (pc, sid, psk);
+        }
+        else
+        {
+            Console.WriteLine("  Usage: PcCore.Host.exe --simulate-phone-pair NEXUS2....");
             return 2;
         }
 
@@ -116,8 +186,25 @@ public static class PhoneSimulator
 
         var result = json.RootElement.GetProperty("result");
         var deviceId = result.GetProperty("device_id").GetString()!;
-        var sharedSecret = result.GetProperty("shared_secret").GetString()!;
 
+        Store(
+            result.GetProperty("pc_instance_id").GetString()!,
+            deviceId,
+            result.GetProperty("shared_secret").GetString()!,
+            loggerFactory);
+
+        // Device id only. The secret is stored protected and never printed.
+        Console.WriteLine($"  Simulator paired as device {deviceId}. Credential stored (protected).");
+        return 0;
+    }
+
+    /// <summary>Writes the phone's half of the credential, DPAPI-protected. Never logs the secret.</summary>
+    private static void Store(
+        string pcInstanceId,
+        string deviceId,
+        string sharedSecretBase64Url,
+        ILoggerFactory loggerFactory)
+    {
         var logger = loggerFactory.CreateLogger("PcCore.PhoneSimulator");
         var protector = new PcCore.Windows.WindowsSecretProtector(
             loggerFactory.CreateLogger<PcCore.Windows.WindowsSecretProtector>());
@@ -125,15 +212,11 @@ public static class PhoneSimulator
         new AtomicJsonFileStore<SimulatorCredentialRecord>(StateDirectory.ForCurrentUser(), FileName, logger)
             .Save(new SimulatorCredentialRecord
             {
-                PcInstanceId = result.GetProperty("pc_instance_id").GetString()!,
+                PcInstanceId = pcInstanceId,
                 DeviceId = deviceId,
                 ProtectedSecret = Convert.ToBase64String(
-                    protector.Protect(Base64Url.DecodeFromChars(sharedSecret.AsSpan()))),
+                    protector.Protect(Base64Url.DecodeFromChars(sharedSecretBase64Url.AsSpan()))),
             });
-
-        // Device id only. The secret is stored protected and never printed.
-        Console.WriteLine($"  Simulator paired as device {deviceId}. Credential stored (protected).");
-        return 0;
     }
 
     /// <summary>The twelve-step conversation the future Android client will have.</summary>

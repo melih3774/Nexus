@@ -60,8 +60,10 @@ public sealed class RemoteTransportTests : IAsyncLifetime
         services.AddSingleton(new ScreenOptions());
         services.AddSingleton<IPcIdentityProvider, PcIdentityProvider>();
         services.AddSingleton<IPrimaryPhoneRegistry, PrimaryPhoneRegistry>();
+        services.AddSingleton<IDeviceEndpointProvider, NoDeviceEndpoint>();
         services.AddSingleton<IPairingService, PairingService>();
         services.AddSingleton<IDeviceAuthenticator, DeviceAuthenticator>();
+        services.AddSingleton<IRemoteEnrollmentService, RemoteEnrollmentService>();
 
         services.AddSingleton<EventBus>();
         services.AddSingleton<IEventPublisher>(p => p.GetRequiredService<EventBus>());
@@ -131,8 +133,8 @@ public sealed class RemoteTransportTests : IAsyncLifetime
     private PairingCompletion PairPhone()
     {
         var session = _pairing.Begin(replaceExisting: true);
-        Assert.True(PairingPayload.TryDecode(session.Payload, out _, out _, out var sid, out var secret));
-        return _pairing.Complete(sid, secret, "Test Phone");
+        Assert.True(PairingPayloadV2.TryDecode(session.Payload, out var payload));
+        return _pairing.Complete(payload!.SessionId, payload.PairingSecret, "Test Phone");
     }
 
     private static int FreePort()

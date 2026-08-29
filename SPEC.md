@@ -1096,3 +1096,207 @@ The protocol client itself (`RemotePhoneClient`) lives in the transport assembly
 ## 37. Explicitly NOT in v0.4
 
 Android app; public internet exposure; router port forwarding; Tailscale installation, login, or tailnet/ACL management; Tailscale Serve; STUN, TURN, ICE, custom NAT traversal, relays; remote keyboard or mouse input; live screen streaming; camera; microphone; AI, Claude Code, or Codex; notifications; security evidence recording; activity detection.
+
+---
+
+# v0.5 — First Native Android Client
+
+## 38. What v0.5 adds
+
+The phone. Everything before this milestone was a machine talking to itself: a loopback page, a
+protocol-level simulator, a transport with no client. v0.5 is the first time a person picks up a
+device and controls the PC with it.
+
+Two things had to be built for that, and only two:
+
+1. **A native Android application** — Kotlin, Jetpack Compose, one connection, five screens.
+2. **A way for an unpaired phone to obtain a credential over the network**, because until now the
+   only pairing path ran over loopback on the PC itself, which a phone cannot reach.
+
+Everything else is unchanged. No new capability was added, `PcCore.Windows` was not touched, and the
+DEVICE policy allowlist is the same eight actions v0.4 defined.
+
+## 39. The bootstrap problem
+
+The remote transport requires an authenticated `DEVICE` identity. That identity requires the Primary
+Phone's permanent secret. A phone that has never paired does not have it, and the only place it can
+be issued is the PC. Before v0.5 the issuing surface was `POST /device/pair` on the loopback
+transport — reachable by the development simulator running on the same machine, and by nothing else.
+
+So exactly one exception exists, and its shape is deliberate:
+
+| Property | Choice | Why |
+|---|---|---|
+| Where it lives | `pairing.enroll`, handled in `RemoteConnection`'s handshake | The remote transport binds only to a Tailscale address, so the exception inherits that boundary. It is not reachable over LAN or WAN because nothing is. |
+| How it is authorised | The one-time pairing secret from `pairing.begin` | An owner-initiated, short-lived, single-use, 256-bit credential. Without an active local session there is nothing to enroll against. |
+| How the secret is presented | HMAC-SHA-256 over the PC's challenge | The pairing secret is never transmitted. Its only appearance on any wire was in the QR code the owner photographed. |
+| What it grants | A credential, and then the connection closes | Enrollment is not authentication. The socket does not become a `DEVICE` session; the phone reconnects and authenticates like every later time. |
+| Whether it is a capability | No | `CapabilityDispatcher` serves identified callers under a policy. An unidentified peer has no place in it, and `pairing.enroll` is not registered, so no caller — local, device or otherwise — can dispatch it. |
+
+The authority to decide *which* phone is trusted never moves. The owner starts pairing on the PC;
+replacing an existing Primary Phone still requires `replace_existing` stated locally. A phone holding
+a valid credential cannot enroll another device, cannot re-enroll itself, and cannot revoke anything
+— `device.*` and `pairing.*` remain denied to `DEVICE` callers by the v0.4 policy.
+
+## 40. Pairing payload v2
+
+`NEXUS2.<base64url(compact JSON)>`.
+
+```
+{"v":2,"pc":"<PcInstanceId>","s":"<session>","k":"<pairing secret>",
+ "h":"100.x.x.x","p":47812,"pv":1}
+```
+
+**Why a version rather than extra fields.** A v1 scanner and a v2 scanner are doing different things.
+v1 says "pair with this installation"; v2 says "pair with this installation, at this address,
+speaking this protocol version". Growing v1 in place would leave a scanner unable to distinguish a
+missing endpoint from an old code. The prefix answers that before a byte is parsed, and each format
+is rejected as the other.
+
+**`h` is absent when no Tailscale address is bound.** The endpoint comes from the transport's live
+bound address through `IDeviceEndpointProvider`, not from configuration, so a code can never promise
+an address that is not being served. A phone that scans such a code says exactly that, and the PC's
+local page says it too, before the owner walks to the phone.
+
+**What is not in it:** no user name, no host name, no MAC address, no hardware serial, and no
+permanent secret. `PairingSessionTests` asserts the machine and user names are absent from the
+encoded bytes.
+
+v1 is retained and still produced as `payload_v1`, used only by the loopback development simulator,
+which runs on the PC and needs no endpoint.
+
+## 41. Protocol corrections
+
+Two, both additive, both found by writing a real client:
+
+- **`FileEntry.path`.** A listing returned names only, so a phone navigating into a subdirectory had
+  to join the parent path with a name and guess a separator. Path reconstruction is not a client's
+  job when the server already knows the answer — and joining is quietly wrong for a root like `D:\`.
+  Every path is still re-authorised from scratch; this removes a class of client bug, not a check.
+- **`allowed_roots` in the authentication response.** The phone needs somewhere to start browsing.
+  This is session bootstrap rather than a capability: it mirrors how the local test page receives the
+  same list at composition, discloses nothing a `files.list` response does not already contain, and
+  keeps the capability surface at exactly what v0.4 defined.
+
+## 42. The Android client
+
+**Toolchain.** Kotlin 2.2.10, AGP 9.2.1, Gradle 9.4.1, Compose BOM 2026.08.00, JDK 21. AGP 9 compiles
+Kotlin itself; the standalone Kotlin Android plugin is incompatible with it, so built-in Kotlin is
+used with the Compose and serialization sub-plugins on top.
+
+**minSdk 31** (Android 12). Chosen for the platform behaviour the app relies on rather than for the
+lowest number that compiles: modern Keystore semantics and the theming this app is built against.
+One owner, one phone; breadth of device support is not a goal. `compileSdk` and `targetSdk` are 37.
+
+**Structure.**
+
+```
+protocol/   Pure Kotlin. Envelopes, codec, base64url, HMAC, pairing code, endpoint validation.
+data/       Credential storage (Keystore) and the repository.
+net/        The connection manager, the enrollment client, the private-network probe.
+ui/         Compose screens and their view models.
+```
+
+The `protocol` package has no Android dependency at all, which is what lets the cross-language
+vectors run as ordinary JVM tests.
+
+## 43. Endpoint validation
+
+The app refuses to open a socket to anything that is not a Tailscale address. This is not defence in
+depth; it is the load-bearing half of the "no TLS" decision in section 28. Cleartext is acceptable
+*because* the connection cannot leave the tunnel.
+
+`NexusEndpoint` has a private constructor. The only production route to one is `parse`, which
+requires:
+
+- a literal IPv4 address — a host name is refused on sight, never resolved, because resolution hands
+  the choice of destination to whoever answers the lookup;
+- membership of `100.64.0.0/10`, by address arithmetic, not a `"100."` prefix;
+- strict dotted-quad spelling — octal, hex, shorthand and padded octets are all refused, since those
+  are precisely the forms that denote one address while looking like another;
+- `ws://` and the `/nexus` path, with no credentials, query or fragment;
+- an unprivileged port.
+
+Android's network security configuration cannot express a CIDR range, so cleartext is permitted at
+the manifest level and the real control lives here. `NexusEndpointTest` additionally asserts that no
+file under `src/main` calls `forTestsOnly`, the only other way to construct an endpoint.
+
+## 44. Credential storage
+
+An AES-256-GCM key generated in the Android Keystore, non-exportable, with
+`setRandomizedEncryptionRequired` on. The sealed file is `[version][ivLength][iv][ciphertext]` in
+app-private storage; the framing is plain code with its own tests, and the Keystore round trip is an
+instrumented test on a real device.
+
+No biometric gate. The app reconnects while it is open, and a prompt on every reconnect trains the
+owner to tap through it; the device lock screen protects the app itself.
+
+The secret never enters Compose state — the UI holds `PairedPc`, which has no field that could carry
+it — and `NexusCredential.toString()` is overridden so an accidental log statement cannot print it.
+There is no analytics SDK, no crash reporter, and backup and device transfer are excluded outright.
+
+## 45. Connection lifetime
+
+One `PcConnectionManager` owns the socket; no screen opens its own. It connects on `ON_START` and
+disconnects on `ON_STOP`: there is no background service, because v0.5 has nothing that needs to
+arrive while the app is closed, and a WebSocket held open all day is battery cost with no feature
+behind it. Security notifications will need a push channel designed for the purpose.
+
+Reconnection is bounded — 2s doubling to 30s — and stops entirely on `authentication_failed`, which
+will not become valid by retrying.
+
+Failures are classified by what the phone itself can observe, because Nexus can fix none of them and
+the owner has to know which one applies: no network at all, a phone with no tailnet address of its
+own, a PC that did not answer, a rejected credential, or an unrecognised reply.
+
+## 46. Cross-language test vectors
+
+v0.5 is the first milestone where the protocol is implemented twice, in two languages, by two JSON
+stacks. The failures that produces are quiet: an HMAC over subtly different bytes, a base64 variant
+with padding, a timestamp format one side cannot parse.
+
+`shared/protocol/protocol-vectors.json` is generated from the real PC Core implementations by
+`ProtocolVectorTests` and asserted against by both sides. It covers base64url at every padding
+residue, both signed messages as hex, both proofs, the NEXUS2 payload and six malformed variants, and
+the request, response, error, event and challenge envelopes.
+
+Two findings came out of writing it:
+
+- `System.Text.Json` escapes non-ASCII to `\uXXXX`; kotlinx.serialization emits it raw. Both are
+  valid JSON and neither is wrong, so the vectors pin both spellings and each side is tested against
+  the other's.
+- PC Core writes timestamps as `+00:00`, which `Instant.parse` rejects and `OffsetDateTime.parse`
+  accepts. Pinned, because the difference is invisible until a timestamp is actually parsed.
+
+## 47. Testing added in v0.5
+
+**PC Core** — 357 total, up from 340:
+
+| Area | Covers |
+|---|---|
+| `RemoteEnrollmentTests` | Enrollment end to end over a real socket; no active session; a wrong proof burning the code; a proof bound to another installation; an auth proof reused as an enrollment proof; replay; a paired phone that cannot be replaced from the tailnet; unreachable from a DEVICE session; a response carrying no machine detail |
+| `ProtocolVectorTests` | The committed vectors match what PC Core produces; the auth vector verifies against the real authenticator; the PC parses Kotlin's unescaped spelling |
+| `PairingSessionTests` | NEXUS2 round trip and its absent fields; a code with no endpoint; v1 still offered; neither format accepted as the other |
+
+**Android** — 55 JVM unit tests, 20 instrumented:
+
+| Suite | Covers |
+|---|---|
+| `ProtocolVectorsTest` | Every vector above, from the Kotlin side |
+| `NexusEndpointTest` | CGNAT boundaries, LAN/loopback/public refusal, host names, lenient IPv4 spellings, URL form, and that production code never builds an unvalidated endpoint |
+| `PairingCodeTest` | NEXUS2 parsing, v1 refusal with an explanation, truncated scans, malformed payloads, a code naming a LAN address |
+| `PcConnectionManagerTest` | Handshake against a scripted PC that verifies the real HMAC; out-of-order response correlation; events arriving mid-request; structured denials; failure classification; requests with no session |
+| `SealedBlobTest` | Credential framing, version and truncation refusal |
+| `CredentialStoreTest` (device) | Keystore round trip, nothing readable on disk, a fresh IV per save, tamper and truncation refusal, clear, no secret in `toString` |
+| `ConnectionBannerTest` (device) | Every failure state naming its own cause |
+| `HomeScreenTest` (device) | The control panel rendered from session state: every action present, unreachable without a session, nothing credential-shaped on screen |
+
+## 48. Explicitly NOT in v0.5
+
+Live screen streaming, remote mouse and keyboard, launching or controlling PC applications, the
+microphone and camera bridges, a background notification channel, security-session evidence
+recording, AI of any kind, shell execution, file writing, a cloud backend, user accounts, analytics,
+and crash reporting.
+
+Tailscale remains the owner's to install and sign into, on both devices. Nexus observes the private
+network; it does not manage it.

@@ -19,10 +19,10 @@ internal sealed class IdentityHarness : IDisposable
 {
     private readonly TempStateDirectory _state;
 
-    public IdentityHarness(string label)
+    public IdentityHarness(string label, DeviceEndpoint? endpoint = null)
     {
         _state = new TempStateDirectory(label);
-        Restart();
+        Restart(endpoint: endpoint);
     }
 
     public IPcIdentityProvider Identity { get; private set; } = null!;
@@ -33,22 +33,28 @@ internal sealed class IdentityHarness : IDisposable
 
     public TempStateDirectory State => _state;
 
-    public void Restart(PairingOptions? options = null)
+    public IDeviceEndpointProvider Endpoint { get; private set; } = null!;
+    public IRemoteEnrollmentService Enrollment { get; private set; } = null!;
+
+    public void Restart(PairingOptions? options = null, DeviceEndpoint? endpoint = null)
     {
         Options = options ?? new PairingOptions();
         Identity = new PcIdentityProvider(_state.Directory, TestLog.For<PcIdentityProvider>());
         Registry = new PrimaryPhoneRegistry(
             _state.Directory, new PassThroughSecretProtector(), TestLog.For<PrimaryPhoneRegistry>());
-        Pairing = new PairingService(Identity, Registry, Options, TestLog.For<PairingService>());
         Authenticator = new DeviceAuthenticator(Identity, Registry, Options, TestLog.For<DeviceAuthenticator>());
+        Endpoint = new FixedDeviceEndpoint(endpoint);
+        Pairing = new PairingService(Identity, Registry, Endpoint, Options, TestLog.For<PairingService>());
+        Enrollment = new RemoteEnrollmentService(
+            Identity, Pairing, Authenticator, TestLog.For<RemoteEnrollmentService>());
     }
 
     /// <summary>Runs the full pairing handshake the way the phone simulator does.</summary>
     public PairingCompletion PairPhone(string name = "Test Phone", bool replaceExisting = false)
     {
         var session = Pairing.Begin(replaceExisting);
-        Assert.True(PairingPayload.TryDecode(session.Payload, out _, out _, out var sid, out var secret));
-        return Pairing.Complete(sid, secret, name);
+        Assert.True(PairingPayloadV2.TryDecode(session.Payload, out var payload));
+        return Pairing.Complete(payload!.SessionId, payload.PairingSecret, name);
     }
 
     /// <summary>Computes the proof a correctly-implemented phone would send.</summary>
@@ -314,22 +320,72 @@ public sealed class PairingSessionTests
     [Fact]
     public void ThePayloadRoundTripsAndCarriesOnlyPairingFields()
     {
-        using var harness = new IdentityHarness("pairing-payload");
+        using var harness = new IdentityHarness("pairing-payload", new DeviceEndpoint("100.101.102.103", 47812));
         var session = harness.Pairing.Begin(replaceExisting: false);
 
-        Assert.StartsWith(PairingPayload.Prefix, session.Payload, StringComparison.Ordinal);
-        Assert.True(PairingPayload.TryDecode(session.Payload, out var version, out var pc, out var sid, out var psk));
+        Assert.StartsWith(PairingPayloadV2.Prefix, session.Payload, StringComparison.Ordinal);
+        Assert.True(PairingPayloadV2.TryDecode(session.Payload, out var payload));
+
+        Assert.Equal(harness.Identity.PcInstanceId, payload!.PcInstanceId);
+        Assert.Equal(session.SessionId, payload.SessionId);
+        Assert.NotEmpty(payload.PairingSecret);
+        Assert.Equal("100.101.102.103", payload.Host);
+        Assert.Equal(47812, payload.Port);
+        Assert.Equal(ProtocolConstants.CurrentVersion, payload.ProtocolVersion);
+
+        // Nothing about the machine or the owner rides along in something that gets photographed.
+        var decoded = Encoding.UTF8.GetString(
+            Base64Url.DecodeFromChars(session.Payload.AsSpan(PairingPayloadV2.Prefix.Length)));
+        Assert.DoesNotContain(Environment.MachineName, decoded, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(Environment.UserName, decoded, StringComparison.OrdinalIgnoreCase);
+
+        // And no permanent credential: the only key in a pairing code is the short-lived one.
+        Assert.Null(harness.Registry.Current);
+    }
+
+    [Fact]
+    public void APayloadMadeWithNoBoundEndpointAdvertisesNone()
+    {
+        // What a real machine produces when Tailscale is not running. The code stays valid for the
+        // loopback development flow, and a phone can say precisely why it cannot use it.
+        using var harness = new IdentityHarness("pairing-payload-offline");
+        var session = harness.Pairing.Begin(replaceExisting: false);
+
+        Assert.Null(session.RemoteEndpoint);
+        Assert.True(PairingPayloadV2.TryDecode(session.Payload, out var payload));
+        Assert.Null(payload!.Host);
+        Assert.False(payload.HasEndpoint);
+    }
+
+    [Fact]
+    public void TheV1PayloadIsStillOfferedForTheDevelopmentSimulator()
+    {
+        using var harness = new IdentityHarness("pairing-payload-v1");
+        var session = harness.Pairing.Begin(replaceExisting: false);
+
+        Assert.StartsWith(PairingPayload.Prefix, session.PayloadV1, StringComparison.Ordinal);
+        Assert.True(PairingPayload.TryDecode(session.PayloadV1, out var version, out var pc, out var sid, out var psk));
 
         Assert.Equal(1, version);
         Assert.Equal(harness.Identity.PcInstanceId, pc);
         Assert.Equal(session.SessionId, sid);
-        Assert.NotEmpty(psk);
 
-        // Nothing about the machine or the owner rides along in something that gets photographed.
-        var decoded = Encoding.UTF8.GetString(
-            Base64Url.DecodeFromChars(session.Payload.AsSpan(PairingPayload.Prefix.Length)));
-        Assert.DoesNotContain(Environment.MachineName, decoded, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain(Environment.UserName, decoded, StringComparison.OrdinalIgnoreCase);
+        // Both codes describe one session, so either can complete it — but only one of them.
+        Assert.True(PairingPayloadV2.TryDecode(session.Payload, out var v2));
+        Assert.Equal(sid, v2!.SessionId);
+        Assert.Equal(psk, v2.PairingSecret);
+    }
+
+    [Fact]
+    public void AV1CodeIsNotAcceptedAsV2AndViceVersa()
+    {
+        using var harness = new IdentityHarness("pairing-payload-versions");
+        var session = harness.Pairing.Begin(replaceExisting: false);
+
+        // The prefix is the whole point of versioning: a scanner rejects the wrong format outright
+        // instead of parsing it and finding fields missing.
+        Assert.False(PairingPayloadV2.TryDecode(session.PayloadV1, out _));
+        Assert.False(PairingPayload.TryDecode(session.Payload, out _, out _, out _, out _));
     }
 
     [Theory]
@@ -348,7 +404,8 @@ public sealed class PairingSessionTests
         harness.Restart(new PairingOptions { SessionTimeoutSeconds = 0 });
 
         var session = harness.Pairing.Begin(replaceExisting: false);
-        Assert.True(PairingPayload.TryDecode(session.Payload, out _, out _, out var sid, out var psk));
+        Assert.True(PairingPayloadV2.TryDecode(session.Payload, out var p2));
+        var (sid, psk) = (p2!.SessionId, p2.PairingSecret);
 
         var exception = Assert.Throws<CapabilityException>(() => harness.Pairing.Complete(sid, psk, "Phone"));
 
@@ -362,7 +419,8 @@ public sealed class PairingSessionTests
     {
         using var harness = new IdentityHarness("pairing-cancel");
         var session = harness.Pairing.Begin(replaceExisting: false);
-        Assert.True(PairingPayload.TryDecode(session.Payload, out _, out _, out var sid, out var psk));
+        Assert.True(PairingPayloadV2.TryDecode(session.Payload, out var p2));
+        var (sid, psk) = (p2!.SessionId, p2.PairingSecret);
 
         Assert.True(harness.Pairing.Cancel());
         Assert.False(harness.Pairing.Cancel());
@@ -377,7 +435,8 @@ public sealed class PairingSessionTests
     {
         using var harness = new IdentityHarness("pairing-single-use");
         var session = harness.Pairing.Begin(replaceExisting: false);
-        Assert.True(PairingPayload.TryDecode(session.Payload, out _, out _, out var sid, out var psk));
+        Assert.True(PairingPayloadV2.TryDecode(session.Payload, out var p2));
+        var (sid, psk) = (p2!.SessionId, p2.PairingSecret);
 
         harness.Pairing.Complete(sid, psk, "Phone");
 
@@ -390,7 +449,8 @@ public sealed class PairingSessionTests
     {
         using var harness = new IdentityHarness("pairing-wrong-secret");
         var session = harness.Pairing.Begin(replaceExisting: false);
-        Assert.True(PairingPayload.TryDecode(session.Payload, out _, out _, out var sid, out var psk));
+        Assert.True(PairingPayloadV2.TryDecode(session.Payload, out var p2));
+        var (sid, psk) = (p2!.SessionId, p2.PairingSecret);
 
         Assert.Throws<CapabilityException>(() => harness.Pairing.Complete(sid, "wrong-secret", "Phone"));
 
@@ -404,7 +464,8 @@ public sealed class PairingSessionTests
     {
         using var harness = new IdentityHarness("pairing-wrong-session");
         var session = harness.Pairing.Begin(replaceExisting: false);
-        Assert.True(PairingPayload.TryDecode(session.Payload, out _, out _, out _, out var psk));
+        Assert.True(PairingPayloadV2.TryDecode(session.Payload, out var p2));
+        var psk = p2!.PairingSecret;
 
         Assert.Throws<CapabilityException>(() => harness.Pairing.Complete("some-other-session", psk, "Phone"));
     }
@@ -414,7 +475,8 @@ public sealed class PairingSessionTests
     {
         using var harness = new IdentityHarness("pairing-replace-session");
         var first = harness.Pairing.Begin(replaceExisting: false);
-        Assert.True(PairingPayload.TryDecode(first.Payload, out _, out _, out var firstSid, out var firstPsk));
+        Assert.True(PairingPayloadV2.TryDecode(first.Payload, out var firstPayload));
+        var (firstSid, firstPsk) = (firstPayload!.SessionId, firstPayload.PairingSecret);
 
         harness.Pairing.Begin(replaceExisting: false);
 
@@ -426,7 +488,8 @@ public sealed class PairingSessionTests
     {
         using var harness = new IdentityHarness("pairing-concurrent");
         var session = harness.Pairing.Begin(replaceExisting: false);
-        Assert.True(PairingPayload.TryDecode(session.Payload, out _, out _, out var sid, out var psk));
+        Assert.True(PairingPayloadV2.TryDecode(session.Payload, out var p2));
+        var (sid, psk) = (p2!.SessionId, p2.PairingSecret);
 
         using var start = new Barrier(16);
         var outcomes = await Task.WhenAll(Enumerable.Range(0, 16).Select(_ => Task.Run(() =>

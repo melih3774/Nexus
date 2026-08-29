@@ -6,8 +6,29 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using PcCore.Capabilities.Abstractions;
 using PcCore.Capabilities.Identity;
+using PcCore.Capabilities.Security;
 
 namespace PcCore.Transport.Remote;
+
+/// <summary>
+/// Tells the pairing service where a phone should connect back to.
+/// <para>
+/// It reports the address the transport is <em>actually</em> serving, not the one configuration
+/// hopes for: <see cref="RemoteTransport.Endpoint"/> is null unless a listener is open on a vetted
+/// Tailscale address. A pairing code therefore never promises an endpoint that does not exist.
+/// </para>
+/// </summary>
+public sealed class RemoteTransportEndpointProvider : IDeviceEndpointProvider
+{
+    private readonly RemoteTransport _transport;
+
+    public RemoteTransportEndpointProvider(RemoteTransport transport) => _transport = transport;
+
+    public DeviceEndpoint? Current =>
+        _transport.Endpoint is { } endpoint
+            ? new DeviceEndpoint(endpoint.Address.ToString(), endpoint.Port)
+            : null;
+}
 
 /// <summary>
 /// The authenticated remote transport: a WebSocket listener bound to one Tailscale address.
@@ -93,9 +114,15 @@ public sealed class RemoteTransport : IAsyncDisposable
 
         var dispatcher = _services.GetRequiredService<ICapabilityDispatcher>();
         var authenticator = _services.GetRequiredService<IDeviceAuthenticator>();
+        var enrollment = _services.GetRequiredService<IRemoteEnrollmentService>();
         var phones = _services.GetRequiredService<IPrimaryPhoneRegistry>();
+        var identity = _services.GetRequiredService<IPcIdentityProvider>();
         var events = _services.GetRequiredService<IEventStream>();
         var connectionLogger = _loggerFactory.CreateLogger("PcCore.Transport.Remote.Connection");
+
+        // Resolved optionally: a host composed without the filesystem capabilities simply has no
+        // roots to offer, and an authenticated session with an empty list is correct there.
+        IReadOnlyList<string> allowedRoots = _services.GetService<AllowedRoots>()?.Roots ?? [];
 
         // Liveness only. Deliberately says nothing about pairing state or sessions: this port is
         // reachable by anything on the tailnet, and an unauthenticated peer learns only that
@@ -125,7 +152,10 @@ public sealed class RemoteTransport : IAsyncDisposable
                 connectionId,
                 dispatcher,
                 authenticator,
+                enrollment,
                 phones,
+                identity,
+                allowedRoots,
                 _sessions,
                 _options,
                 connectionLogger);

@@ -21,11 +21,25 @@ public sealed class PairingOptions
 }
 
 /// <summary>What the owner sees after starting pairing. Contains no permanent credential.</summary>
+/// <param name="Payload">
+/// The <c>NEXUS2.…</c> code to show as a QR and offer for copying. This is what a phone scans.
+/// </param>
+/// <param name="PayloadV1">
+/// The old <c>NEXUS1.…</c> code, kept for the loopback development simulator, which pairs over the
+/// local device surface and needs no endpoint. Not shown to a phone.
+/// </param>
+/// <param name="RemoteEndpoint">
+/// The address the code points at, or <see langword="null"/> when the remote transport has no
+/// Tailscale address bound. Surfaced so the owner sees <em>why</em> a scan will fail, instead of
+/// discovering it on the phone.
+/// </param>
 public sealed record PairingSessionInfo(
     string SessionId,
     DateTimeOffset ExpiresAtUtc,
     string PcInstanceId,
-    string Payload);
+    string Payload,
+    string PayloadV1,
+    string? RemoteEndpoint);
 
 /// <summary>Returned to the phone exactly once, on successful pairing.</summary>
 public sealed record PairingCompletion(
@@ -33,68 +47,6 @@ public sealed record PairingCompletion(
     string DeviceId,
     string SharedSecret,
     DateTimeOffset PairedAtUtc);
-
-/// <summary>
-/// The contents of the QR code / copyable pairing code.
-/// <para>
-/// Wire form: <c>NEXUS1.&lt;base64url(compact JSON)&gt;</c>. The prefix identifies the format and
-/// its version so a scanner can reject anything else outright; base64url keeps it QR- and
-/// clipboard-safe with no escaping surprises.
-/// </para>
-/// <para>
-/// It carries only what pairing needs: the format version, which installation is offering to pair,
-/// which session, and the one-time material proving the scanner was physically shown this code.
-/// No hostname, user name, address, or hardware detail appears in it.
-/// </para>
-/// </summary>
-public static class PairingPayload
-{
-    public const string Prefix = "NEXUS1.";
-
-    public static string Encode(int version, string pcInstanceId, string sessionId, string pairingSecret)
-    {
-        // Short keys: the payload is scanned, not read.
-        var json = $$"""{"v":{{version}},"pc":"{{pcInstanceId}}","s":"{{sessionId}}","k":"{{pairingSecret}}"}""";
-        return Prefix + Base64Url.EncodeToString(Encoding.UTF8.GetBytes(json));
-    }
-
-    /// <summary>Decodes a payload. Used by tests and by the development phone simulator.</summary>
-    public static bool TryDecode(
-        string? payload,
-        out int version,
-        out string pcInstanceId,
-        out string sessionId,
-        out string pairingSecret)
-    {
-        version = 0;
-        pcInstanceId = string.Empty;
-        sessionId = string.Empty;
-        pairingSecret = string.Empty;
-
-        if (string.IsNullOrWhiteSpace(payload) || !payload.StartsWith(Prefix, StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        try
-        {
-            var json = Encoding.UTF8.GetString(Base64Url.DecodeFromChars(payload.AsSpan(Prefix.Length)));
-            using var document = global::System.Text.Json.JsonDocument.Parse(json);
-            var root = document.RootElement;
-
-            version = root.GetProperty("v").GetInt32();
-            pcInstanceId = root.GetProperty("pc").GetString() ?? string.Empty;
-            sessionId = root.GetProperty("s").GetString() ?? string.Empty;
-            pairingSecret = root.GetProperty("k").GetString() ?? string.Empty;
-
-            return pcInstanceId.Length > 0 && sessionId.Length > 0 && pairingSecret.Length > 0;
-        }
-        catch (Exception ex) when (ex is FormatException or global::System.Text.Json.JsonException or KeyNotFoundException or InvalidOperationException)
-        {
-            return false;
-        }
-    }
-}
 
 /// <summary>
 /// Owner-initiated pairing of the one Primary Phone.
@@ -120,10 +72,24 @@ public interface IPairingService
     bool Cancel();
 
     /// <summary>
-    /// Completes pairing. Single-use: the session is consumed whatever the outcome, so a wrong
-    /// guess cannot be retried against the same code.
+    /// Completes pairing by presenting the pairing secret itself. Single-use: the session is
+    /// consumed whatever the outcome, so a wrong guess cannot be retried against the same code.
+    /// <para>
+    /// Used by the loopback development surface, where the secret never leaves this machine.
+    /// </para>
     /// </summary>
     PairingCompletion Complete(string sessionId, string pairingSecret, string? displayName);
+
+    /// <summary>
+    /// Completes pairing by presenting an HMAC over <paramref name="message"/> keyed by the pairing
+    /// secret, so the secret itself is never transmitted.
+    /// <para>
+    /// This is what a phone uses over the remote transport. Consumption and the constant-time
+    /// comparison are identical to <see cref="Complete"/>; only the proof differs. The secret stays
+    /// inside this service — no caller can read it back, in either form.
+    /// </para>
+    /// </summary>
+    PairingCompletion CompleteWithProof(string sessionId, byte[] message, byte[] proof, string? displayName);
 }
 
 public sealed class PairingService : IPairingService
@@ -133,10 +99,9 @@ public sealed class PairingService : IPairingService
     /// <summary>256 bits. High entropy so no rate limiting is load-bearing.</summary>
     private const int PairingSecretBytes = 32;
 
-    private const int PayloadVersion = 1;
-
     private readonly IPcIdentityProvider _identity;
     private readonly IPrimaryPhoneRegistry _registry;
+    private readonly IDeviceEndpointProvider _endpoint;
     private readonly PairingOptions _options;
     private readonly ILogger<PairingService> _logger;
     private readonly Lock _gate = new();
@@ -146,11 +111,13 @@ public sealed class PairingService : IPairingService
     public PairingService(
         IPcIdentityProvider identity,
         IPrimaryPhoneRegistry registry,
+        IDeviceEndpointProvider endpoint,
         PairingOptions options,
         ILogger<PairingService> logger)
     {
         _identity = identity;
         _registry = registry;
+        _endpoint = endpoint;
         _options = options;
         _logger = logger;
     }
@@ -190,17 +157,34 @@ public sealed class PairingService : IPairingService
                 _logger.LogInformation("Replacing pairing session {SessionId}.", _session.Info.SessionId);
             }
 
+            // Read once: the code must describe the endpoint as it was when the code was made,
+            // and a code that promises an address the transport is not actually serving would be
+            // worse than one that promises none.
+            var endpoint = _endpoint.Current;
+
             var info = new PairingSessionInfo(
                 sessionId,
                 expires,
                 _identity.PcInstanceId,
-                PairingPayload.Encode(PayloadVersion, _identity.PcInstanceId, sessionId, secret));
+                new PairingPayloadV2
+                {
+                    PcInstanceId = _identity.PcInstanceId,
+                    SessionId = sessionId,
+                    PairingSecret = secret,
+                    Host = endpoint?.Host,
+                    Port = endpoint?.Port ?? 0,
+                }.Encode(),
+                PairingPayload.Encode(PairingPayload.Version, _identity.PcInstanceId, sessionId, secret),
+                endpoint?.ToString());
 
             _session = new Session(info, Encoding.UTF8.GetBytes(secret), replaceExisting);
 
             // The session id is safe to log; the pairing secret and payload are not.
             _logger.LogInformation(
-                "Pairing session {SessionId} open until {Expires:u}.", sessionId, expires);
+                "Pairing session {SessionId} open until {Expires:u} (endpoint {Endpoint}).",
+                sessionId,
+                expires,
+                endpoint?.ToString() ?? "none — no Tailscale address bound");
 
             return info;
         }
@@ -221,7 +205,24 @@ public sealed class PairingService : IPairingService
         }
     }
 
-    public PairingCompletion Complete(string sessionId, string pairingSecret, string? displayName)
+    public PairingCompletion Complete(string sessionId, string pairingSecret, string? displayName) =>
+        CompleteCore(
+            sessionId,
+            secret => CryptographicOperations.FixedTimeEquals(secret, Encoding.UTF8.GetBytes(pairingSecret ?? string.Empty)),
+            displayName);
+
+    public PairingCompletion CompleteWithProof(string sessionId, byte[] message, byte[] proof, string? displayName) =>
+        CompleteCore(
+            sessionId,
+            secret => CryptographicOperations.FixedTimeEquals(HMACSHA256.HashData(secret, message ?? []), proof ?? []),
+            displayName);
+
+    /// <param name="verify">
+    /// Given the session's pairing secret, decides whether the caller proved possession of it. The
+    /// secret is handed to this callback and never returned: both proof forms are checked in
+    /// constant time, and neither leaves the lock.
+    /// </param>
+    private PairingCompletion CompleteCore(string sessionId, Func<byte[], bool> verify, string? displayName)
     {
         lock (_gate)
         {
@@ -248,10 +249,9 @@ public sealed class PairingService : IPairingService
                 throw Failed("session id mismatch");
             }
 
-            var presented = Encoding.UTF8.GetBytes(pairingSecret ?? string.Empty);
-            if (!CryptographicOperations.FixedTimeEquals(session.Secret, presented))
+            if (!verify(session.Secret))
             {
-                throw Failed($"incorrect pairing secret for session {sessionId}");
+                throw Failed($"incorrect pairing proof for session {sessionId}");
             }
 
             if (_registry.Current is not null && !session.ReplaceExisting)

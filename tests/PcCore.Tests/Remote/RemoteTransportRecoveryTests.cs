@@ -61,7 +61,10 @@ public sealed class RemoteTransportRecoveryTests : IAsyncLifetime
         services.AddSingleton(new PairingOptions());
         services.AddSingleton<IPcIdentityProvider, PcIdentityProvider>();
         services.AddSingleton<IPrimaryPhoneRegistry, PrimaryPhoneRegistry>();
+        services.AddSingleton<IDeviceEndpointProvider, NoDeviceEndpoint>();
+        services.AddSingleton<IPairingService, PairingService>();
         services.AddSingleton<IDeviceAuthenticator, DeviceAuthenticator>();
+        services.AddSingleton<IRemoteEnrollmentService, RemoteEnrollmentService>();
         services.AddSingleton<EventBus>();
         services.AddSingleton<IEventPublisher>(p => p.GetRequiredService<EventBus>());
         services.AddSingleton<IEventStream>(p => p.GetRequiredService<EventBus>());
@@ -169,7 +172,10 @@ public sealed class RemoteTransportRecoveryTests : IAsyncLifetime
         services.AddSingleton(new PairingOptions());
         services.AddSingleton<IPcIdentityProvider, PcIdentityProvider>();
         services.AddSingleton<IPrimaryPhoneRegistry, PrimaryPhoneRegistry>();
+        services.AddSingleton<IDeviceEndpointProvider, NoDeviceEndpoint>();
+        services.AddSingleton<IPairingService, PairingService>();
         services.AddSingleton<IDeviceAuthenticator, DeviceAuthenticator>();
+        services.AddSingleton<IRemoteEnrollmentService, RemoteEnrollmentService>();
         services.AddSingleton<EventBus>();
         services.AddSingleton<IEventPublisher>(p => p.GetRequiredService<EventBus>());
         services.AddSingleton<IEventStream>(p => p.GetRequiredService<EventBus>());
