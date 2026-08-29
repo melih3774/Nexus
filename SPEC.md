@@ -1,14 +1,17 @@
 # PC Core — Specification
 
-**Current version: v0.2 (Security State Foundation). Built on v0.1 (Foundation).**
+**Current version: v0.3 (Personal Device Pairing, Persistence, and Startup).**
 
-This document is cumulative. Sections 1–11 describe the v0.1 foundation and remain accurate; **section 12 describes everything v0.2 adds**. Throughout, what is *implemented* is separated from what is *deliberately postponed* — nothing here describes behaviour that does not exist.
+This document is cumulative. Sections 1–11 describe the v0.1 foundation, section 12 covers v0.2, and **sections 13–25 cover v0.3**. Throughout, what is *implemented* is separated from what is *deliberately postponed* — nothing here describes behaviour that does not exist.
 
 | Milestone | Adds | Status |
 |---|---|---|
 | v0.1 | Protocol, capability layer, filesystem boundary, loopback transport, five read-only capabilities | shipped |
 | v0.2 | Security-state service, three `security.*` capabilities, `security.state_changed`, typed caller identity | shipped (§12) |
-| later | Device pairing, remote transport, Android client, policy decision point, security recording | not started |
+| v0.3 | State persistence, event-lock refactor, PC identity, one Primary Phone, HMAC authentication, Windows auto-start | shipped (§13–25) |
+| later | Remote transport, Android client, policy decision point, security recording | not started |
+
+**Scope note.** From v0.3 onward this is explicitly a personal-use system: one owner, one Windows PC, one Android phone. Narrower designs were chosen over more general ones throughout (§13).
 
 ---
 
@@ -418,7 +421,7 @@ Serialized values are SCREAMING_SNAKE_CASE and pinned by attribute (`[JsonString
 `ISecurityStateService` (`PcCore.Capabilities/Security/SecurityStateService.cs`) is the single authoritative holder. It is registered as a **singleton**; "authoritative" and "one per request" are incompatible. No capability keeps a copy — `security.get_state`, `security.arm` and `security.disarm` all read and mutate through it.
 
 - **Initial state is always `OWNER_PRESENT`**, with `previous_state: null` and `since_utc` = process start.
-- **State is in memory only.** v0.2 does not persist it, and that is the safer default: a restart cannot leave the machine believing it is still armed when nobody armed it. Persistence becomes meaningful only once arming has consequences.
+- **State was in memory only in v0.2.** v0.3 persists it — see §15, which supersedes this bullet. The restart rule is now that every state, including `SECURITY_SESSION`, carries forward.
 - Startup is **not** a state change and publishes no event.
 
 ### 12.3 Transition table
@@ -494,9 +497,7 @@ Published **if and only if the state actually changed**. A no-op arm/disarm publ
 
 One `Lock` guards the state triple (state, previous, since) **and** the publish. Requests may arrive concurrently over HTTP and WebSocket, so this is not theoretical.
 
-The publish happens **inside** the lock. That is deliberate: it is the simplest way to guarantee that the order of `security.state_changed` events can never disagree with the order the state actually moved. With the publish outside, two racing transitions could be applied A-then-B but announced B-then-A, and a client replaying the events would end up believing the wrong current state.
-
-This is safe because the only subscriber — the WebSocket forwarder — hands the frame to a background send and returns immediately, and `EventBus` swallows subscriber faults. **The standing constraint it creates:** a `security.state_changed` handler must not synchronously request another transition.
+In v0.2 the publish happened **inside** the lock, to keep event order aligned with commit order. **v0.3 replaces this** with a commit-ordered queue drained under a separate lock, so subscribers never run under the mutation lock while ordering is still guaranteed. See §16, which supersedes this paragraph.
 
 No distributed synchronisation, no channels, no actor model: one lock, one file, auditable in a minute.
 
@@ -551,3 +552,359 @@ Not implemented, and nothing was added in anticipation of them: activity detecti
 Unchanged by this milestone and confirmed by the full suite plus manual smoke tests: allowed-root filesystem enforcement; loopback-only binding; session token, `Host` and `Origin` checks; no elevation; no shell execution; no file write/delete/move; no input injection; capabilities independent of transport; transports free of Windows-control logic; Windows code isolated to `PcCore.Windows`; typed protocol models.
 
 The only v0.1 behaviour change is additive: `CallerDescriptor` has two more fields, and its `ToString()` now appends the actor type — a log-format change, not a protocol one.
+
+---
+
+# v0.3 — Personal Device Pairing, Persistence, and Startup
+
+## 13. Scope and the personal-use assumption
+
+v0.3 is built for **one owner, one Windows PC, one Android phone**. That is not a temporary
+simplification to be generalised later — it is the design. Wherever a more general structure was
+available (a device table, an account model, a role system, a key-management hierarchy), the
+narrower one was chosen because it is smaller, easier to audit, and sufficient.
+
+Concretely: there is exactly one Primary Phone or none; there is one shared secret rather than a
+device PKI; there is one pairing session at a time; and the state store is three small JSON files
+rather than a database.
+
+## 14. Persistent state
+
+Everything that must survive a restart lives in `%LOCALAPPDATA%\Nexus`, outside the repository:
+
+| File | Contents |
+|---|---|
+| `instance.json` | `PcInstanceId` and when it was generated |
+| `security-state.json` | current state, previous state, since-timestamp, revision |
+| `primary-phone.json` | device id, display name, paired-at, DPAPI-protected shared secret |
+
+### 14.1 Atomic writes
+
+`AtomicJsonFileStore<T>` writes to a sibling `.tmp`, flushes it to the physical device
+(`FileStream.Flush(flushToDisk: true)`), then moves it over the target. On Windows that move is
+`MoveFileEx` with `MOVEFILE_REPLACE_EXISTING`, atomic within a volume. A crash leaves either the
+whole previous document or the whole new one — for security state, a half-written file would be
+worse than either.
+
+### 14.2 Corruption handling
+
+An unparseable file is **renamed aside** (`<name>.corrupt-<timestamp>`) rather than deleted, and
+reported as `Corrupt` so each caller picks its own safe fallback. Nothing is silently reconstructed
+by the store itself. Destroying the evidence of a corrupt security-state file is the wrong default.
+
+## 15. Security state persistence
+
+### 15.1 Restart behaviour
+
+| State before restart | State after restart |
+|---|---|
+| `OWNER_PRESENT` | `OWNER_PRESENT` |
+| `ARMED` | `ARMED` |
+| `SECURITY_SESSION` | `SECURITY_SESSION` |
+
+`since_utc` is preserved too: it means "since this state began", not "since the process started".
+
+**`SECURITY_SESSION` is never downgraded by a restart.** If unauthorised activity opened a session,
+rebooting the machine must not clear it — otherwise a reboot is the cheapest possible attack on the
+entire feature. The session ends when the owner ends it. A future Android milestone will add a
+"This was me" response that calls `security.disarm`; that workflow is **not** implemented here.
+
+Restoring a state is **not** a transition and publishes no `security.state_changed` event.
+Announcing one would tell listeners the owner just acted when they did nothing.
+
+### 15.2 Documented recovery from corruption
+
+| Situation | Result |
+|---|---|
+| No file (first run) | `OWNER_PRESENT` |
+| Readable file, known state | that state, with its previous state and timestamp |
+| Unparseable file | **`ARMED`**, previous state null, quarantined, logged at error |
+| Parseable file, unrecognised state value | **`ARMED`**, same handling |
+
+The fallback is `ARMED`, not `OWNER_PRESENT`, and not `SECURITY_SESSION`. A damaged file means the
+previous state is *unknown*, and the one thing that must not be inferred from "unknown" is that the
+owner is present. `ARMED` asserts only that presence is unconfirmed; it does not fabricate an
+incident that may never have happened. The owner clears it with `security.disarm`. The fallback is
+itself persisted, so a second restart does not re-run recovery.
+
+If a write fails, the in-memory transition still stands and the failure is logged at error level.
+Refusing to arm because the disk is unavailable would be a worse failure than losing the state on
+the next restart — but it does silently weaken the restart guarantee, so it is loud.
+
+## 16. The security-state event refactor
+
+v0.2 published `security.state_changed` while holding the state mutation lock. v0.3 does not.
+
+```
+RequestTransition
+  ├─ lock (_gate)                    ← mutation lock
+  │    validate, apply, persist
+  │    _pending.Enqueue(payload)     ← enqueued in commit order
+  └─ (lock released)
+     PublishPending()
+       └─ lock (_publishGate)        ← a different lock
+            drain queue → EventBus   ← subscribers run here
+```
+
+Two properties pull in opposite directions: subscribers must not run under the mutation lock
+(arbitrary handler code inside a state lock is how a stall or deadlock arrives), but event order
+must still match commit order (or a client replaying the stream believes the wrong current state).
+
+A queue filled under `_gate` and drained under a separate `_publishGate` gives both. Enqueue order
+is commit order; a single drainer at a time preserves it. Whichever thread reaches the drain first
+may publish another thread's event — what matters is the sequence, not the emitter. Because `_gate`
+is free while subscribers run, a handler may safely call back into `RequestTransition`.
+
+Unchanged from v0.2: transitions are atomic, concurrent transitions are safe, and a no-op publishes
+nothing. Still one `Lock` type, no state-machine framework, no messaging library.
+
+## 17. PC installation identity
+
+`PcInstanceId` is a random GUID generated once and stored in `instance.json`.
+
+Deliberately **not** derived from any hardware or account identifier — no MAC address, no
+motherboard serial, no Windows product id, no user name, no hostname. Deriving it from hardware
+would make it a fingerprint that follows the owner across reinstalls and leaks machine details into
+every pairing QR code, which is photographed.
+
+If `instance.json` is unreadable, a new id is generated and the loss is logged at error level: a
+previously paired phone will no longer recognise the installation.
+
+## 18. The Primary Phone
+
+```
+PrimaryPhone
+├── DeviceId      random, 128-bit, base64url — an identifier, never a credential
+├── DisplayName   owner-facing label
+├── PairedAtUtc
+└── shared secret 256-bit, DPAPI-protected, never leaves the registry after pairing
+```
+
+There is one Primary Phone or none. `IPrimaryPhoneRegistry` is the only type that ever holds the
+secret: it is returned exactly once, by `Pair`, because that is the moment the phone must receive
+it. Verification happens inside the registry via `VerifyProof`, so no caller ever holds the
+credential.
+
+**`DeviceId` is not authentication.** Presenting the right device id proves nothing; presenting a
+guessed one simply means there is no secret to check against. The credential is the shared secret.
+
+### 18.1 Where the credential is stored and how it is protected
+
+`primary-phone.json`, with the secret as a base64 DPAPI blob (`ProtectedData.Protect`,
+`DataProtectionScope.CurrentUser`, plus a fixed application-scoped entropy string).
+
+DPAPI is the built-in Windows mechanism for exactly this: a per-user key managed by the OS, with no
+key material for this application to store, rotate, or leak. No cryptography is invented.
+
+- **What it buys:** the file is useless if copied to another machine or opened under another Windows
+  account.
+- **What it does not buy:** protection from code already running as this user. Nothing at this layer
+  can defend against that, and for a single-user personal system that is the right boundary — an
+  attacker with the owner's session can already act as the owner.
+
+If the blob cannot be unprotected (different account, restored profile, tampering), the system
+reports itself **unpaired** rather than half-loading a phone it cannot authenticate.
+
+### 18.2 Replacing and unpairing
+
+`pairing.begin` throws `already_paired` when a phone is paired, unless `replace_existing: true` is
+passed. Replacing the owner's phone is never implicit — a stray pairing attempt cannot take over a
+working setup.
+
+`device.unpair_primary` deletes the record, zeroes the in-memory secret, and cancels any live
+pairing session (leaving a code outstanding would let it re-pair moments after the owner revoked
+access). It is idempotent: revoking access must never fail because it was already revoked. After
+unpairing, the old credential authenticates nothing.
+
+## 19. Pairing
+
+### 19.1 Flow
+
+```
+Owner ── pairing.begin ──▶ PC Core
+                            ├─ 128-bit session id
+                            ├─ 256-bit pairing secret
+                            └─ payload, expiring in 5 minutes
+                                 │
+                    QR code ◀────┴────▶ copyable text
+                                 │
+Phone ── POST /device/pair ──────┘
+            (session id + pairing secret)
+                                 │
+                            PC Core mints DeviceId + 256-bit shared secret,
+                            persists them, consumes the session
+                                 │
+                    shared secret ◀─── returned exactly once
+```
+
+Sessions are **single-use, high-entropy, cancellable, and expiring**. The session is consumed on
+*any* completion attempt, right or wrong: that is what makes a code un-guessable by repetition and
+what makes concurrent completions resolve to exactly one winner. Starting a new session invalidates
+the previous one — only one code is ever live.
+
+There is no low-entropy PIN anywhere in this flow.
+
+### 19.2 Payload format
+
+```
+NEXUS1.<base64url(compact JSON)>
+
+{"v":1,"pc":"<PcInstanceId>","s":"<sessionId>","k":"<pairingSecret>"}
+```
+
+181 characters in practice — comfortably inside QR capacity. The `NEXUS1.` prefix identifies the
+format and version so a scanner rejects anything else outright; base64url keeps it QR- and
+clipboard-safe with no escaping surprises.
+
+It carries **only** what pairing needs. No hostname, user name, address, or hardware detail appears
+in something that gets photographed; a test asserts this.
+
+### 19.3 Owner capabilities vs the device surface
+
+| Surface | Actions | Why |
+|---|---|---|
+| Capabilities (dispatcher) | `device.get_primary`, `pairing.begin`, `pairing.cancel`, `device.unpair_primary` | Owner-facing and already trusted |
+| Device endpoints (`DeviceSurface.cs`) | `POST /device/pair`, `POST /device/auth/challenge`, `POST /device/auth/verify` | The phone is **unauthenticated** at these moments and must not arrive as an ordinary trusted caller |
+
+`/pairing/qr.png` renders the active session's payload as a PNG. It is fetched with the session
+token rather than set as a plain `<img src>`, because an `<img>` cannot send a header and the
+alternative would be dropping auth on an endpoint that serves the live pairing secret.
+
+In v0.3 all of these are served by the loopback transport and still require the local session
+token, because the only client that exists is the development simulator on this machine. The future
+remote transport will expose the two device operations without the loopback token — a phone
+authenticates with its shared secret instead.
+
+## 20. Authentication
+
+HMAC-SHA-256 challenge/response. The permanent secret is never transmitted after pairing.
+
+```
+Phone ── POST /device/auth/challenge ──▶ PC: 256-bit random challenge, single-use, 60s
+Phone ── HMAC-SHA256(shared_secret, message) ──▶ PC: recompute, constant-time compare
+```
+
+The signed message is domain-separated:
+
+```
+"nexus-auth-v1" 0x00 <PcInstanceId> 0x00 <DeviceId> 0x00 <challenge>
+```
+
+Binding the purpose, the installation, and the device means a proof captured here cannot be
+replayed against a different PC Core installation, a different device id, or a future protocol that
+reuses the same secret.
+
+**Replay protection:** a challenge is removed on the first verification attempt, success or
+failure. A captured proof is worthless once spent, and a wrong guess cannot be retried against the
+same challenge. Challenges also expire, and outstanding ones are capped.
+
+Every failure returns the same opaque `authentication_failed`. Telling an unauthenticated caller
+*why* it failed would let it probe which device ids and challenges exist.
+
+### 20.1 The exact condition that creates a trusted DEVICE caller
+
+```csharp
+AuthenticatedDevice device = authenticator.Verify(challengeId, deviceId, proof);  // throws otherwise
+CallerDescriptor caller  = device.ToCaller(transport, connectionId);              // ActorType.Device
+```
+
+`AuthenticatedDevice` has **no public constructor**. The only way to obtain one is a successful
+`Verify`, and `ToCaller` is the only method that produces `ActorType.Device`. Nothing in a request
+body can reach it.
+
+A request claiming `actor_type: "DEVICE"` with a `device_id` has no effect whatsoever — parameters
+are bound to a capability's own parameter record and never to the caller identity, which the
+transport stamps. A regression test asserts a hostile body still arrives as `LOCAL` / `null`.
+
+Loopback callers remain `ActorType.Local` with `DeviceId = null`, unchanged from v0.2.
+
+### 20.2 The policy seam, still not implemented
+
+`CapabilityDispatcher.DispatchAsync` remains the single choke point where a future policy decision
+point belongs, now with all four inputs genuinely available: caller identity, device identity,
+requested capability, and current security state. **v0.3 still implements no authorization.**
+Identity remains inert metadata.
+
+## 21. Development phone simulator
+
+The Android app does not exist, so the developer test page carries a minimal stand-in: paste or
+auto-fill a pairing code, pair as the phone, run an authentication challenge with the correct or a
+deliberately wrong secret, and forget the credential.
+
+It holds its credential in a **page-scoped variable only** — never `localStorage`, never a cookie,
+never anywhere it could outlive the tab. It is not the Android application and is not a client
+design.
+
+## 22. Windows auto-start
+
+**Mechanism:** one value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, named
+`PcCore`, whose data is the quoted path of the executable. Nothing else is written anywhere.
+
+Per-user, so it needs no administrator rights and cannot affect anyone else on the machine. It is
+also the location Windows surfaces in Task Manager's Startup apps tab and in Settings, so the owner
+can see and disable it without going near this application — precisely the property a startup entry
+should have.
+
+**Deliberately not:** no service, no elevation, no scheduled task, no watchdog, no re-registration
+after the owner removes it, no attempt to survive being killed, and no hiding. PC Core runs as an
+ordinary process in the user's session and is visible in Task Manager like anything else.
+
+**Escape hatch:** `PcCore:Startup:Enabled` (default `true`). Set it to `false` while debugging and
+PC Core will not touch the startup list — it reports what is registered and leaves it alone. The
+flag is the only thing that governs registration.
+
+**Manual control:** `--install-startup`, `--uninstall-startup`, `--startup-status`. Each handles
+its command and exits without opening a socket.
+
+## 23. Testing added in v0.3
+
+58 tests, taking the suite from 219 to 277.
+
+- **Security state persistence** — each of the three states surviving a restart; `SECURITY_SESSION`
+  specifically not downgraded; `since_utc` preserved; restart publishing no event; revision and
+  schema version; wire names on disk; corruption falling back to `ARMED`; quarantine rather than
+  deletion; recovery persisted so it does not repeat; an unrecognised state value treated as corrupt.
+- **Event refactor** — a subscriber calling back into the service without deadlocking (bounded, so
+  the failure mode is a fast failure rather than a hung run); another thread reading and mutating
+  state *while a subscriber is running*, which is the direct proof the mutation lock is not held;
+  event order still matching commit order under 16-way contention; persisted state agreeing with the
+  final state after contention.
+- **PC identity** — generated once, stable across restart, distinct per installation, and not
+  containing any machine identifier.
+- **Primary phone** — initially absent; pairing persisted; the credential still authenticating after
+  restart; a second phone unable to overwrite silently; explicit replacement retiring the old
+  credential; unpair removing it and being idempotent; the old credential failing afterwards; the
+  plaintext secret absent from disk **under real DPAPI**; a blob that cannot be unprotected leaving
+  the system unpaired; a corrupt record leaving it unpaired.
+- **DPAPI** — round-trip, distinct ciphertext, tampered blob rejected rather than returning garbage.
+- **Pairing** — 256-bit secret entropy; unique sessions; payload round-trip and absence of machine
+  identifiers; malformed payloads; expiry; cancellation; single use; wrong secret burning the
+  session; wrong session id; a new session invalidating the old; 16-way concurrent completion
+  pairing exactly one phone.
+- **Authentication** — success; wrong secret; a different challenge signed; an altered proof; replay;
+  failure also consuming the challenge; expiry; a guessed device id establishing nothing;
+  authenticating against an unpaired system; proofs bound to the installation; and that a verified
+  `AuthenticatedDevice` is the only route to a `DEVICE` caller.
+- **Regression** — a hostile request body asserting `actor_type: DEVICE` still arriving as `LOCAL`
+  with a null device id, plus the whole v0.1/v0.2 suite unchanged.
+
+Every test that touches persistence uses a throwaway directory; nothing in the suite reads or writes
+the real `%LOCALAPPDATA%\Nexus`. Test secrets are generated per-run and disposable.
+
+## 24. Explicitly NOT in v0.3
+
+Android app; remote transport; Tailscale; LAN or internet listener; NAT traversal, STUN, TURN, ICE,
+relays; remote screen streaming; keyboard/mouse control; camera or microphone; Claude Code, Codex,
+or any AI bridge; notifications; security screenshots or recording; activity detection;
+authorization policy; device PKI or ECDSA.
+
+## 25. v0.1 and v0.2 guarantees, re-verified
+
+Unchanged and confirmed by the full suite plus the manual sequence: allowed-root filesystem
+enforcement; loopback-only binding; session token, `Host` and `Origin` checks — including on the new
+device endpoints; no elevation; no shell execution; no file write/delete/move; no input injection;
+capabilities independent of transport; transports free of Windows-control logic; typed protocol
+models; and loopback callers remaining `LOCAL` with a null device id.
+
+The v0.2 security-state semantics are unchanged in every respect except that state now persists:
+same three states, same four-edge table, same idempotency, same refusal of invalid transitions.

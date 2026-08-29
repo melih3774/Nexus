@@ -1,5 +1,7 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using PcCore.Capabilities.Abstractions;
+using PcCore.Capabilities.Storage;
 using PcCore.Protocol;
 
 namespace PcCore.Capabilities.Security;
@@ -10,11 +12,26 @@ namespace PcCore.Capabilities.Security;
 /// </summary>
 /// <param name="State">The current state.</param>
 /// <param name="PreviousState">The state before this one, or <see langword="null"/> since startup.</param>
-/// <param name="SinceUtc">When the current state began. At startup, when PC Core started.</param>
+/// <param name="SinceUtc">When the current state began — preserved across restarts.</param>
 public sealed record SecurityStateSnapshot(
     SecurityState State,
     SecurityState? PreviousState,
     DateTimeOffset SinceUtc);
+
+/// <summary>On-disk shape of the security state.</summary>
+public sealed record PersistedSecurityState
+{
+    public int SchemaVersion { get; init; } = 1;
+    public required SecurityState State { get; init; }
+    public SecurityState? PreviousState { get; init; }
+    public required DateTimeOffset SinceUtc { get; init; }
+
+    /// <summary>
+    /// Increments on every committed change. Not used for concurrency control — the lock does
+    /// that — but it makes a state file self-describing when diagnosing an unexpected restart.
+    /// </summary>
+    public required long Revision { get; init; }
+}
 
 public enum SecurityTransitionOutcome
 {
@@ -117,42 +134,106 @@ public interface ISecurityStateService
 
 public sealed class SecurityStateService : ISecurityStateService
 {
+    public const string FileName = "security-state.json";
+
     /// <summary>
-    /// One lock guards the whole triple (state, previous, since) and the event publish.
-    /// <para>
-    /// Publishing <em>inside</em> the lock is deliberate. It is the simplest way to guarantee that
-    /// the order of <c>security.state_changed</c> events can never disagree with the order the
-    /// state actually moved: with the publish outside, two racing transitions could be applied
-    /// A-then-B but announced B-then-A, and a client replaying the events would end up believing
-    /// the wrong current state.
-    /// </para>
-    /// <para>
-    /// This is safe because the only subscriber — the WebSocket forwarder — hands the frame to a
-    /// background send and returns immediately, and <c>EventBus</c> swallows subscriber faults. The
-    /// standing constraint it creates: a <c>security.state_changed</c> handler must not synchronously
-    /// request another transition.
-    /// </para>
+    /// Guards the state triple (state, previous, since) and its persistence. Held only for the
+    /// duration of a commit; no subscriber code ever runs underneath it.
     /// </summary>
     private readonly Lock _gate = new();
 
+    /// <summary>
+    /// Serialises publication so events reach subscribers in commit order, without ever being
+    /// held at the same time as <see cref="_gate"/>. See <see cref="PublishPending"/>.
+    /// </summary>
+    private readonly Lock _publishGate = new();
+
+    /// <summary>Committed-but-unpublished events, enqueued under <see cref="_gate"/> in commit order.</summary>
+    private readonly ConcurrentQueue<SecurityStateChangedPayload> _pending = new();
+
     private readonly IEventPublisher _events;
+    private readonly AtomicJsonFileStore<PersistedSecurityState> _store;
     private readonly ILogger<SecurityStateService> _logger;
 
     private SecurityState _state;
     private SecurityState? _previousState;
     private DateTimeOffset _sinceUtc;
+    private long _revision;
 
-    public SecurityStateService(IEventPublisher events, ILogger<SecurityStateService> logger)
+    public SecurityStateService(
+        IEventPublisher events,
+        StateDirectory directory,
+        ILogger<SecurityStateService> logger)
     {
         _events = events;
         _logger = logger;
+        _store = new AtomicJsonFileStore<PersistedSecurityState>(directory, FileName, logger);
 
-        // Always OWNER_PRESENT at startup. State is in memory only: v0.2 does not persist it, so a
-        // restart cannot leave the machine believing it is still armed when nobody armed it.
-        _state = SecurityState.OwnerPresent;
-        _previousState = null;
-        _sinceUtc = DateTimeOffset.UtcNow;
+        var restored = Restore();
+        _state = restored.State;
+        _previousState = restored.PreviousState;
+        _sinceUtc = restored.SinceUtc;
+        _revision = restored.Revision;
     }
+
+    /// <summary>
+    /// Loads the state left by the previous run.
+    /// <para>
+    /// <b>Restart carries every state forward, including <c>SECURITY_SESSION</c>.</b> If
+    /// unauthorised activity opened a session, rebooting the machine must not be a way to clear
+    /// it — that would make a reboot the cheapest possible attack against the whole feature. The
+    /// session ends when the owner ends it.
+    /// </para>
+    /// <para>
+    /// <b>Corruption falls back to <c>ARMED</c>, never <c>OWNER_PRESENT</c>.</b> A damaged file
+    /// means the previous state is unknown, and the one thing that must not be inferred from
+    /// "unknown" is that the owner is present. <c>ARMED</c> asserts only that presence is
+    /// unconfirmed; it does not fabricate an incident that may never have happened. The owner
+    /// clears it with <c>security.disarm</c>. First run — no file at all — is a different case and
+    /// starts at <c>OWNER_PRESENT</c>.
+    /// </para>
+    /// </summary>
+    private PersistedSecurityState Restore()
+    {
+        var loaded = _store.Load();
+
+        switch (loaded.Status)
+        {
+            case StateLoadStatus.Loaded when Enum.IsDefined(loaded.Value!.State):
+                var restored = loaded.Value!;
+                _logger.LogInformation(
+                    "Restored security state {State} (since {Since:u}, revision {Revision}).",
+                    restored.State,
+                    restored.SinceUtc,
+                    restored.Revision);
+                return restored;
+
+            case StateLoadStatus.Loaded:
+                _logger.LogError(
+                    "Persisted security state contained an unrecognised value. Falling back to {State}.",
+                    SecurityState.Armed);
+                return Fresh(SecurityState.Armed);
+
+            case StateLoadStatus.Corrupt:
+                _logger.LogError(
+                    "Security state could not be restored. Falling back to {State} rather than assuming the "
+                    + "owner is present. Use security.disarm to clear it.",
+                    SecurityState.Armed);
+                return Persist(Fresh(SecurityState.Armed));
+
+            default:
+                _logger.LogInformation("No persisted security state; starting at {State}.", SecurityState.OwnerPresent);
+                return Persist(Fresh(SecurityState.OwnerPresent));
+        }
+    }
+
+    private static PersistedSecurityState Fresh(SecurityState state) => new()
+    {
+        State = state,
+        PreviousState = null,
+        SinceUtc = DateTimeOffset.UtcNow,
+        Revision = 0,
+    };
 
     public SecurityStateSnapshot Current
     {
@@ -177,6 +258,8 @@ public sealed class SecurityStateService : ISecurityStateService
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reason);
 
+        SecurityTransitionResult result;
+
         lock (_gate)
         {
             if (_state == target)
@@ -199,18 +282,78 @@ public sealed class SecurityStateService : ISecurityStateService
             _state = target;
             _previousState = previous;
             _sinceUtc = DateTimeOffset.UtcNow;
+            _revision++;
 
-            var snapshot = SnapshotLocked();
+            Persist(new PersistedSecurityState
+            {
+                State = _state,
+                PreviousState = _previousState,
+                SinceUtc = _sinceUtc,
+                Revision = _revision,
+            });
 
-            _logger.LogInformation(
-                "Security state {From} -> {To} ({Reason}).", previous, target, reason);
+            _logger.LogInformation("Security state {From} -> {To} ({Reason}).", previous, target, reason);
 
-            _events.Publish(
-                SecurityEvents.StateChanged,
-                new SecurityStateChangedPayload(previous, target));
+            // Enqueued under the lock, so the queue is in commit order. Published below, outside it.
+            _pending.Enqueue(new SecurityStateChangedPayload(previous, target));
 
-            return SecurityTransitionResult.Applied(snapshot);
+            result = SecurityTransitionResult.Applied(SnapshotLocked());
         }
+
+        PublishPending();
+        return result;
+    }
+
+    /// <summary>
+    /// Publishes committed events in commit order, with <see cref="_gate"/> released.
+    /// <para>
+    /// Two properties matter here and they pull in opposite directions. Subscribers must not run
+    /// while the mutation lock is held — arbitrary handler code inside a state lock is how a
+    /// deadlock or a long stall gets introduced. But event order must still match the order
+    /// transitions committed, or a client replaying the stream ends up believing the wrong current
+    /// state.
+    /// </para>
+    /// <para>
+    /// A queue filled under <see cref="_gate"/> and drained under a separate
+    /// <see cref="_publishGate"/> gives both: enqueue order is commit order, and a single drainer
+    /// at a time preserves it. Whichever thread reaches the drain first may publish another
+    /// thread's event, which is fine — what matters is the sequence, not who emits it.
+    /// </para>
+    /// <para>
+    /// Because <see cref="_gate"/> is free while subscribers run, a handler may safely call back
+    /// into <see cref="RequestTransition"/>: it commits, enqueues, and re-enters the drain, still
+    /// in FIFO order.
+    /// </para>
+    /// </summary>
+    private void PublishPending()
+    {
+        lock (_publishGate)
+        {
+            while (_pending.TryDequeue(out var payload))
+            {
+                _events.Publish(SecurityEvents.StateChanged, payload);
+            }
+        }
+    }
+
+    private PersistedSecurityState Persist(PersistedSecurityState state)
+    {
+        try
+        {
+            _store.Save(state);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // The in-memory transition stands. Refusing to arm because the disk is unavailable
+            // would be a worse failure than losing the state on the next restart — but this must
+            // be loud, because it silently weakens the restart guarantee.
+            _logger.LogError(
+                ex,
+                "Security state {State} could not be persisted. It is in effect now but will not survive a restart.",
+                state.State);
+        }
+
+        return state;
     }
 
     private SecurityStateSnapshot SnapshotLocked() => new(_state, _previousState, _sinceUtc);

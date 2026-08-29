@@ -2,7 +2,9 @@ using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using PcCore.Capabilities.Screen;
+using PcCore.Capabilities.Identity;
 using PcCore.Capabilities.Security;
+using PcCore.Capabilities.Storage;
 using PcCore.Capabilities.System;
 using PcCore.Windows;
 
@@ -163,4 +165,51 @@ public sealed class FakeProcessLister : IProcessLister
         [new ProcessEntry(1, "init", 1024), new ProcessEntry(2, "protected", null)];
 
     public IReadOnlyList<ProcessEntry> ListProcesses() => Entries;
+}
+
+/// <summary>
+/// A throwaway <see cref="StateDirectory"/> under the system temp path.
+/// <para>
+/// Every test that touches persistence uses one of these. Nothing in the suite may read or write
+/// the real <c>%LOCALAPPDATA%\Nexus</c>, which holds the owner's actual security state and phone
+/// credential.
+/// </para>
+/// </summary>
+public sealed class TempStateDirectory : IDisposable
+{
+    private readonly TempDirectory _directory;
+
+    public TempStateDirectory(string? label = null)
+    {
+        _directory = new TempDirectory(label ?? "state");
+        Directory = new StateDirectory(_directory.Path);
+    }
+
+    public StateDirectory Directory { get; }
+
+    public string Path => _directory.Path;
+
+    /// <summary>Overwrites a state file with arbitrary bytes, to exercise corruption handling.</summary>
+    public void Corrupt(string fileName, string content = "{ this is not valid json")
+        => System.IO.File.WriteAllText(Directory.File(fileName), content);
+
+    public bool FileExists(string fileName) => System.IO.File.Exists(Directory.File(fileName));
+
+    public string ReadRaw(string fileName) => System.IO.File.ReadAllText(Directory.File(fileName));
+
+    public void Dispose() => _directory.Dispose();
+}
+
+/// <summary>
+/// An <see cref="ISecretProtector"/> that does not protect anything.
+/// <para>
+/// Tests run against this rather than DPAPI so they stay deterministic and machine-independent.
+/// DPAPI itself is covered by its own focused test.
+/// </para>
+/// </summary>
+public sealed class PassThroughSecretProtector : ISecretProtector
+{
+    public byte[] Protect(byte[] plaintext) => (byte[])plaintext.Clone();
+
+    public byte[]? Unprotect(byte[] ciphertext) => (byte[])ciphertext.Clone();
 }

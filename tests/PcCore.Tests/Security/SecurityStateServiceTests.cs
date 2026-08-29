@@ -1,5 +1,6 @@
 using PcCore.Capabilities.Abstractions;
 using PcCore.Capabilities.Security;
+using PcCore.Capabilities.Storage;
 using PcCore.Protocol;
 using PcCore.Tests.TestSupport;
 using Xunit;
@@ -39,8 +40,11 @@ public sealed class SecurityStateServiceTests
 {
     private static (SecurityStateService Service, RecordingEventPublisher Events) Build()
     {
+        // Each service gets its own throwaway state directory, so persistence added in v0.3 never
+        // leaks between tests or touches the owner's real state.
         var events = new RecordingEventPublisher();
-        return (new SecurityStateService(events, TestLog.For<SecurityStateService>()), events);
+        var state = new TempStateDirectory();
+        return (new SecurityStateService(events, state.Directory, TestLog.For<SecurityStateService>()), events);
     }
 
     /// <summary>Drives the service into a state through legal transitions only.</summary>

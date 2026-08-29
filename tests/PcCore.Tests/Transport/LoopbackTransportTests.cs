@@ -9,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using PcCore.Capabilities.Abstractions;
 using PcCore.Capabilities.Security;
+using PcCore.Capabilities.Storage;
 using PcCore.Protocol;
 using PcCore.Tests.TestSupport;
 using PcCore.Transport.Loopback;
@@ -29,6 +30,21 @@ public sealed class LoopbackTransportTests : IAsyncLifetime
 {
     private sealed record PingResult(string Reply);
 
+    private sealed record WhoAmIResult(string Transport, ActorType ActorType, string? DeviceId);
+
+    /// <summary>Reports the identity the dispatcher supplied, so tests can assert it is not caller-controlled.</summary>
+    private sealed class WhoAmIAction : CapabilityAction<NoParameters, WhoAmIResult>
+    {
+        public override string Name => "test.whoami";
+        public override string Description => "Echoes the caller identity the dispatcher supplied.";
+
+        protected override ValueTask<WhoAmIResult> ExecuteAsync(
+            NoParameters parameters,
+            CapabilityContext context,
+            CancellationToken cancellationToken) => ValueTask.FromResult(
+                new WhoAmIResult(context.Caller.Transport, context.Caller.ActorType, context.Caller.DeviceId));
+    }
+
     private sealed class PingAction : CapabilityAction<NoParameters, PingResult>
     {
         public override string Name => "test.ping";
@@ -42,6 +58,7 @@ public sealed class LoopbackTransportTests : IAsyncLifetime
 
     private WebApplication _app = null!;
     private SessionToken _token = null!;
+    private TempStateDirectory _state = null!;
     private int _port;
 
     private string BaseUrl => $"http://127.0.0.1:{_port}";
@@ -63,9 +80,13 @@ public sealed class LoopbackTransportTests : IAsyncLifetime
         builder.Services.AddSingleton<IEventPublisher>(p => p.GetRequiredService<EventBus>());
         builder.Services.AddSingleton<IEventStream>(p => p.GetRequiredService<EventBus>());
         builder.Services.AddSingleton<ICapabilityAction, PingAction>();
+        builder.Services.AddSingleton<ICapabilityAction, WhoAmIAction>();
 
         // The real security subsystem, so security.state_changed travels the production path:
-        // service -> EventBus -> WebSocket connection -> client.
+        // service -> EventBus -> WebSocket connection -> client. Persistence is pointed at a
+        // throwaway directory so the suite never touches the owner's real state.
+        _state = new TempStateDirectory("transport");
+        builder.Services.AddSingleton(_state.Directory);
         builder.Services.AddSingleton<ISecurityStateService, SecurityStateService>();
         builder.Services.AddSingleton<ICapabilityAction, GetSecurityStateAction>();
         builder.Services.AddSingleton<ICapabilityAction, ArmSecurityAction>();
@@ -83,6 +104,7 @@ public sealed class LoopbackTransportTests : IAsyncLifetime
     {
         await _app.StopAsync();
         await _app.DisposeAsync();
+        _state.Dispose();
     }
 
     private static int FreePort()
@@ -315,6 +337,33 @@ public sealed class LoopbackTransportTests : IAsyncLifetime
 
         Assert.False(response.GetProperty("success").GetBoolean());
         Assert.Equal(ErrorCodes.InvalidRequest, response.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task LoopbackCallersRemainLocalAndCannotSelfAssertDeviceIdentity()
+    {
+        // v0.3 regression guard. Identity is stamped by the transport, never taken from the
+        // request: a body claiming ActorType.DEVICE with a device id must have no effect at all.
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var client = Client();
+
+        var hostile = new StringContent(
+            """
+            { "protocol_version": 1, "id": "t1", "type": "request", "action": "test.whoami",
+              "params": { "actor_type": "DEVICE", "device_id": "attacker-device" } }
+            """,
+            Encoding.UTF8,
+            "application/json");
+
+        var response = await client.PostAsync("/rpc", hostile, cancellationToken);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
+
+        Assert.True(json.GetProperty("success").GetBoolean());
+
+        var result = json.GetProperty("result");
+        Assert.Equal("LOCAL", result.GetProperty("actor_type").GetString());
+        Assert.Equal(JsonValueKind.Null, result.GetProperty("device_id").ValueKind);
+        Assert.StartsWith("loopback-", result.GetProperty("transport").GetString()!, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>PC Core v0.2 — developer test client</title>
+<title>PC Core v0.3 — developer test client</title>
 <style>
   /* Deliberately plain. This is a debug tool, not the product UI. */
   body { font: 13px/1.5 Consolas, monospace; margin: 0; padding: 16px; background: #14161a; color: #d8dee9; }
@@ -24,7 +24,7 @@
 </head>
 <body>
 
-<h1>PC Core v0.2 — developer test client</h1>
+<h1>PC Core v0.3 — developer test client</h1>
 <div class="sub">Loopback only. Not the product UI; this exists to verify the capability contracts.</div>
 
 <div class="cols">
@@ -78,6 +78,35 @@
         Connect the WebSocket below to watch security.state_changed. Re-arming while already armed
         succeeds without an event; arming during a SECURITY_SESSION is refused.
       </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>pair primary phone</legend>
+      <div class="row">
+        <button onclick="pairBegin(false)">pairing.begin</button>
+        <button onclick="pairBegin(true)">pairing.begin (replace)</button>
+        <button onclick="rpc('pairing.cancel').then(refreshPairing)">pairing.cancel</button>
+        <button onclick="rpc('device.get_primary')">device.get_primary</button>
+        <button onclick="rpc('device.unpair_primary').then(onUnpaired)">device.unpair_primary</button>
+      </div>
+      <div id="pairbox" style="margin-top:10px"></div>
+    </fieldset>
+
+    <fieldset>
+      <legend>development phone simulator</legend>
+      <div class="sub" style="margin:0 0 6px">
+        Stands in for the Android app that does not exist yet. The credential it receives lives in
+        this page only and is gone when you reload.
+      </div>
+      <label for="paste">pairing code (auto-filled by pairing.begin, or paste one)</label>
+      <input id="paste" placeholder="NEXUS1....">
+      <div class="row" style="margin-top:8px">
+        <button onclick="simPair()">1. pair as phone</button>
+        <button onclick="simAuth(false)">2. authenticate</button>
+        <button onclick="simAuth(true)">authenticate with WRONG secret</button>
+        <button onclick="simForget()">forget credential</button>
+      </div>
+      <div id="simstate" class="sub" style="margin:8px 0 0">no credential held</div>
     </fieldset>
 
     <fieldset>
@@ -189,6 +218,175 @@ function wsClose() { if (ws) ws.close(); }
 function wsSend(action, params) {
   if (!ws || ws.readyState !== 1) { log('WS', 'not connected'); return; }
   ws.send(JSON.stringify(envelope(action, params)));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Pairing UI + development phone simulator.
+//
+// The simulator holds its credential in a page-scoped variable only: never localStorage, never a
+// cookie, never anywhere it could outlive this tab. It exists to prove the flow end to end while
+// the Android app does not exist.
+// ---------------------------------------------------------------------------------------------
+let phoneCredential = null;
+
+async function pairBegin(replaceExisting) {
+  const json = await rpc('pairing.begin', { replace_existing: replaceExisting });
+  if (!json || !json.success) { refreshPairing(); return; }
+
+  document.getElementById('paste').value = json.result.payload;
+  renderPairing(json.result);
+}
+
+function renderPairing(session) {
+  const box = document.getElementById('pairbox');
+  box.innerHTML = '';
+
+  const heading = document.createElement('div');
+  heading.textContent = 'PAIR PRIMARY PHONE';
+  heading.style.cssText = 'color:#88c0d0;letter-spacing:1px;margin-bottom:8px';
+  box.appendChild(heading);
+
+  // Rendered server-side by QRCoder. Fetched rather than set as a plain src, because the
+  // endpoint requires the session token and an <img> tag cannot send a header — the alternative
+  // would be dropping auth on an endpoint that serves the live pairing secret.
+  const img = new Image();
+  img.alt = 'pairing QR code';
+  img.style.cssText = 'background:#fff;padding:8px;max-width:260px';
+  box.appendChild(img);
+
+  fetch('/pairing/qr.png', { headers: { 'X-PcCore-Token': TOKEN } })
+    .then(r => r.ok ? r.blob() : Promise.reject(new Error('HTTP ' + r.status)))
+    .then(blob => {
+      if (img.dataset.url) URL.revokeObjectURL(img.dataset.url);
+      img.dataset.url = URL.createObjectURL(blob);
+      img.src = img.dataset.url;
+    })
+    .catch(e => log('QR ERROR', String(e)));
+
+  const or = document.createElement('div');
+  or.className = 'sub';
+  or.textContent = 'or';
+  or.style.margin = '8px 0 4px';
+  box.appendChild(or);
+
+  const code = document.createElement('textarea');
+  code.value = session.payload;
+  code.readOnly = true;
+  code.rows = 3;
+  code.style.cssText = 'width:100%;font:inherit;background:#1c1f26;color:#d8dee9;border:1px solid #3b4250;box-sizing:border-box';
+  box.appendChild(code);
+
+  const copy = document.createElement('button');
+  copy.textContent = 'Copy pairing code';
+  copy.onclick = async () => {
+    try { await navigator.clipboard.writeText(session.payload); copy.textContent = 'Copied'; }
+    catch { code.select(); copy.textContent = 'Select + Ctrl-C'; }
+    setTimeout(() => { copy.textContent = 'Copy pairing code'; }, 1500);
+  };
+  box.appendChild(copy);
+
+  const expiry = document.createElement('div');
+  expiry.className = 'sub';
+  expiry.textContent = 'session ' + session.session_id + ' expires ' + new Date(session.expires_at_utc).toLocaleTimeString();
+  box.appendChild(expiry);
+}
+
+function refreshPairing() { document.getElementById('pairbox').innerHTML = ''; }
+
+function onUnpaired() {
+  refreshPairing();
+  simForget();
+}
+
+// --- the "phone" ------------------------------------------------------------------------------
+
+function decodePayload(text) {
+  if (!text || !text.startsWith('NEXUS1.')) return null;
+  try {
+    const b64 = text.slice(7).replace(/-/g, '+').replace(/_/g, '/');
+    return JSON.parse(atob(b64 + '==='.slice((b64.length + 3) % 4)));
+  } catch { return null; }
+}
+
+const b64uToBytes = v => Uint8Array.from(
+  atob(v.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((v.length + 3) % 4)),
+  c => c.charCodeAt(0));
+
+const bytesToB64u = b => btoa(String.fromCharCode(...new Uint8Array(b)))
+  .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+async function device(path, body) {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-PcCore-Token': TOKEN },
+    body: JSON.stringify(body ?? {})
+  });
+  return res.json();
+}
+
+async function simPair() {
+  const decoded = decodePayload(document.getElementById('paste').value.trim());
+  if (!decoded) { log('SIMULATOR', 'pairing code is not a valid NEXUS1 payload'); return; }
+
+  const json = await device('/device/pair', {
+    session_id: decoded.s,
+    pairing_secret: decoded.k,
+    display_name: 'Dev Simulator'
+  });
+
+  if (!json.success) { log('SIMULATOR pair FAILED', json.error); setSimState(); return; }
+
+  // Held in memory for this page only — this is the phone's copy of the shared secret.
+  phoneCredential = {
+    pcInstanceId: json.result.pc_instance_id,
+    deviceId: json.result.device_id,
+    secret: json.result.shared_secret
+  };
+
+  log('SIMULATOR paired', { device_id: phoneCredential.deviceId, shared_secret: '<held in page memory>' });
+  setSimState();
+  refreshPairing();
+}
+
+async function simAuth(useWrongSecret) {
+  if (!phoneCredential) { log('SIMULATOR', 'no credential held; pair first'); return; }
+
+  const challenge = await device('/device/auth/challenge', {});
+  if (!challenge.success) { log('SIMULATOR challenge FAILED', challenge.error); return; }
+
+  // The signed message must match what the PC builds: context, PC instance, device, challenge.
+  const secret = useWrongSecret ? bytesToB64u(crypto.getRandomValues(new Uint8Array(32))) : phoneCredential.secret;
+  const prefix = new TextEncoder().encode(
+    `nexus-auth-v1\0${phoneCredential.pcInstanceId}\0${phoneCredential.deviceId}\0`);
+  const nonce = b64uToBytes(challenge.result.challenge);
+
+  const message = new Uint8Array(prefix.length + nonce.length);
+  message.set(prefix, 0);
+  message.set(nonce, prefix.length);
+
+  const key = await crypto.subtle.importKey(
+    'raw', b64uToBytes(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const proof = bytesToB64u(await crypto.subtle.sign('HMAC', key, message));
+
+  const verified = await device('/device/auth/verify', {
+    challenge_id: challenge.result.challenge_id,
+    device_id: phoneCredential.deviceId,
+    proof
+  });
+
+  log(verified.success ? 'SIMULATOR AUTH OK' : 'SIMULATOR AUTH FAILED',
+      verified.success ? verified.result : verified.error);
+}
+
+function simForget() {
+  phoneCredential = null;
+  setSimState();
+}
+
+function setSimState() {
+  document.getElementById('simstate').textContent = phoneCredential
+    ? `credential held for device ${phoneCredential.deviceId} (page memory only)`
+    : 'no credential held';
 }
 
 // The host injects the resolved allowed roots so this page can offer valid paths without a

@@ -19,6 +19,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- QR rendering for the pairing code. Presentation only, so it stays in the host and never
+         reaches the capability layer. -->
+    <PackageReference Include="QRCoder" Version="1.6.0" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
     <!--
       The Web SDK includes wwwroot for publish but not for the build output directory. The host

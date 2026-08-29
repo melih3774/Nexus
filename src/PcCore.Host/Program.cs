@@ -6,8 +6,10 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using PcCore.Capabilities.Abstractions;
 using PcCore.Capabilities.Files;
+using PcCore.Capabilities.Identity;
 using PcCore.Capabilities.Screen;
 using PcCore.Capabilities.Security;
+using PcCore.Capabilities.Storage;
 using PcCore.Capabilities.System;
 using PcCore.Transport.Loopback;
 using PcCore.Windows;
@@ -24,6 +26,13 @@ public static class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        // Startup registration is management, not serving: handle it and exit without opening a
+        // socket, so `--install-startup` never leaves a listener behind.
+        if (TryHandleStartupCommand(args, out var startupExitCode))
+        {
+            return startupExitCode;
+        }
+
         // Must run before any GDI work. Without it Windows DPI-virtualises the process on a scaled
         // display and screenshots come back silently downscaled rather than failing outright.
         var dpiAware = DpiAwareness.TryEnablePerMonitorV2();
@@ -50,13 +59,15 @@ public static class Program
         var transportOptions = Bind<LoopbackTransportOptions>(builder.Configuration, LoopbackTransportOptions.SectionName);
         var filesOptions = Bind<FilesOptions>(builder.Configuration, FilesOptions.SectionName);
         var screenOptions = Bind<ScreenOptions>(builder.Configuration, ScreenOptions.SectionName);
+        var pairingOptions = Bind<PairingOptions>(builder.Configuration, PairingOptions.SectionName);
+        var autoStartOptions = Bind<AutoStartOptions>(builder.Configuration, AutoStartOptions.SectionName);
 
         var token = SessionToken.Generate();
 
         builder.ConfigureLoopbackKestrel(transportOptions);
         builder.Services.AddLoopbackTransport(transportOptions, token);
 
-        RegisterCapabilities(builder.Services, filesOptions, screenOptions);
+        RegisterCapabilities(builder.Services, filesOptions, screenOptions, pairingOptions);
 
         var app = builder.Build();
 
@@ -98,6 +109,20 @@ public static class Program
 
         var testPage = LoadTestPage(app.Environment.ContentRootPath, token, authorizer.Roots.Roots, logger);
         app.MapLoopbackTransport(testPage);
+        app.MapDeviceSurface();
+
+        // Touch the identity so it is generated on first run rather than on first pairing.
+        var pcInstanceId = app.Services.GetRequiredService<IPcIdentityProvider>().PcInstanceId;
+        var primaryPhone = app.Services.GetRequiredService<IPrimaryPhoneRegistry>().Current;
+
+        logger.LogInformation(
+            "PC instance {PcInstanceId}; primary phone: {Phone}",
+            pcInstanceId,
+            primaryPhone is null ? "not paired" : $"{primaryPhone.DeviceId} ({primaryPhone.DisplayName})");
+
+        logger.LogInformation("Security state: {State}", app.Services.GetRequiredService<ISecurityStateService>().Current.State);
+
+        ApplyAutoStart(app.Services, autoStartOptions, logger);
 
         var endpoint = LoopbackTransport.DescribeEndpoint(transportOptions);
         logger.LogInformation("Listening on {Endpoint} (loopback only)", endpoint);
@@ -127,18 +152,29 @@ public static class Program
     private static void RegisterCapabilities(
         IServiceCollection services,
         FilesOptions filesOptions,
-        ScreenOptions screenOptions)
+        ScreenOptions screenOptions,
+        PairingOptions pairingOptions)
     {
         // --- Platform implementations (the only Windows-specific registrations) ---------------
         services.AddSingleton<IRealPathResolver, Win32RealPathResolver>();
+        services.AddSingleton<ISecretProtector, WindowsSecretProtector>();
+        services.AddSingleton<WindowsAutoStart>();
         services.AddSingleton<IKnownFolderResolver, WindowsKnownFolderResolver>();
         services.AddSingleton<ISystemInfoProvider, WindowsSystemInfoProvider>();
         services.AddSingleton<IProcessLister, WindowsProcessLister>();
         services.AddSingleton<IDisplayGeometry, SystemDisplayGeometry>();
         services.AddSingleton<IScreenCapture, GdiScreenCapture>();
 
+        // --- Persistent state (all under %LOCALAPPDATA%\Nexus, never in the repository) --------
+        services.AddSingleton(StateDirectory.ForCurrentUser());
+        services.AddSingleton<IPcIdentityProvider, PcIdentityProvider>();
+        services.AddSingleton<IPrimaryPhoneRegistry, PrimaryPhoneRegistry>();
+        services.AddSingleton<IPairingService, PairingService>();
+        services.AddSingleton<IDeviceAuthenticator, DeviceAuthenticator>();
+
         // --- Security boundary ----------------------------------------------------------------
         services.AddSingleton(screenOptions);
+        services.AddSingleton(pairingOptions);
         services.AddSingleton(provider => AllowedRoots.Create(
             filesOptions.AllowedRoots,
             provider.GetRequiredService<IRealPathResolver>(),
@@ -166,6 +202,10 @@ public static class Program
         services.AddSingleton<ICapabilityAction, GetSecurityStateAction>();
         services.AddSingleton<ICapabilityAction, ArmSecurityAction>();
         services.AddSingleton<ICapabilityAction, DisarmSecurityAction>();
+        services.AddSingleton<ICapabilityAction, GetPrimaryDeviceAction>();
+        services.AddSingleton<ICapabilityAction, BeginPairingAction>();
+        services.AddSingleton<ICapabilityAction, CancelPairingAction>();
+        services.AddSingleton<ICapabilityAction, UnpairPrimaryDeviceAction>();
     }
 
     private static T Bind<T>(IConfiguration configuration, string section) where T : new()
@@ -209,5 +249,72 @@ public static class Program
             logger.LogWarning(ex, "Test page could not be read; '/' will return 404.");
             return null;
         }
+    }
+
+    /// <summary>
+    /// Applies the auto-start preference. The config flag is the only thing that governs this:
+    /// PC Core never re-registers itself against the owner's wishes and never reinstates an entry
+    /// the owner has removed while the flag is off.
+    /// </summary>
+    private static void ApplyAutoStart(IServiceProvider services, AutoStartOptions options, ILogger logger)
+    {
+        var autoStart = services.GetRequiredService<WindowsAutoStart>();
+
+        if (!options.Enabled)
+        {
+            var status = autoStart.GetStatus();
+            logger.LogInformation(
+                "Auto-start is disabled by configuration (PcCore:Startup:Enabled=false); "
+                + "currently {State}.",
+                status.Registered ? "still registered from an earlier run" : "not registered");
+            return;
+        }
+
+        autoStart.Register();
+    }
+
+    /// <summary>
+    /// Handles <c>--install-startup</c>, <c>--uninstall-startup</c> and <c>--startup-status</c>.
+    /// Returns true when the process should exit instead of serving.
+    /// </summary>
+    private static bool TryHandleStartupCommand(string[] args, out int exitCode)
+    {
+        exitCode = 0;
+
+        var command = args.FirstOrDefault(a =>
+            a is "--install-startup" or "--uninstall-startup" or "--startup-status");
+
+        if (command is null)
+        {
+            return false;
+        }
+
+        using var factory = LoggerFactory.Create(b => b.AddSimpleConsole(c => c.SingleLine = true));
+        var autoStart = new WindowsAutoStart(factory.CreateLogger<WindowsAutoStart>());
+
+        switch (command)
+        {
+            case "--install-startup":
+                var registered = autoStart.Register();
+                Console.WriteLine($"Auto-start registered: {registered.RegisteredCommand}");
+                break;
+
+            case "--uninstall-startup":
+                Console.WriteLine(autoStart.Unregister()
+                    ? "Auto-start entry removed."
+                    : "No auto-start entry was present.");
+                break;
+
+            default:
+                var status = autoStart.GetStatus();
+                Console.WriteLine($"Registered : {status.Registered}");
+                Console.WriteLine($"Command    : {status.RegisteredCommand ?? "(none)"}");
+                Console.WriteLine($"Expected   : {status.ExpectedCommand}");
+                Console.WriteLine($"Up to date : {status.UpToDate}");
+                Console.WriteLine($@"Registry   : HKCU\{WindowsAutoStart.RunKeyPath}\{WindowsAutoStart.ValueName}");
+                break;
+        }
+
+        return true;
     }
 }

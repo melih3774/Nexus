@@ -21,7 +21,10 @@ public sealed class SecurityCapabilityTests
     private static Harness Build()
     {
         var events = new RecordingEventPublisher();
-        var state = new SecurityStateService(events, TestLog.For<SecurityStateService>());
+        var state = new SecurityStateService(
+            events,
+            new TempStateDirectory().Directory,
+            TestLog.For<SecurityStateService>());
 
         var registry = new CapabilityRegistry(
         [

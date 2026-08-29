@@ -162,3 +162,80 @@ They share a namespace and nothing else. Splitting into a third project was reje
 ## Not started
 
 Device pairing, remote transport, Android client, the policy decision point, and every part of security recording. See SPEC §12.10 for the explicit exclusion list.
+
+---
+
+# PC Core v0.3 — Personal Device Pairing, Persistence, and Startup
+
+Derived from [SPEC.md §13–25](SPEC.md). **Status: complete.**
+
+The v0.1 and v0.2 plans above are kept as history. v0.3 changed one v0.2 decision on purpose (the
+event-publish location) and made one v0.2 statement obsolete (security state being in-memory).
+
+## Where the new code belongs
+
+| Concern | Location | Why there |
+|---|---|---|
+| Atomic JSON state store | `PcCore.Capabilities/Storage/` | Platform-neutral file IO; no Windows API needed |
+| PC identity, phone registry, pairing, authentication | `PcCore.Capabilities/Identity/` | Policy and protocol logic, testable without Windows |
+| DPAPI protection, auto-start registry | `PcCore.Windows/` | The only assembly permitted P/Invoke and Windows APIs |
+| Device-facing HTTP endpoints, QR rendering | `PcCore.Host/DeviceSurface.cs` | Composition root; keeps the generic transport free of pairing |
+| Phone simulator | `PcCore.Host/wwwroot/index.html` | The existing dev client; no new project for a stand-in |
+
+Two deliberate placements worth re-reading:
+
+- **`ISecretProtector` is an interface in Capabilities, implemented by DPAPI in Windows.** Same
+  pattern as `IRealPathResolver` and `IScreenCapture`: the capability layer stays platform-neutral
+  and unit-testable, and every Windows call site remains in one auditable assembly.
+- **Device endpoints live in the Host, not in `PcCore.Transport.Loopback`.** They are the contract
+  the *remote* transport will implement; putting them in the loopback transport would imply they
+  belong to it. The loopback transport is unchanged by v0.3.
+
+## The JSON rule, restated
+
+v0.1 said "`System.Text.Json` is referenced by `PcCore.Protocol` only". v0.3 makes that precise:
+JSON appears in exactly **two** places — `PcCore.Protocol` (the wire codec) and
+`PcCore.Capabilities/Storage` (the disk store). It appears in no capability, no transport, and no
+Windows type. The point of the original rule was that raw JSON must not be spread through the
+application, and a single dedicated storage layer with typed records does not violate it.
+
+## Steps as executed
+
+| # | Step | Verified by |
+|---|---|---|
+| 1 | Clean Release build + full suite on untouched v0.2, then `git init`, `.gitignore`, commit, tag `v0.2-security-state` | 219/219 before any change |
+| 2 | `AtomicJsonFileStore<T>`, `StateDirectory` | persistence and corruption tests |
+| 3 | `ISecretProtector` + `WindowsSecretProtector` (DPAPI) | round-trip and tamper tests |
+| 4 | `PcIdentityProvider` | identity tests |
+| 5 | SecurityState persistence + the event-publish refactor | persistence and ordering tests |
+| 6 | `PrimaryPhoneRegistry`, `PairingService`, `DeviceAuthenticator` | pairing and auth suites |
+| 7 | Four owner capabilities; three device endpoints; QR endpoint | manual sequence |
+| 8 | `WindowsAutoStart` + `--install/--uninstall/--startup-status` | registry inspection |
+| 9 | Phone simulator in the dev page | manual pair + authenticate |
+| 10 | Version 0.2.0 → 0.3.0; docs; commit; tag `v0.3-primary-device` | 277/277, clean Release |
+
+## Decisions worth re-reading before v0.4
+
+1. **`SECURITY_SESSION` survives restart.** A reboot must not be a way to clear an incident. The
+   "This was me" phone response that ends a session is a future Android milestone.
+2. **Corruption falls back to `ARMED`.** Not `OWNER_PRESENT` (which would assert something unknown)
+   and not `SECURITY_SESSION` (which would fabricate an incident).
+3. **Publish outside the mutation lock, ordered by a queue.** Removes the deadlock surface v0.2
+   carried while keeping event order equal to commit order.
+4. **One shared secret, not a device PKI.** 256 bits from a CSPRNG, DPAPI-protected at rest. For one
+   owner and one phone, a certificate hierarchy would add moving parts without adding security.
+5. **`AuthenticatedDevice` has no public constructor.** It is the only route to an
+   `ActorType.Device` caller, which is what makes self-asserted device identity structurally
+   impossible rather than merely unimplemented.
+6. **Pairing sessions are consumed on any attempt**, right or wrong. Single-use in the strong sense,
+   and the reason concurrent completions resolve to exactly one winner.
+7. **Auto-start is one HKCU `Run` value.** Visible in Task Manager, removable without this app, no
+   elevation, no watchdog, no reinstatement.
+
+## Known follow-ups (not started)
+
+- The `/device/*` endpoints still require the loopback session token, because the only client is the
+  local simulator. The remote transport will expose them authenticated by the shared secret instead.
+- Nothing consumes `ActorType` or `DeviceId` for authorization. The policy seam
+  (`CapabilityDispatcher.DispatchAsync`) is still empty by design.
+- Secret rotation is not implemented: replacing the credential means re-pairing.

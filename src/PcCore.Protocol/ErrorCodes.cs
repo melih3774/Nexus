@@ -37,6 +37,20 @@ public static class ErrorCodes
     /// </summary>
     public const string InvalidStateTransition = "invalid_state_transition";
 
+    /// <summary>A primary phone is already paired and replacement was not requested explicitly.</summary>
+    public const string AlreadyPaired = "already_paired";
+
+    /// <summary>
+    /// Pairing could not be completed. Deliberately non-specific: distinguishing "wrong secret"
+    /// from "expired" from "no session" would let an unpaired party map the pairing machine.
+    /// </summary>
+    public const string PairingFailed = "pairing_failed";
+
+    /// <summary>
+    /// A device failed to prove possession of the shared secret. Also deliberately non-specific.
+    /// </summary>
+    public const string AuthenticationFailed = "authentication_failed";
+
     /// <summary>An unexpected fault. Details are deliberately suppressed.</summary>
     public const string InternalError = "internal_error";
 }
