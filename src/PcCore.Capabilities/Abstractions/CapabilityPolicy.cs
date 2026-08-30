@@ -41,6 +41,12 @@ public sealed class DefaultCapabilityPolicy : ICapabilityPolicy
     /// </para>
     /// </summary>
     /// <remarks>
+    /// v0.7 lets the phone inspect and resolve security incidents, and nothing more. Deleting
+    /// evidence and changing security configuration stay local-only and behind Windows Hello: a
+    /// stolen phone must not be able to destroy the recording of the theft, or quietly turn the
+    /// camera off before it happens.
+    /// </remarks>
+    /// <remarks>
     /// v0.6 adds live viewing and remote input. Both are a genuine step up in power — one lets the
     /// phone watch the desktop continuously, the other lets it type — and both are listed here
     /// explicitly rather than arriving as a side effect of existing. What stayed out is as
@@ -73,6 +79,15 @@ public sealed class DefaultCapabilityPolicy : ICapabilityPolicy
         "input.key",
         "input.text",
         "input.release_all",
+
+        // v0.7 - the security workflow. The phone receives the alert, so it must be able to see what
+        // happened and answer it. Inspecting and resolving an incident is the whole point of the
+        // notification it just got.
+        "security.sessions.list",
+        "security.sessions.get",
+        "security.evidence.get",
+        "security.this_was_me",
+        "security.not_me",
     }.ToFrozenSet(StringComparer.Ordinal);
 
     public PolicyDecision Evaluate(string action, CallerDescriptor caller)

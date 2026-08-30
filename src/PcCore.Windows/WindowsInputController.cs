@@ -224,6 +224,20 @@ public sealed class WindowsInputController : IInputController
 
     private InputResult Send(params Input[] events)
     {
+        // Stamped here rather than at each call site, so nothing Nexus injects can ever reach the
+        // desktop unmarked and be read back as local human activity.
+        for (var i = 0; i < events.Length; i++)
+        {
+            if (events[i].Type == InputInterop.InputMouse)
+            {
+                events[i].Mouse.ExtraInfo = InputInterop.NexusInjectionSignature;
+            }
+            else
+            {
+                events[i].Keyboard.ExtraInfo = InputInterop.NexusInjectionSignature;
+            }
+        }
+
         uint inserted;
 
         try

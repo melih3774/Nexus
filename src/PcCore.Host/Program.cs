@@ -11,13 +11,16 @@ using PcCore.Capabilities.Input;
 using PcCore.Capabilities.Identity;
 using PcCore.Capabilities.Screen;
 using PcCore.Capabilities.Security;
+using PcCore.Capabilities.Security.Detection;
+using PcCore.Capabilities.Security.Evidence;
+using PcCore.Capabilities.Security.Sessions;
 using PcCore.Capabilities.Storage;
 using PcCore.Capabilities.System;
 using PcCore.Transport.Loopback;
 using PcCore.Transport.Remote;
 using PcCore.Windows;
 
-[assembly: SupportedOSPlatform("windows")]
+[assembly: SupportedOSPlatform("windows10.0.17763.0")]
 
 namespace PcCore.Host;
 
@@ -34,6 +37,13 @@ public static class Program
         if (TryHandleStartupCommand(args, out var startupExitCode))
         {
             return startupExitCode;
+        }
+
+        // Exercises the security workflow against this machine's real hooks, camera and microphone.
+        if (args.Contains("--selftest-security"))
+        {
+            using var securityLogs = LoggerFactory.Create(b => b.AddSimpleConsole(c => c.SingleLine = true));
+            return await SecuritySelfTest.RunAsync(args, securityLogs).ConfigureAwait(false);
         }
 
         // A local diagnostic for the three v0.6 pieces that only exist against real Windows.
@@ -91,13 +101,25 @@ public static class Program
         var remoteOptions = Bind<RemoteTransportOptions>(builder.Configuration, RemoteTransportOptions.SectionName);
         var streamOptions = Bind<StreamOptions>(builder.Configuration, StreamOptions.SectionName);
         var inputOptions = Bind<InputOptions>(builder.Configuration, InputOptions.SectionName);
+        var detectionOptions = Bind<DetectionOptions>(builder.Configuration, DetectionOptions.SectionName);
+        var evidenceOptions = Bind<EvidenceOptions>(builder.Configuration, EvidenceOptions.SectionName);
+        var securityStorage = Bind<SecurityStorageOptions>(builder.Configuration, SecurityStorageOptions.SectionName);
 
         var token = SessionToken.Generate();
 
         builder.ConfigureLoopbackKestrel(transportOptions);
         builder.Services.AddLoopbackTransport(transportOptions, token);
 
-        RegisterCapabilities(builder.Services, filesOptions, screenOptions, pairingOptions, streamOptions, inputOptions);
+        RegisterCapabilities(
+            builder.Services,
+            filesOptions,
+            screenOptions,
+            pairingOptions,
+            streamOptions,
+            inputOptions,
+            detectionOptions,
+            evidenceOptions,
+            securityStorage);
         RegisterRemoteTransport(builder.Services, remoteOptions);
 
         var app = builder.Build();
@@ -154,6 +176,7 @@ public static class Program
         logger.LogInformation("Security state: {State}", app.Services.GetRequiredService<ISecurityStateService>().Current.State);
 
         WireRemoteControl(app.Services, logger);
+        StartSecurityWorkflow(app.Services, logger);
         logger.LogInformation("Remote transport port: {Port} (Tailscale only)", remoteOptions.Port);
 
         ApplyAutoStart(app.Services, autoStartOptions, logger);
@@ -191,7 +214,10 @@ public static class Program
         ScreenOptions screenOptions,
         PairingOptions pairingOptions,
         StreamOptions streamOptions,
-        InputOptions inputOptions)
+        InputOptions inputOptions,
+        DetectionOptions detectionOptions,
+        EvidenceOptions evidenceOptions,
+        SecurityStorageOptions securityStorage)
     {
         // --- Platform implementations (the only Windows-specific registrations) ---------------
         services.AddSingleton<IRealPathResolver, Win32RealPathResolver>();
@@ -211,6 +237,15 @@ public static class Program
         services.AddSingleton<IFrameEncoder, JpegFrameEncoder>();
         services.AddSingleton<IInputController, WindowsInputController>();
         services.AddSingleton<IRemoteIndicator, WindowsRemoteIndicator>();
+
+        // v0.7 platform pieces. Detection reads two fields of an input event and never the key; the
+        // media sources go through the standard Windows APIs so the OS privacy controls and the
+        // camera indicator light all still apply.
+        services.AddSingleton<ISecurityActivityDetector, WindowsActivityDetector>();
+        services.AddSingleton<IScreenEvidenceSource, WindowsScreenEvidence>();
+        services.AddSingleton<ICameraEvidenceSource, WindowsCameraEvidence>();
+        services.AddSingleton<IAudioEvidenceSource, WindowsAudioEvidence>();
+        services.AddSingleton<IOwnerVerifier, WindowsHelloVerifier>();
 
         // --- Persistent state (all under %LOCALAPPDATA%\Nexus, never in the repository) --------
         services.AddSingleton(StateDirectory.ForCurrentUser());
@@ -244,6 +279,16 @@ public static class Program
         services.AddSingleton<DesktopStreamService>();
         services.AddSingleton<IInputService, InputService>();
         services.AddSingleton<RemoteIndicatorService>();
+
+        // --- The security workflow (v0.7) -------------------------------------------------------
+        services.AddSingleton(detectionOptions);
+        services.AddSingleton(evidenceOptions);
+        services.AddSingleton(securityStorage);
+        services.AddSingleton<SecurityConfigurationStore>();
+        services.AddSingleton<ISecuritySessionStore, SecuritySessionStore>();
+        services.AddSingleton<SecurityActivityMonitor>();
+        services.AddSingleton<SecurityIncidentService>();
+        services.AddSingleton<SecurityStatusReader>();
 
         // --- Protocol plumbing ------------------------------------------------------------------
         services.AddSingleton<EventBus>();
@@ -287,6 +332,60 @@ public static class Program
         // remote access is a decision taken at the PC.
         services.AddSingleton<ICapabilityAction, GetIndicatorAction>();
         services.AddSingleton<ICapabilityAction, SetIndicatorAction>();
+
+        // --- Capabilities added by v0.7 -----------------------------------------------------------
+        services.AddSingleton<ICapabilityAction, ListSecuritySessionsAction>();
+        services.AddSingleton<ICapabilityAction, GetSecuritySessionAction>();
+        services.AddSingleton<ICapabilityAction, GetSecurityEvidenceAction>();
+        services.AddSingleton<ICapabilityAction, ThisWasMeAction>();
+        services.AddSingleton<ICapabilityAction, NotMeAction>();
+
+        // Local-only, and deliberately absent from the DEVICE allowlist: deleting evidence and
+        // weakening protection are decisions taken at the PC, behind Windows Hello.
+        services.AddSingleton<ICapabilityAction, DeleteSecuritySessionAction>();
+        services.AddSingleton<ICapabilityAction, GetSecurityConfigAction>();
+        services.AddSingleton<ICapabilityAction, SetSecurityConfigAction>();
+    }
+
+    /// <summary>
+    /// Starts security detection and reconciles whatever the last run left behind.
+    /// <para>
+    /// Detection runs whatever the state is; what it <em>does</em> depends entirely on the state.
+    /// In OWNER_PRESENT the monitor discards everything it sees, so no evidence path is reachable —
+    /// that is what makes "nothing is recorded while the owner is present" a property of the code
+    /// rather than a promise.
+    /// </para>
+    /// </summary>
+    private static void StartSecurityWorkflow(IServiceProvider services, ILogger logger)
+    {
+        var incidents = services.GetRequiredService<SecurityIncidentService>();
+        var monitor = services.GetRequiredService<SecurityActivityMonitor>();
+        var configuration = services.GetRequiredService<SecurityConfigurationStore>().Current;
+
+        // Recovery first: a restart during an incident continues that incident rather than opening
+        // a second one for the same event.
+        incidents.Recover();
+        monitor.Start();
+
+        logger.LogInformation(
+            "Security workflow: detection {Detection}, screen {Screen}, camera {Camera}, microphone {Audio}, "
+            + "retention {Days} days.",
+            configuration.DetectionEnabled ? "on" : "off",
+            configuration.Screen,
+            configuration.Camera,
+            configuration.Audio,
+            configuration.RetentionDays);
+
+        var active = incidents.Active;
+
+        if (active is not null)
+        {
+            logger.LogWarning(
+                "A security session is active: {SessionId}, started {Started:u}, {Resolution}.",
+                active.SessionId,
+                active.StartedAtUtc,
+                active.Resolution);
+        }
     }
 
     /// <summary>

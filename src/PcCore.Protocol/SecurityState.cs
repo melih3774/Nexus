@@ -45,4 +45,23 @@ public static class SecurityEvents
 {
     /// <summary>Published only when the state actually changed. Never for a no-op.</summary>
     public const string StateChanged = "security.state_changed";
+
+    /// <summary>
+    /// A security incident began. This is the one that becomes a high-priority alert on the phone.
+    /// <para>
+    /// Exactly one per incident. Everything that happens afterwards — more evidence, more timeline —
+    /// updates the session without raising another alarm, because an alert that fires repeatedly is
+    /// an alert that gets silenced.
+    /// </para>
+    /// </summary>
+    public const string SessionStarted = "security.session_started";
+
+    /// <summary>The open incident changed: new evidence, a new timeline entry. Not an alert.</summary>
+    public const string SessionUpdated = "security.session_updated";
+
+    /// <summary>
+    /// The owner resolved an incident. Worth a second notification only when it was marked NOT ME,
+    /// which is a genuinely important change rather than routine progress.
+    /// </summary>
+    public const string SessionResolved = "security.session_resolved";
 }

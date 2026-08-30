@@ -17,7 +17,19 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.activity.compose.LocalActivity
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.fragment.app.FragmentActivity
+import dev.nexus.control.security.ActiveIncidentPanel
+import dev.nexus.control.security.BiometricOwnerConfirmation
+import dev.nexus.control.security.EvidenceDialog
+import dev.nexus.control.security.HistoryRow
+import dev.nexus.control.security.SecurityAlertToggle
+import dev.nexus.control.security.SecurityIncidentViewModel
+import dev.nexus.control.security.SessionDetailDialog
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -40,11 +52,25 @@ import dev.nexus.control.protocol.SecurityState
 @Composable
 fun SecurityScreen(
     modifier: Modifier = Modifier,
+    onViewLive: () -> Unit = {},
     viewModel: SecurityViewModel = viewModel(factory = SecurityViewModel.Factory),
+    incidentViewModel: SecurityIncidentViewModel = viewModel(factory = SecurityIncidentViewModel.Factory),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val incidents by incidentViewModel.state.collectAsStateWithLifecycle()
+    val viewedEvidence by incidentViewModel.evidence.collectAsStateWithLifecycle()
 
-    LaunchedEffect(Unit) { viewModel.refresh() }
+    // BiometricPrompt needs the hosting activity. Built here rather than injected so the view model
+    // stays free of Android UI types and can be tested with a scripted prompt.
+    val activity = LocalActivity.current as? FragmentActivity
+    val confirmation = remember(activity) {
+        activity?.let { BiometricOwnerConfirmation(it) }
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.refresh()
+        incidentViewModel.refresh()
+    }
 
     Column(
         modifier
@@ -64,6 +90,38 @@ fun SecurityScreen(
                 Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
             }
             Spacer(Modifier.height(16.dp))
+        }
+
+        incidents.error?.let {
+            Panel {
+                Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+            }
+            Spacer(Modifier.height(16.dp))
+        }
+
+        incidents.confirmationMessage?.let {
+            Panel {
+                Column {
+                    Text(it, style = MaterialTheme.typography.bodyMedium)
+                    TextButton(onClick = incidentViewModel::dismissMessage) { Text("OK") }
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+        }
+
+        incidents.active?.let { active ->
+            ActiveIncidentPanel(
+                session = active,
+                busy = incidents.busy,
+                onViewLive = onViewLive,
+                onThisWasMe = {
+                    confirmation?.let(incidentViewModel::thisWasMe)
+                },
+                onNotMe = incidentViewModel::notMe,
+                onViewEvidence = { incidentViewModel.viewEvidence(active.summary.sessionId, it) },
+            )
+
+            Spacer(Modifier.height(20.dp))
         }
 
         when (state.state) {
@@ -124,7 +182,38 @@ fun SecurityScreen(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+
+        Spacer(Modifier.height(24.dp))
+
+        SecurityAlertToggle()
+
+        Spacer(Modifier.height(24.dp))
+
+        Text("History", style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(4.dp))
+
+        if (incidents.history.isEmpty()) {
+            Text(
+                "No security incidents recorded.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        } else {
+            for (session in incidents.history) {
+                HistoryRow(session, onOpen = { incidentViewModel.open(session.sessionId) })
+                HorizontalDivider()
+            }
+        }
     }
+
+    incidents.opened?.let { opened ->
+        SessionDetailDialog(
+            session = opened,
+            onClose = incidentViewModel::closeOpened,
+            onViewEvidence = { incidentViewModel.viewEvidence(opened.summary.sessionId, it) },
+        )
+    }
+
+    viewedEvidence?.let { EvidenceDialog(it, onClose = incidentViewModel::closeEvidence) }
 }
 
 @Composable

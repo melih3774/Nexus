@@ -28,6 +28,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import dev.nexus.control.security.SecurityAlertService
 import dev.nexus.control.remote.RemoteScreen
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
@@ -52,13 +53,35 @@ enum class Destination(val route: String, val title: String) {
  * policy.
  */
 @Composable
-fun NexusApp(viewModel: AppViewModel = viewModel(factory = AppViewModel.Factory)) {
+fun NexusApp(
+    requestedDestination: String? = null,
+    onDestinationHandled: () -> Unit = {},
+    viewModel: AppViewModel = viewModel(factory = AppViewModel.Factory),
+) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val pairing by viewModel.pairing.collectAsStateWithLifecycle()
     val navController = rememberNavController()
 
     LifecycleEventEffect(Lifecycle.Event.ON_START) {
         if (state.isPaired) viewModel.connect()
+    }
+
+    // A tap on a security alert lands on the incident, or on the live screen. Only meaningful once
+    // the phone is paired; an unpaired phone has nothing to show and stays on pairing.
+    LaunchedEffect(requestedDestination, state.isPaired) {
+        val destination = requestedDestination ?: return@LaunchedEffect
+
+        if (state.isPaired) {
+            navController.navigate(
+                if (destination == SecurityAlertService.Destination.LIVE) {
+                    Destination.Screen.route
+                } else {
+                    Destination.Security.route
+                },
+            )
+
+            onDestinationHandled()
+        }
     }
 
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
@@ -168,7 +191,10 @@ private fun PairedFlow(
                 composable(Destination.Screen.route) { RemoteScreen() }
                 composable(Destination.Files.route) { FilesScreen() }
                 composable(Destination.System.route) { SystemScreen() }
-                composable(Destination.Security.route) { SecurityScreen() }
+                composable(Destination.Security.route) {
+                    // The alert says "activity on your PC"; the natural next step is to look at it.
+                    SecurityScreen(onViewLive = { navController.navigate(Destination.Screen.route) })
+                }
             }
         }
     }

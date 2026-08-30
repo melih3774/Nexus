@@ -433,7 +433,12 @@ public sealed class RemoteTransportTests : IAsyncLifetime
                 "screen.stream.stop",
                 "security.arm",
                 "security.disarm",
+                "security.evidence.get",
                 "security.get_state",
+                "security.not_me",
+                "security.sessions.get",
+                "security.sessions.list",
+                "security.this_was_me",
                 "system.get_info",
                 "system.list_processes",
             ],
@@ -457,6 +462,12 @@ public sealed class RemoteTransportTests : IAsyncLifetime
                      "device.unpair_primary",
                      "indicator.get",
                      "indicator.set",
+
+                     // v0.7: a stolen phone must not be able to destroy the recording of the theft,
+                     // or quietly turn the camera off before it happens.
+                     "security.session.delete",
+                     "security.config.get",
+                     "security.config.set",
                  })
         {
             Assert.False(policy.Evaluate(action, phone).Allowed, action);

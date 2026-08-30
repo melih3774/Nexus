@@ -440,3 +440,67 @@ actually moving the pointer, and the indicator appearing in all three modes.
 
 Live audio, microphone, camera, security recording, activity detection, push notifications, file
 modification, shell execution, application automation, AI, and every deferred item in SPEC 64.
+
+---
+
+# Nexus v0.7 — Security Detection, Evidence, Notifications, and Owner Verification
+
+Derived from [SPEC.md 65-84](SPEC.md). **Status: complete; no physical Android phone was available.**
+
+## Where the new code went
+
+| Concern | Location | Why there |
+|---|---|---|
+| Activity vocabulary, state gate, noise filter | `Capabilities/Security/Detection/` | Platform-neutral, so the promise "nothing records in OWNER_PRESENT" is testable |
+| Low-level hooks, attribution, session events | `PcCore.Windows/WindowsActivityDetector.cs` | The only place that touches input; reads two fields and never the key |
+| Session model, store, retention | `Capabilities/Security/Sessions/` | History is data, kept apart from the single-valued state |
+| Incident orchestration | `SecurityIncidentService.cs` | One place that creates, records, and resolves — so the promise is checkable in one place |
+| Evidence contracts | `Capabilities/Security/Evidence/` | Best-effort by design; a missing camera is not a failed incident |
+| Camera, microphone, Windows Hello | `PcCore.Windows/WindowsSecurityEvidence.cs` | Standard Windows APIs, so OS privacy controls and the camera light still apply |
+| Incident client, biometric gate, alert service | `android/.../security/` | The phone half |
+
+## Steps as executed
+
+| # | Step | Verified by |
+|---|---|---|
+| 1 | Baseline: 454/454 PC, 102 Kotlin, 20 instrumented, clean tree at `v0.6-live-control` | all green |
+| 2 | WinRT probe before committing to an approach | camera, microphone and Hello all real on this machine |
+| 3 | Detection vocabulary and monitor | 12 tests covering the state gate and the noise rules |
+| 4 | Sessions, store, retention, containment | 13 tests including path-escape refusals |
+| 5 | Evidence sources and incident orchestration | 12 tests including every failure path |
+| 6 | Windows detector, media capture, Hello | host self-test against real hardware |
+| 7 | Capabilities, policy, host wiring | 491/491 |
+| 8 | Android models, client, biometric gate, UI, alert service | 17 new Kotlin tests |
+| 9 | Version 0.7.0, docs, commit, tag | see the completion report |
+
+## Decisions worth re-reading before v0.8
+
+1. **The state gate is the whole promise.** `OWNER_PRESENT` discards observations before any
+   evidence path is reachable. Do not add a capture path that bypasses the monitor. SPEC 66.
+2. **No keystroke ever enters managed memory.** Two fields read by offset. If that file is ever
+   refactored, this is the property to preserve. SPEC 69.
+3. **The injection tag is 32 bits, and that was measured.** A 64-bit tag is truncated through the
+   mouse hook. SPEC 70.
+4. **Recordings go to a stream, not a StorageFile.** Windows holds a StorageFile open past
+   `StopRecordAsync`. SPEC 74.
+5. **Unavailable verification is a refusal.** On both sides. A check that passes when it cannot run
+   is not a check. SPEC 78, 80.
+6. **`Not me` does nothing destructive, deliberately.** SPEC 79.
+7. **Retention never touches an open or flagged incident.** SPEC 76.
+8. **A foreground service, not FCM.** The tradeoff is stated rather than hidden. SPEC 77.
+
+## Live condition at completion
+
+**No physical Android phone was available**, so the alert-to-acknowledgement round trip was not
+exercised on real hardware. Tailscale is installed but logged out, so the tailnet path remains
+unverified end to end, as at v0.5 and v0.6.
+
+What *was* verified on real hardware: the low-level hooks install; 42 injected events were all
+attributed to Nexus and none opened an incident; the real camera produced a JPEG and an MP4; the real
+microphone produced an M4A; digests are stable and detect tampering; both resolutions behave; and
+Windows Hello reports available on this machine.
+
+## Not started
+
+AI, facial or voice recognition, clipboard monitoring, automatic destructive responses, cloud
+backends, file writing, shell execution, and every deferred item in SPEC 84.

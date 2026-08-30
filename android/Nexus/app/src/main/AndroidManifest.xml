@@ -9,6 +9,19 @@
       by pasting a pairing code if the permission is declined.
     -->
     <uses-permission android:name="android.permission.CAMERA" />
+
+    <!--
+      The security alert. Android will not wake an app for a network event without either a push
+      service or a foreground service, and a push service would mean routing a signal about the
+      owner's home through a third party. The foreground service is opt-in, shows a permanent
+      notification, and can be stopped from it.
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
+    <!-- Owner confirmation before a security incident can be stood down. -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 
     <application
@@ -33,5 +46,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".security.SecurityAlertService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 </manifest>

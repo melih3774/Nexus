@@ -1603,3 +1603,288 @@ Live audio. Microphone or camera. Security-session recording or activity detecti
 notifications. A background Android service holding a socket open. File modification. Shell
 execution. Application automation. AI of any kind. H.264 or WebRTC — revisit only against a measured
 blocker, not a preference.
+
+---
+
+## 65. What v0.7 adds
+
+The security workflow, end to end. The owner arms the PC; if a person then uses it, Nexus opens an
+incident, records bounded evidence, alerts the phone once, and lets the owner answer — **This was
+me** or **Not me** — with the answer carrying real weight on both sides.
+
+This exists for one owner watching their own PC. It is not, and must not become, a general
+monitoring framework.
+
+## 66. The four rules this subsystem lives under
+
+Everything below follows from these, and each is enforced in code rather than promised in prose:
+
+1. **Nothing records unless the owner armed the machine and a person was then detected.** In
+   `OWNER_PRESENT` the monitor discards every observation before any evidence path is reachable.
+2. **No keylogging, ever.** Keyboard detection is boolean. The virtual-key code is never read.
+3. **Nexus's own remote input is never mistaken for a person.** Attribution is an exact tag, not a
+   timing guess.
+4. **No autonomous destructive response.** Marking an incident as an intruder shuts nothing down,
+   locks nothing, and deletes nothing.
+
+## 67. State semantics
+
+| State | Meaning | Recording |
+|---|---|---|
+| `OWNER_PRESENT` | Normal use | **Never** |
+| `ARMED` | The owner said they are away | Not yet — waiting |
+| `SECURITY_SESSION` | A person was detected while armed | Yes, per policy |
+
+Remote control by the phone is allowed in all three and changes none of them. `SECURITY_SESSION`
+plus an authenticated phone driving the machine is **not** `OWNER_PRESENT` — that inference belongs
+to the owner, made explicitly, which is what `This was me` is.
+
+## 68. Detection
+
+```
+WindowsActivityDetector          SecurityActivityMonitor        SecurityIncidentService
+  low-level hooks        ->        attribution                ->   open session
+  session notifications            state gate                      record evidence
+  foreground changes               noise filter                    publish one alert
+```
+
+The detector reports; the monitor decides; the incident service acts. The middle stage is where the
+state gate lives, and it is the reason "no recording while the owner is present" is a property of
+the code: in `OWNER_PRESENT` nothing downstream is ever called.
+
+**The vocabulary is semantic.** `PointerActivity`, `KeyboardActivity`, `SessionUnlocked`,
+`InteractiveLogon`, `ForegroundWindowChanged`. `LocalActivity` has exactly one free-text field and
+it holds an application name. There is nowhere to put a keystroke, which is a stronger guarantee
+than a rule saying not to.
+
+**What does not trigger an incident.** Windows Update, scheduled tasks, antivirus, background
+services, and network traffic never reach the detector — it watches input, not processes. A
+foreground-window change is recorded on an open incident but never starts one: an application taking
+focus with nobody touching anything is software, not a person.
+
+## 69. No keylogging, structurally
+
+A low-level keyboard hook is the same mechanism a keylogger uses. The difference is what the
+callback reads, so the callback reads two fields by offset:
+
+```
+KBDLLHOOKSTRUCT     offset 0   vkCode      <- never read
+                    offset 4   scanCode    <- never read
+                    offset 8   flags       <- read: was this injected?
+                    offset 16  dwExtraInfo <- read: was this Nexus?
+```
+
+There is no deserialised structure holding a keystroke, not even momentarily. The mouse hook
+likewise never reads the pointer position: where the owner clicked is no more this subsystem's
+business than what they typed.
+
+## 70. Telling Nexus apart from a person
+
+Every event Nexus injects carries a tag in `dwExtraInfo` that only `WindowsInputController` writes,
+stamped centrally in `Send` so no call site can forget. The hooks compare it exactly.
+
+Without this, using the PC from the phone while armed would raise an alarm about the owner, and
+remote control during an incident would keep that incident alive forever.
+
+**The tag is 32 bits, and that was measured rather than assumed.** A 64-bit tag survives the
+keyboard hook intact but comes back truncated through the mouse hook — on this machine every
+injected mouse event was consequently misattributed as some other program's synthetic input. The
+self-test caught it; a value that fits in 32 bits survives both paths. Attribution is now exact for
+both: 42 injected events, 42 attributed to Nexus, none mistaken for a person.
+
+## 71. Noise suppression
+
+Four rules a person can hold in their head:
+
+1. A grace period after arming, so the owner's own hand on the mouse does not trip it.
+2. Pointer movement must accumulate; a button press skips the threshold because a click is
+   unambiguous.
+3. Identical kinds in quick succession collapse — holding a key is one fact, not forty.
+4. Injected input never counts.
+
+Deliberately not a model. A false negative misses an incident; a false positive teaches the owner to
+ignore alarms, which breaks the feature permanently. The thresholds lean towards silence, and a rule
+nobody understands is a rule nobody can tell is misbehaving.
+
+## 72. Sessions and state are different things
+
+`SecurityState` is one value describing what Nexus is doing now. `SecuritySession` is a historical
+record and there are many. Folding history into the state would make "what is happening" and "what
+happened" the same field, and neither would survive it.
+
+A session holds: id, start, end, trigger, resolution, high-alert flag, who resolved it, a timeline,
+and evidence references. Media is never embedded — a JSON file that grows a base64 image every few
+seconds stops being readable and turns a metadata corruption into the loss of the evidence too.
+
+## 73. Persistence and restart
+
+```
+%LOCALAPPDATA%\Nexus\Security\
+    sessions.json          atomically written, whole history
+    evidence\<session-id>\ the files
+```
+
+Never in the repository, never uploaded, never synced.
+
+On startup the state and the store are reconciled. `SECURITY_SESSION` with a stored session
+**continues that session** and adds a line saying Nexus restarted — a restart must not split one
+event into two. A state that says an incident is running with no record recreates one that says so,
+rather than silently dropping it. A record left open with a state that disagrees is closed honestly,
+because the state is authoritative about what Nexus is doing.
+
+## 74. Evidence
+
+| Source | Default | How |
+|---|---|---|
+| Screen | Timeline + screenshots | The existing one-shot capture, bounded to 1600px |
+| Camera | Event snapshots + short clips | WinRT `MediaCapture`, JPEG and MP4 |
+| Microphone | Event clips | WinRT `MediaCapture`, M4A |
+
+**Screen evidence uses `IScreenCapture`, not the live stream.** Evidence must not depend on a phone
+being connected — an incident happens whether or not anyone is watching — and sharing a capture path
+with streaming would mean the stream stopping could stop the recording of the event it documents.
+
+**Camera and microphone go through the standard Windows APIs on purpose.** That means everything the
+owner has already told Windows still applies: the privacy toggles, the per-app permissions, and the
+hardware indicator light. A lower-level path could have avoided some of that, and avoiding it is
+exactly what this project will not do. A capture session is created and disposed per clip, so the
+camera light is on only while recording is actually happening.
+
+**Recordings go to a stream Nexus owns, not to a `StorageFile`.** Handing Windows a file to record
+into means Windows decides when to release it, and it does not release it when recording stops — an
+MP4 stayed locked for several seconds after `StopRecordAsync` and after disposal, which made hashing
+the evidence fail. Recording into memory and writing the bytes ourselves removes the question.
+
+Rate limits: a screenshot at most every 8 seconds, clips at most every 2 minutes, at most 400 files
+per incident. Without them a person using the machine for an hour would produce a screenshot per
+movement.
+
+## 75. Integrity
+
+Every file gets a SHA-256, stored in its metadata. It catches a truncated write, a corrupted disk,
+or a file that changed since it was recorded.
+
+It is a personal integrity check and nothing more. It proves nothing about who created the file, and
+this project makes no claim of forensic soundness or legal admissibility.
+
+## 76. Retention
+
+Three bounds, applied in order: 30 days, 200 incidents, 2 GB. Below 1 GB free disk, new evidence
+stops while metadata continues — filling the system drive would be a far worse outcome than a gap.
+
+**An open incident and one marked `NOT ME` are never removed by any of them.** Retention exists to
+stop routine history accumulating, not to discard the one recording the owner is most likely to
+want. Acknowledging an incident does not delete it either: that is the owner saying "I know what
+that was", not "erase it".
+
+Manual deletion exists, is local-only, and requires Windows Hello.
+
+## 77. Notification
+
+One alert per incident. Progress on an open incident uses a different event that is deliberately not
+turned into a notification — an alert that fires repeatedly is an alert that gets silenced.
+
+**A foreground service, not a push service.** Android will not wake an app for a network event
+without one of the two. Firebase would mean routing a signal about the owner's home through Google's
+infrastructure and standing up a cloud backend for a system that has deliberately had neither. The
+foreground service costs battery and shows a permanent notification, and needs no server, no
+account, and no third party. It is opt-in, visible in the shade and in Settings, and stopping it
+stops the alerts. The permanent notification is honest rather than unfortunate: a phone holding a
+connection open should say so.
+
+## 78. This was me
+
+```
+SECURITY_SESSION --[owner confirms]--> resolution ACKNOWLEDGED_OWNER
+                                       ended
+                                       state OWNER_PRESENT
+                                       evidence kept
+```
+
+On Android it goes through `BiometricPrompt` first. The phone has already proved it is the Primary
+Phone with its shared secret — that is transport authentication, and it happens on every connection.
+This is a different question: is the person holding the phone right now the owner? Without it, an
+unlocked phone on the same desk as the PC could stand down an incident about whoever picked it up.
+
+A declined prompt sends nothing. A phone with no biometric and no screen lock sends nothing either:
+a check that passes when it cannot run is not a check. The shared secret never passes through the
+biometric layer, and Android owns the biometrics entirely — Nexus asks a yes-or-no question and
+receives a yes or a no.
+
+## 79. Not me
+
+```
+SECURITY_SESSION --[owner reports]--> resolution CONFIRMED_NOT_OWNER
+                                      HighAlert = true
+                                      state stays SECURITY_SESSION
+                                      evidence keeps recording
+```
+
+Deliberately not gated by biometrics: it only ever raises suspicion, and asking someone to
+authenticate before reporting an intruder is friction in the worst possible place.
+
+Deliberately nothing else happens. No shutdown, no lock, no wipe, no killed processes, no disabled
+networking. An automated destructive response to a judgement this uncertain is a way to lose data
+over a misread, and the owner is already holding the device that can act.
+
+## 80. Windows Hello
+
+Local actions that **weaken** protection require it: deleting evidence, disabling an evidence source,
+turning detection off, shortening retention. Strengthening protection does not — making the machine
+record more of the owner's own activity needs no protection from the owner. Viewing state, timeline
+and configuration needs nothing.
+
+`UserConsentVerifier` does the asking. Nexus never reads a fingerprint, never sees a face, never
+stores a template, and never learns which method was used. Unavailable is a refusal, not a bypass.
+
+Every accepted configuration change is written to the security audit timeline with the verification
+outcome — never how it was performed, never anything biometric — so a configuration quietly weakened
+before an incident leaves a trace.
+
+## 81. Policy
+
+The phone may list incidents, open one, fetch evidence, and resolve either way. That is the point of
+the alert it received.
+
+It may **not** delete evidence or change security configuration. Those stay local-only and behind
+Windows Hello: a stolen phone must not be able to destroy the recording of the theft, or quietly
+turn the camera off before it happens.
+
+Evidence is reached through `security.evidence.get` and never through `files.list`. The evidence
+directory holds camera and microphone recordings of the owner's home; reaching it through the general
+filesystem capability would mean any future widening of that capability silently widened access to
+this. The only way in is a session id and an evidence id the session actually contains, and the
+resolved path is checked for containment anyway.
+
+## 82. Evidence viewing
+
+Images render on the phone. Video and audio show their metadata and digest and say plainly that
+playback is not in this version — a half-working player would be worse than an honest gap, and the
+files are on the PC.
+
+## 83. Testing added in v0.7
+
+| Area | What it proves |
+|---|---|
+| The central promise | `OWNER_PRESENT` writes nothing at all — no session, no file, no capture call |
+| Attribution | Nexus's own input never opens an incident; other programs' injected input does not either |
+| Noise | Jitter and lone foreground changes do not trigger; sustained movement does; grace period holds |
+| Sessions | One incident per event, however long activity continues |
+| Evidence | Every source recorded; digests match their files; empty files rejected; disabled sources silent |
+| Failure | An unavailable camera and a throwing microphone both leave the incident running |
+| Restart | An active incident continues as itself, with high alert, resolution, timeline and evidence intact |
+| Retention | Old resolved incidents go; open and flagged ones never do; deletion removes the files |
+| Containment | Evidence names that escape the folder are refused, as are unsafe session ids |
+| Timeline | Says keyboard activity occurred, never what was typed |
+| Android | Wire shapes, the client, and the confirmation gate — declined and unavailable both send nothing |
+
+The three things that cannot be faked — real hooks, real attribution, real hardware — are verified
+against this machine by `--selftest-security`.
+
+## 84. Explicitly NOT in v0.7
+
+AI of any kind. Facial or voice recognition, or any identity inference from camera or audio.
+Clipboard monitoring. Keylogging. Automatic shutdown, lock, or wipe. Any remote destructive response.
+A cloud backend or SaaS notification service. Hidden capture, process masquerading, or persistence
+beyond the existing per-user startup entry. File writing or deletion as a PC capability. Shell
+execution.

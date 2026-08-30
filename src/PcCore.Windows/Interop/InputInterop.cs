@@ -85,6 +85,30 @@ internal static partial class InputInterop
 
     /// <summary>The absolute coordinate space SendInput uses, regardless of pixel resolution.</summary>
     internal const int AbsoluteRange = 65535;
+
+    /// <summary>
+    /// Stamped into <c>dwExtraInfo</c> on every event Nexus injects.
+    /// <para>
+    /// This is how the security detector tells Nexus's own remote input apart from a person at the
+    /// keyboard. It is an exact-match tag rather than a timing window: the event either carries this
+    /// value or it does not, so remote control during an incident can never be mistaken for the
+    /// intruder, and using the PC from the phone while armed cannot raise an alarm about the owner.
+    /// </para>
+    /// <para>
+    /// <b>Thirty-two bits, deliberately.</b> Windows preserves the full 64-bit value through the
+    /// keyboard hook but only the low half through the mouse hook — measured on this machine, where
+    /// a 64-bit tag came back truncated and every injected mouse event was misattributed as some
+    /// other program's synthetic input. A value that fits in 32 bits survives both paths intact.
+    /// </para>
+    /// <para>
+    /// It is not a secret and does not need to be. Anything that could forge it could inject input
+    /// directly, which is a far larger problem than a mislabelled activity event.
+    /// </para>
+    /// </summary>
+    internal const int NexusInjectionTag = 0x4E58_5330;
+
+    /// <summary>The tag as it is written into an <c>INPUT</c> structure.</summary>
+    internal static readonly nint NexusInjectionSignature = NexusInjectionTag;
 }
 
 [StructLayout(LayoutKind.Sequential)]

@@ -52,11 +52,28 @@ object NexusProtocol {
         const val INPUT_KEY = "input.key"
         const val INPUT_TEXT = "input.text"
         const val INPUT_RELEASE_ALL = "input.release_all"
+
+        // v0.7 - the security workflow. The phone receives the alert, so it can inspect the incident
+        // and answer it. Deleting evidence and changing security settings are deliberately absent:
+        // those stay at the PC, behind Windows Hello.
+        const val SECURITY_SESSIONS_LIST = "security.sessions.list"
+        const val SECURITY_SESSIONS_GET = "security.sessions.get"
+        const val SECURITY_EVIDENCE_GET = "security.evidence.get"
+        const val SECURITY_THIS_WAS_ME = "security.this_was_me"
+        const val SECURITY_NOT_ME = "security.not_me"
     }
 
     object Events {
         const val CHALLENGE = "auth.challenge"
         const val SECURITY_STATE_CHANGED = "security.state_changed"
+
+        /** A security incident began. The one event that becomes a high-priority notification. */
+        const val SECURITY_SESSION_STARTED = "security.session_started"
+
+        /** More evidence, more timeline. Updates the screen; never raises a second alert. */
+        const val SECURITY_SESSION_UPDATED = "security.session_updated"
+
+        const val SECURITY_SESSION_RESOLVED = "security.session_resolved"
     }
 
     /**

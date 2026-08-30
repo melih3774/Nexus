@@ -400,6 +400,81 @@ and back to prove injection reaches Windows, and cycles the indicator through it
 `--skip-input` to leave the pointer alone, or `--width`/`--quality`/`--fps` to measure a different
 configuration.
 
+## Security workflow (v0.7)
+
+Arm the PC, walk away. If someone uses it, Nexus opens an incident, records what it can, and sends
+one alert to your phone.
+
+```
+OWNER_PRESENT ──arm──> ARMED ──someone uses the PC──> SECURITY_SESSION
+                                                            │
+                                              ┌─────────────┴─────────────┐
+                                     This was me                       Not me
+                                     (biometric)                          │
+                                            │                             │
+                                    OWNER_PRESENT              SECURITY_SESSION
+                                    evidence kept              + HIGH ALERT
+```
+
+**Nothing is recorded while you are present.** Not a setting — in `OWNER_PRESENT` the detector's
+observations are discarded before any evidence path is reachable. Arming is what turns it on.
+
+**There is no keylogger.** Detection reads two fields of a keyboard event: was it injected, and was
+it Nexus. The key code is never read. The timeline says *keyboard activity occurred*, never what was
+typed.
+
+**Your own remote control never triggers it.** Every event Nexus injects carries a tag the detector
+matches exactly, so working on the PC from your phone while it is armed raises no alarm.
+
+### What gets recorded
+
+| | Default | |
+|---|---|---|
+| Screen | Timeline + screenshots | at most one every 8s |
+| Camera | Snapshot + short clip | at most one every 2 min |
+| Microphone | Short clip | 20s at incident start |
+
+Continuous modes exist for all three and are off. Everything lands in
+`%LOCALAPPDATA%\Nexus\Security\` — never in this repository, never uploaded anywhere. Each file gets
+a SHA-256 so you can tell if it changed. Kept 30 days, 200 incidents, or 2 GB, whichever comes first;
+open and high-alert incidents are never trimmed, and acknowledging an incident does not delete it.
+
+Camera and microphone go through the standard Windows APIs, so your privacy settings and the camera
+indicator light all still apply.
+
+### Answering an alert
+
+`This was me` asks your phone's biometric first. The phone already proved it is *the* Primary Phone
+with its shared secret; this asks whether the person holding it right now is you. Without it, an
+unlocked phone on the desk could stand down an incident about whoever picked it up.
+
+`Not me` is not gated — reporting an intruder should never require authenticating first. It flags
+the incident, keeps it open, and keeps recording. **It does nothing else.** No shutdown, no lock, no
+wipe. You are holding the device that can act.
+
+### Getting the alert
+
+Turn on `Alert me on this phone` in the Security screen. It holds a connection open and shows a
+permanent notification while it does — that is the only way Android will wake an app for a network
+event without a push service, and a push service would mean routing a signal about your home through
+a third party. No cloud, no account, no server. Stop it from the notification any time.
+
+### What needs Windows Hello
+
+Deleting evidence, disabling a camera or microphone source, turning detection off, shortening
+retention. Not viewing anything. Your phone cannot do any of them — a stolen phone must not be able
+to destroy the recording of the theft.
+
+### Checking it works
+
+```bash
+dotnet run --project src/PcCore.Host -- --selftest-security
+```
+
+Installs the real hooks, injects real input and proves it is attributed to Nexus rather than to a
+person, captures from the real camera and microphone, verifies the digests, and runs both
+resolutions. Add `--prompt-hello` to exercise the real Windows Hello prompt.
+
 ## Protocol vectors
 
 `shared/protocol/protocol-vectors.json` is generated from PC Core's own implementations and asserted
