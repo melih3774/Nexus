@@ -3,7 +3,9 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using PcCore.Capabilities.Abstractions;
 using PcCore.Capabilities.Identity;
+using PcCore.Capabilities.Input;
 using PcCore.Capabilities.Security;
 using PcCore.Protocol;
 using Xunit;
@@ -147,6 +149,142 @@ public sealed class ProtocolVectorTests
         return message;
     }
 
+    [Fact]
+    public void TheStreamFrameHeaderVectorMatchesTheRealWriter()
+    {
+        // The binary half of the contract. A field written at the wrong offset produces a header
+        // that parses cleanly on both sides and means something different on each.
+        var vector = Vector("stream_frame_header");
+        var expected = Convert.FromHexString(vector["header_hex"]!.GetValue<string>());
+
+        var buffer = new byte[StreamFrameHeader.Size];
+        SampleFrameHeader().WriteTo(buffer);
+
+        Assert.Equal(expected, buffer);
+        Assert.True(StreamFrameHeader.TryParse(expected, out var parsed));
+        Assert.Equal(SampleFrameHeader(), parsed);
+    }
+
+    [Fact]
+    public void TheInputEnvelopeVectorsMatchWhatTheDispatcherAccepts()
+    {
+        // Each one is decoded and bound to the real parameter type, so a vector cannot describe a
+        // message PC Core would reject.
+        foreach (var entry in Vector("input_envelopes").AsArray())
+        {
+            var action = entry!["action"]!.GetValue<string>();
+            var raw = entry["encoded"]!.GetValue<string>();
+
+            var decoded = ProtocolCodec.DecodeRequest(raw);
+
+            Assert.True(decoded.IsSuccess, $"{action} vector did not decode");
+            Assert.Equal(action, decoded.Request.Action);
+
+            var parameterType = action switch
+            {
+                "input.pointer" => typeof(PointerParameters),
+                "input.button" => typeof(ButtonParameters),
+                "input.scroll" => typeof(ScrollParameters),
+                "input.key" => typeof(KeyParameters),
+                "input.text" => typeof(TextParameters),
+                _ => typeof(NoParameters),
+            };
+
+            Assert.True(
+                ProtocolCodec.TryBindParameters(decoded.Request.Params, parameterType, out var bound, out var error),
+                $"{action} vector did not bind: {error?.Message}");
+
+            Assert.NotNull(bound);
+        }
+    }
+
+    /// <summary>The one header both sides are pinned to. Deliberately full of awkward values.</summary>
+    private static StreamFrameHeader SampleFrameHeader() => new()
+    {
+        Version = StreamFrameHeader.CurrentVersion,
+        Encoding = FrameEncoding.Jpeg,
+        Flags = FrameFlags.Complete | FrameFlags.CursorBakedIn,
+        DisplayIndex = 1,
+        StreamId = 0x11223344,
+        Sequence = 0x0102030405060708,
+        TimestampUnixMs = 1_788_000_000_123,
+        Width = 1280,
+        Height = 720,
+
+        // Negative, because a second monitor left of the primary is exactly where an off-by-one
+        // sign error would go unnoticed until every click landed on the wrong screen.
+        DesktopLeft = -1920,
+        DesktopTop = -120,
+        DesktopWidth = 1920,
+        DesktopHeight = 1080,
+        CursorX = 640,
+        CursorY = 360,
+        CursorVisible = true,
+        PayloadLength = 4,
+    };
+
+    /// <summary>
+    /// The wire name of a key, read from the attribute the serializer uses rather than restated.
+    /// </summary>
+    private static string WireName(NexusKey key) =>
+        typeof(NexusKey).GetField(key.ToString())!
+            .GetCustomAttributes(typeof(System.Text.Json.Serialization.JsonStringEnumMemberNameAttribute), false)
+            .Cast<System.Text.Json.Serialization.JsonStringEnumMemberNameAttribute>()
+            .Single()
+            .Name;
+
+    private static JsonObject BuildFrameHeaderVector()
+    {
+        var header = SampleFrameHeader();
+        var buffer = new byte[StreamFrameHeader.Size];
+        header.WriteTo(buffer);
+
+        return new JsonObject
+        {
+            ["note"] = "64 bytes, little-endian. The payload follows immediately after.",
+            ["magic"] = "NXS1",
+            ["header_size"] = StreamFrameHeader.Size,
+            ["version"] = header.Version,
+            ["encoding"] = (int)header.Encoding,
+            ["flags"] = (int)header.Flags,
+            ["display_index"] = header.DisplayIndex,
+            ["stream_id"] = header.StreamId,
+            ["sequence"] = header.Sequence,
+            ["timestamp_unix_ms"] = header.TimestampUnixMs,
+            ["width"] = header.Width,
+            ["height"] = header.Height,
+            ["desktop_left"] = header.DesktopLeft,
+            ["desktop_top"] = header.DesktopTop,
+            ["desktop_width"] = header.DesktopWidth,
+            ["desktop_height"] = header.DesktopHeight,
+            ["cursor_x"] = header.CursorX,
+            ["cursor_y"] = header.CursorY,
+            ["cursor_visible"] = header.CursorVisible,
+            ["payload_length"] = header.PayloadLength,
+            ["header_hex"] = Convert.ToHexStringLower(buffer),
+            ["payload_hex"] = "deadbeef",
+            ["message_hex"] = Convert.ToHexStringLower(header.ToMessage([0xde, 0xad, 0xbe, 0xef])),
+        };
+    }
+
+    private static JsonObject InputVector(string action, Dictionary<string, object?>? parameters)
+    {
+        var request = new RequestEnvelope
+        {
+            Id = $"vec-{action}",
+            Action = action,
+            Params = parameters is null
+                ? null
+                : JsonSerializer.SerializeToElement(parameters, ProtocolCodec.Options),
+        };
+
+        return new JsonObject
+        {
+            ["action"] = action,
+            ["encoded"] = ProtocolCodec.Encode(request),
+        };
+    }
+
     private static string Generate()
     {
         var authMessage = SignedAuthMessage();
@@ -278,6 +416,44 @@ public sealed class ProtocolVectorTests
                 Base64Url.EncodeToString(Encoding.UTF8.GetBytes("""{"v":2}"""))),
 
             // --- envelopes --------------------------------------------------------------------
+            // --- v0.6: live screen and remote input -----------------------------------------
+            ["stream_frame_header"] = BuildFrameHeaderVector(),
+
+            ["input_envelopes"] = new JsonArray(
+                InputVector("input.begin", null),
+                InputVector("input.end", null),
+                InputVector(
+                    "input.pointer",
+                    new Dictionary<string, object?>
+                    {
+                        ["mode"] = "ABSOLUTE",
+                        ["x"] = 0.25,
+                        ["y"] = 0.75,
+                        ["display_index"] = 1,
+                    }),
+                InputVector(
+                    "input.pointer",
+                    new Dictionary<string, object?> { ["mode"] = "RELATIVE", ["dx"] = -12.5, ["dy"] = 7.25 }),
+                InputVector(
+                    "input.button",
+                    new Dictionary<string, object?> { ["button"] = "RIGHT", ["action"] = "DOUBLE_CLICK" }),
+                InputVector(
+                    "input.scroll",
+                    new Dictionary<string, object?> { ["vertical"] = -3.0, ["horizontal"] = 1.0 }),
+                InputVector(
+                    "input.key",
+                    new Dictionary<string, object?> { ["key"] = "PAGE_DOWN", ["action"] = "PRESS" }),
+                InputVector(
+                    "input.key",
+                    new Dictionary<string, object?> { ["key"] = "CONTROL", ["action"] = "DOWN" }),
+                InputVector(
+                    "input.text",
+                    new Dictionary<string, object?> { ["text"] = "merhaba dünya 🙂" }),
+                InputVector("input.release_all", null)),
+
+            ["input_key_names"] = new JsonArray(
+                [.. Enum.GetValues<NexusKey>().Select(key => (JsonNode)JsonValue.Create(WireName(key))!)]),
+
             ["request_envelope"] = new JsonObject
             {
                 ["id"] = request.Id,

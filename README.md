@@ -323,6 +323,83 @@ When it cannot connect, it says which of these it is:
 - **PC unreachable** — the phone is on the tailnet and the PC did not answer.
 - **Authentication failed** — the PC rejected the credential; pair again.
 
+## Live screen and remote control (v0.6)
+
+The Screen action is now the remote-control screen: the PC's desktop, live, with the pointer and
+keyboard.
+
+```
+┌─────────────────────────┐
+│                         │
+│      PC SCREEN          │   tap        → left click
+│                         │   long press → right click
+│                         │   drag       → drag
+├─────────────────────────┤   two fingers→ scroll
+│ Direct | Touchpad   [•] │   tap a bar  → hide the controls
+│ Left Double Right Mid   │
+│ Keyboard          Stats │
+└─────────────────────────┘
+```
+
+**Watching is not controlling.** Opening the screen starts the stream; the `Control` switch is what
+lets the phone move the pointer and type. Leaving the screen, backgrounding the app, or losing the
+connection turns it off again and releases anything left held — a button mid-drag, a latched Ctrl.
+Neither side trusts the other to have cleaned up.
+
+**Direct** puts the pointer where your finger is. **Touchpad** moves it by how far your finger
+moved, which is easier for precision work when a fingertip covers forty pixels of desktop.
+
+**Modifiers latch,** because you cannot hold Ctrl and tap C at once on a touchscreen. Tap `Ctrl`, it
+lights up, and the next key or click is wrapped in it: Ctrl+C, Alt+Tab, Win+R all work. The latch is
+spent by the action it modified.
+
+**Typing** goes through the text field and is sent as Unicode, so a keyboard in any language
+produces what it should. The buttons beside it are for keys text cannot express — Esc, Tab, Enter,
+Backspace, Delete, Home, End, Page Up/Down, and the arrows.
+
+### What the PC shows while this happens
+
+Always something. The three modes trade how much it gets in the way, never whether it exists:
+
+| Mode | Input live | Watching only |
+|---|---|---|
+| `STANDARD` (default) | badge + tray | tray |
+| `MINIMAL` | tray | tray |
+| `ALWAYS_VISIBLE` | badge + tray | badge + tray |
+
+The badge is a small translucent pill in the corner, click-through and unable to take focus. Change
+the mode on the local test page — it is a decision about this PC, taken at this PC, and the phone
+deliberately cannot reach it.
+
+### What it costs
+
+Measured on this machine against a continuously-changing 1920x1080 desktop, which is the worst case
+— a still desktop sends nothing at all:
+
+```
+773 frames in 60s   12.9 fps   64.8 KB/frame   6.8 Mbit/s   9.7 ms encode   0 capture losses
+```
+
+Defaults are 1280x720, JPEG quality 65, 15 fps, in `appsettings.json` under `PcCore:Stream`. Raising
+`MaxWidth` sharpens text at proportionally more bandwidth.
+
+### What Windows will not allow
+
+Input from a standard-user process cannot reach a window running as administrator, the UAC prompt,
+or the lock screen. Nexus keeps that boundary rather than running elevated or installing a helper to
+get around it. When it happens the phone says so — the command was valid, it just was not accepted.
+
+### Checking it works without a phone
+
+```bash
+dotnet run --project src/PcCore.Host -- --selftest-remote-control --seconds 15
+```
+
+Enumerates displays, duplicates one, measures capture and encoding, moves the pointer four pixels
+and back to prove injection reaches Windows, and cycles the indicator through its three modes. Add
+`--skip-input` to leave the pointer alone, or `--width`/`--quality`/`--fps` to measure a different
+configuration.
+
 ## Protocol vectors
 
 `shared/protocol/protocol-vectors.json` is generated from PC Core's own implementations and asserted

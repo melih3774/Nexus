@@ -8,7 +8,6 @@ import dev.nexus.control.data.NexusRepository
 import dev.nexus.control.net.NexusRequestException
 import dev.nexus.control.net.NotConnectedException
 import dev.nexus.control.nexusContainer
-import dev.nexus.control.protocol.CaptureScreenResult
 import dev.nexus.control.protocol.FileEntry
 import dev.nexus.control.protocol.NexusJson
 import dev.nexus.control.protocol.NexusProtocol
@@ -59,36 +58,6 @@ internal fun describeFailure(cause: Throwable): String = when {
     }
 
     else -> "Could not reach the PC."
-}
-
-// --- Screen -----------------------------------------------------------------------------------
-
-/**
- * A single screenshot at a time.
- *
- * There is no timer here and no automatic refresh. `screen.capture` takes one frame per request,
- * and polling it quickly would be a slideshow that costs the PC a full GDI capture and PNG encode
- * per frame while looking like streaming and behaving like nothing of the sort. Live remote desktop
- * is a later milestone with a different capture path behind it.
- */
-class ScreenViewModel(private val repository: NexusRepository) : ViewModel() {
-
-    private val _state = MutableStateFlow(Loadable<CaptureScreenResult>())
-    val state: StateFlow<Loadable<CaptureScreenResult>> = _state.asStateFlow()
-
-    fun capture(maxWidth: Int) {
-        _state.value = _state.value.loading()
-
-        viewModelScope.launch {
-            runCatching { repository.captureScreen(maxWidth) }
-                .onSuccess { _state.value = _state.value.loaded(it) }
-                .onFailure { _state.value = _state.value.failed(describeFailure(it)) }
-        }
-    }
-
-    companion object {
-        val Factory = viewModelFactory { initializer { ScreenViewModel(this.nexusContainer.repository) } }
-    }
 }
 
 // --- Files ------------------------------------------------------------------------------------

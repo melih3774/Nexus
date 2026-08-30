@@ -27,6 +27,10 @@ public sealed class RemotePhoneClient : IAsyncDisposable
     private readonly ClientWebSocket _socket = new();
     private readonly Lock _gate = new();
     private readonly List<EventEnvelope> _events = [];
+    private readonly List<byte[]> _frames = [];
+
+    /// <summary>Latest-frames-only, for the same reason the server keeps one: nothing needs the old ones.</summary>
+    private const int MaxBufferedFrames = 4;
 
     private int _requestCounter;
 
@@ -81,7 +85,7 @@ public sealed class RemotePhoneClient : IAsyncDisposable
     {
         PcInstanceId = pcInstanceId;
 
-        var challengeMessage = await ReceiveAsync(cancellationToken).ConfigureAwait(false)
+        var challengeMessage = (await ReceiveAsync(cancellationToken).ConfigureAwait(false)).Text
             ?? throw new InvalidOperationException("connection closed before a challenge arrived");
 
         using var document = JsonDocument.Parse(challengeMessage);
@@ -153,7 +157,7 @@ public sealed class RemotePhoneClient : IAsyncDisposable
 
         await socket.ConnectAsync(uri, cancellationToken).ConfigureAwait(false);
 
-        var challengeMessage = await ReceiveAsync(socket, cancellationToken).ConfigureAwait(false)
+        var challengeMessage = (await ReceiveAsync(socket, cancellationToken).ConfigureAwait(false)).Text
             ?? throw new InvalidOperationException("connection closed before a challenge arrived");
 
         using var challengeDocument = JsonDocument.Parse(challengeMessage);
@@ -191,7 +195,7 @@ public sealed class RemotePhoneClient : IAsyncDisposable
             endOfMessage: true,
             cancellationToken).ConfigureAwait(false);
 
-        var reply = await ReceiveAsync(socket, cancellationToken).ConfigureAwait(false)
+        var reply = (await ReceiveAsync(socket, cancellationToken).ConfigureAwait(false)).Text
             ?? throw new InvalidOperationException("connection closed before an enrollment reply arrived");
 
         using var replyDocument = JsonDocument.Parse(reply);
@@ -273,8 +277,20 @@ public sealed class RemotePhoneClient : IAsyncDisposable
 
         while (true)
         {
-            var message = await ReceiveAsync(cancellationToken).ConfigureAwait(false)
-                ?? throw new InvalidOperationException($"connection closed while awaiting response to {action}");
+            var received = await ReceiveAsync(cancellationToken).ConfigureAwait(false);
+
+            if (received.Closed)
+            {
+                throw new InvalidOperationException($"connection closed while awaiting response to {action}");
+            }
+
+            if (received.Frame is not null)
+            {
+                RecordFrame(received.Frame);
+                continue;
+            }
+
+            var message = received.Text!;
 
             using var document = JsonDocument.Parse(message);
             var type = document.RootElement.GetProperty("type").GetString();
@@ -313,19 +329,25 @@ public sealed class RemotePhoneClient : IAsyncDisposable
         {
             while (!deadline.Token.IsCancellationRequested)
             {
-                var message = await ReceiveAsync(deadline.Token).ConfigureAwait(false);
-                if (message is null)
+                var received = await ReceiveAsync(deadline.Token).ConfigureAwait(false);
+                if (received.Closed)
                 {
                     return null;
                 }
 
-                using var document = JsonDocument.Parse(message);
+                if (received.Frame is not null)
+                {
+                    RecordFrame(received.Frame);
+                    continue;
+                }
+
+                using var document = JsonDocument.Parse(received.Text!);
                 if (document.RootElement.GetProperty("type").GetString() != MessageTypes.Event)
                 {
                     continue;
                 }
 
-                var envelope = Record(message);
+                var envelope = Record(received.Text!);
                 if (envelope.EventName == eventName)
                 {
                     return envelope;
@@ -340,6 +362,85 @@ public sealed class RemotePhoneClient : IAsyncDisposable
         return null;
     }
 
+    /// <summary>Binary desktop frames received on this connection, newest last.</summary>
+    public IReadOnlyList<byte[]> ReceivedFrames
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return [.. _frames];
+            }
+        }
+    }
+
+    /// <summary>
+    /// Waits for a live desktop frame, or returns null on timeout.
+    /// <para>
+    /// Keeps only the most recent few: a test client that buffered every frame of a long stream
+    /// would be measuring its own memory growth rather than the server's.
+    /// </para>
+    /// </summary>
+    public async Task<byte[]?> WaitForFrameAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var existing = ReceivedFrames;
+        if (existing.Count > 0)
+        {
+            return existing[^1];
+        }
+
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(timeout);
+
+        try
+        {
+            while (!deadline.Token.IsCancellationRequested)
+            {
+                var received = await ReceiveAsync(deadline.Token).ConfigureAwait(false);
+
+                if (received.Closed)
+                {
+                    return null;
+                }
+
+                if (received.Frame is not null)
+                {
+                    RecordFrame(received.Frame);
+                    return received.Frame;
+                }
+
+                if (received.Text is not null)
+                {
+                    using var document = JsonDocument.Parse(received.Text);
+
+                    if (document.RootElement.GetProperty("type").GetString() == MessageTypes.Event)
+                    {
+                        Record(received.Text);
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
+
+        return null;
+    }
+
+    private void RecordFrame(byte[] frame)
+    {
+        lock (_gate)
+        {
+            _frames.Add(frame);
+
+            if (_frames.Count > MaxBufferedFrames)
+            {
+                _frames.RemoveAt(0);
+            }
+        }
+    }
+
     private EventEnvelope Record(string message)
     {
         var envelope = JsonSerializer.Deserialize<EventEnvelope>(message, ProtocolCodec.Options)!;
@@ -352,13 +453,28 @@ public sealed class RemotePhoneClient : IAsyncDisposable
         return envelope;
     }
 
-    private Task<string?> ReceiveAsync(CancellationToken cancellationToken) =>
+    /// <summary>One received message: either protocol text, or a binary desktop frame.</summary>
+    private readonly record struct Received(string? Text, byte[]? Frame)
+    {
+        public bool Closed => Text is null && Frame is null;
+    }
+
+    private Task<Received> ReceiveAsync(CancellationToken cancellationToken) =>
         ReceiveAsync(_socket, cancellationToken);
 
-    private static async Task<string?> ReceiveAsync(WebSocket socket, CancellationToken cancellationToken)
+    /// <summary>
+    /// Reads one WebSocket message of either kind.
+    /// <para>
+    /// The two message types share a connection, so a reader that assumed text would treat the
+    /// first frame as a malformed envelope. The Android client has exactly this shape.
+    /// </para>
+    /// </summary>
+    private static async Task<Received> ReceiveAsync(WebSocket socket, CancellationToken cancellationToken)
     {
-        var buffer = new byte[16 * 1024];
+        var buffer = new byte[64 * 1024];
         using var message = new MemoryStream();
+
+        var binary = false;
 
         while (true)
         {
@@ -369,19 +485,26 @@ public sealed class RemotePhoneClient : IAsyncDisposable
             }
             catch (WebSocketException)
             {
-                return null;
+                return default;
             }
 
             if (result.MessageType == WebSocketMessageType.Close)
             {
-                return null;
+                return default;
+            }
+
+            if (message.Length == 0)
+            {
+                binary = result.MessageType == WebSocketMessageType.Binary;
             }
 
             message.Write(buffer, 0, result.Count);
 
             if (result.EndOfMessage)
             {
-                return Encoding.UTF8.GetString(message.GetBuffer(), 0, (int)message.Length);
+                return binary
+                    ? new Received(null, message.ToArray())
+                    : new Received(Encoding.UTF8.GetString(message.GetBuffer(), 0, (int)message.Length), null);
             }
         }
     }

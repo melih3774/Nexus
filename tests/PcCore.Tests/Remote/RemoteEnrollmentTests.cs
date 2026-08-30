@@ -62,6 +62,8 @@ public sealed class RemoteEnrollmentTests : IAsyncLifetime
         var options = new RemoteTransportOptions { Port = FreePort() };
         services.AddSingleton(options);
         services.AddSingleton<RemoteSessionRegistry>();
+        services.AddRemoteControlDoubles();
+        services.AddSingleton<RemoteStreamCoordinator>();
 
         _services = services.BuildServiceProvider();
         _pairing = _services.GetRequiredService<IPairingService>();

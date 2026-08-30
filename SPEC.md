@@ -1300,3 +1300,306 @@ and crash reporting.
 
 Tailscale remains the owner's to install and sign into, on both devices. Nexus observes the private
 network; it does not manage it.
+
+---
+
+## 49. What v0.6 adds
+
+Nexus becomes a remote-control application rather than a remote-inspection one. The phone can watch
+the PC's desktop continuously and drive it — pointer, buttons, scrolling, typing, modifier
+combinations — and the PC shows that it is happening.
+
+Three things are new on the PC: a sustained capture pipeline, an input subsystem, and a visible
+indicator. Two are new on the phone: a binary frame path and a control surface. Nothing already
+working changed shape.
+
+## 50. Screenshot and stream are different things
+
+`screen.capture` is untouched. It remains one PNG on demand, through GDI, with no session and no
+sequence — the reliable answer to "what is on the screen right now".
+
+`IDesktopStream` is a separate interface with a separate implementation, and the two share no code.
+This is deliberate, and the reason is not tidiness:
+
+- A screenshot must keep working when everything else does not. It is what diagnoses a broken
+  stream, and building it on the streaming pipeline would mean a capture fault took both.
+- The failure modes are different. A screenshot either succeeds or fails once. A stream has to
+  survive a resolution change, a display being recreated, a driver reset, the lock screen, and a
+  UAC prompt — while running.
+- The performance shapes are different. A GDI `BitBlt` of a 1920x1080 desktop is tens of
+  milliseconds and copies everything every time. Desktop Duplication hands over the frame the
+  compositor already produced, only when it changed.
+
+A stream built out of repeated screenshots would have been a worse stream *and* a more fragile
+screenshot.
+
+## 51. Desktop Duplication
+
+`DxgiDesktopStream` is the only place in Nexus that talks to Direct3D. It enumerates outputs through
+DXGI, creates a D3D11 device on the adapter that owns the chosen display, duplicates the output,
+copies each acquired frame into a staging texture, and reads it as BGRA.
+
+**The interop is hand-written**, calling through the COM vtable with function pointers rather than
+declaring `[ComImport]` interfaces. A COM interface declaration must list every method of every base
+interface in order, because the runtime finds a method by counting slots — reaching
+`ID3D11DeviceContext::CopyResource` that way means declaring forty methods nobody calls, and one
+miscount is an access violation rather than a compile error. Calling through the vtable directly
+makes the slot number the visible thing, so each is stated and commented against the header it comes
+from. Every slot was validated by a standalone probe against a real adapter before any of it was
+used.
+
+**What the stream survives**, and how each maps:
+
+| Condition | DXGI result | Nexus response |
+|---|---|---|
+| Nothing changed | `DXGI_ERROR_WAIT_TIMEOUT` | Normal. The client keeps its last frame; nothing is sent. |
+| Resolution or mode change, display recreated, driver reset | `DXGI_ERROR_ACCESS_LOST`, `INVALID_CALL` | `Lost` — dispose, reopen, carry on |
+| Lock screen, UAC prompt, secure desktop | `SESSION_DISCONNECTED`, `ACCESS_DENIED` | `Unavailable` — back off a second, retry |
+| Another application already duplicating | `NOT_CURRENTLY_AVAILABLE` | `Unavailable` — retry |
+| Protected content | frame arrives with `ProtectedContentMaskedOut` | Frame is valid; parts are black. Logged once at debug. |
+
+None of these end the stream, and none of them can take PC Core down.
+
+**Two findings from the probe shaped the design.** The first `AcquireNextFrame` after
+`DuplicateOutput` returns a frame with `AccumulatedFrames == 0` whose texture is blank — so a cold
+start on a still desktop would show black until something happened to move. The stream primes its
+first frame from a single GDI grab instead, and only that first one. And DXGI reports *physical*
+pixels while the output rectangle is DPI-scaled: the probe saw a 1536x864 rectangle for a 1920x1080
+duplication because a plain console process is DPI-unaware. PC Core enables per-monitor-v2 awareness
+at startup, so the two agree — but the cursor mapping still scales through the ratio rather than
+assuming it.
+
+## 52. The cursor
+
+Desktop Duplication does not draw the pointer into the frame. Nexus draws the real cursor into the
+captured buffer with `GetCursorInfo` and `DrawIconEx`, offset by the icon's hotspot, and sets
+`CursorBakedIn` in the frame header.
+
+Drawing the actual cursor rather than sending coordinates for the phone to draw its own means the
+owner sees the I-beam, the resize arrows and the busy spinner they would see sitting at the machine.
+The flag is what makes double-rendering impossible: the client is told the pointer is already there.
+
+## 53. Frame encoding
+
+JPEG, behind `IFrameEncoder`.
+
+A video codec was the alternative and was not chosen. H.264 would bring a Media Foundation pipeline,
+hardware-encoder capability differences, keyframe and bitrate management, and a decoder on the
+Android side with its own surface lifecycle — a milestone's work whose benefit is bandwidth this
+link is not short of. Independent frames also mean a dropped frame costs exactly one repaint instead
+of corrupting everything until the next keyframe, which is what makes the drop-stale-frames policy
+safe rather than merely cheap.
+
+**The defaults were measured, not guessed.** Against a continuously-changing 1920x1080 desktop — the
+worst case, since a still desktop produces no frames at all:
+
+```
+1600 wide, q70   101 KB/frame   10.7 Mbit/s   12.9 ms encode
+1280 wide, q70    73 KB/frame    7.7 Mbit/s    9.6 ms encode
+1280 wide, q65    68 KB/frame    7.2 Mbit/s    9.5 ms encode   <- chosen
+1024 wide, q65    47 KB/frame    5.0 Mbit/s    8.1 ms encode
+```
+
+1280x720 at quality 65, 15 fps. Ten megabits to a phone is more than a tunnel over mobile data
+should be asked for, and 1280 is already more pixels than a phone screen shows. Dropping to 1024
+saves another two megabits at a visible cost to small text, which is usually what a remote desktop is
+being read for.
+
+## 54. Binary frames
+
+Frames travel as binary WebSocket messages on the same authenticated connection. Commands,
+responses and events stay exactly as they were, in JSON.
+
+A 70 KB JPEG becomes 90 KB of base64 inside a JSON string, has to be escaped, parsed and unescaped,
+and arrives fifteen times a second. That is a steady tax on both sides for nothing.
+
+The header is 64 fixed bytes, little-endian:
+
+```
+0   4  magic "NXS1"          28  2  width
+4   1  header version        30  2  height
+5   1  encoding              32  4  desktop left    (signed)
+6   1  flags                 36  4  desktop top     (signed)
+7   1  display index         40  4  desktop width
+8   4  stream id             44  4  desktop height
+12  8  frame sequence        48  4  cursor x
+20  8  timestamp (unix ms)   52  4  cursor y
+                             56  1  cursor visible
+                             57  3  reserved
+                             60  4  payload length
+64  ..  payload
+```
+
+Everything a client needs to interpret one frame fits in it: which stream, which display, how big,
+where on the desktop, when, and where the pointer was. A media container would have added framing
+rules, a second clock domain, and a parser worth attacking, to carry the same facts.
+
+The layout is pinned by `shared/protocol/protocol-vectors.json` and asserted **by byte offset** on
+both sides. A field written at the wrong offset produces a header that parses cleanly on both sides
+and means something different on each — a round-trip test cannot see it, because both halves shift
+together.
+
+## 55. Backpressure
+
+One rule, applied twice: **latest frame wins**.
+
+```
+capture  ->  encode  ->  [one-slot channel]  ->  socket  ->  [one-slot flow]  ->  decode  ->  screen
+                          drop oldest                          drop oldest
+```
+
+The PC's channel holds one encoded frame and drops the older one when a newer arrives. The phone's
+flow does the same on receipt, because the phone can also be the slow part. Neither side ever queues
+desktop content: what a slow link misses is a desktop that has already been superseded, and
+buffering would spend memory to deliver it late.
+
+**Media never starves control.** Both kinds of message share one send gate, so a frame sender waits
+— briefly and boundedly — for any queued control message before taking it. Losing a frame costs one
+repaint of content about to be replaced; delaying a response makes the interface feel stuck, and
+delaying a security event is worse than that.
+
+## 56. Input
+
+```
+DEVICE command -> CapabilityDispatcher -> policy -> InputService -> IInputController -> SendInput
+```
+
+`InputService` does the validation, the rate limiting and the held-state tracking.
+`WindowsInputController` translates and calls `SendInput`. No P/Invoke appears in a transport, and
+no policy appears in the P/Invoke.
+
+**Coordinates are normalised.** The phone sends a position as a fraction of the streamed display, 0
+to 1, plus the display index. The PC converts to virtual-desktop pixels and then to the 0..65535
+range `SendInput` expects. The phone never has to know about DPI scaling, monitor origins, or
+negative coordinates on a display left of the primary — and all the arithmetic that must be right
+lives on one side, where it is unit-tested against multi-monitor layouts.
+
+A position outside the display is **refused, not clamped**. Clamping would move the pointer to the
+nearest edge and hide the client bug that produced it, while still clicking somewhere the owner did
+not touch.
+
+**Keys are a closed enum.** A raw virtual-key code off the network into a Win32 structure is exactly
+the validation everyone skips. Everything reachable has a deliberate mapping; anything else cannot be
+pressed. Text goes through `input.text` as UTF-16 with `KEYEVENTF_UNICODE`, so an owner typing in
+their own language gets what they typed rather than a mangled approximation.
+
+**Rate limiting** is a token bucket — 250/second sustained, 500 burst. Not to stop an attacker, who
+by definition is the authenticated Primary Phone, but to stop a bug: a client stuck in a move loop
+would otherwise saturate the link and the desktop at once.
+
+## 57. Control is not connection
+
+Being connected is not being in control. Input becomes possible when the owner turns it on, and
+stops when they leave the screen, background the app, disconnect, or anything else fails.
+
+The reason is plain: a phone left connected on a desk should not be a keyboard.
+
+Streaming and input are also independent of each other. It is possible to view without input, to
+stop the stream while keeping control, and to do either without touching the other — which is what a
+future milestone wanting one without the other will need.
+
+**Held state is tracked on both sides.** The PC records every button and key a session put down and
+releases exactly those when the session ends for any reason, including a dropped socket. The phone
+separately forgets what it believed was latched, because after a reconnect a stale Ctrl would make
+the next keystroke a silent shortcut. Neither side trusts the other to have cleaned up.
+
+## 58. Windows will not let this reach everything
+
+`SendInput` from a standard-user process cannot send input to a window running as administrator, to
+the UAC prompt, or to the secure desktop. Nexus keeps that restriction.
+
+Getting past it would mean running PC Core elevated, installing a privileged helper, or shipping a
+driver — three ways of making a remote-control tool considerably more dangerous than the thing it
+controls. When Windows refuses, the call reports `BLOCKED_BY_INTEGRITY` and the phone says so, once,
+rather than appearing broken.
+
+The request still *succeeds*: the command was valid and was delivered as far as it could go. Only
+`delivered` is false. Conflating "you may not ask" with "Windows did not accept" would have made the
+diagnosis harder.
+
+## 59. Gestures
+
+| Gesture | Direct | Touchpad |
+|---|---|---|
+| Tap | move there, left click | left click where the pointer is |
+| Double tap | move there, double click | double click |
+| Long press | move there, right click | right click |
+| Drag | button down, follow the finger | button down, pointer moves by the delta |
+| Two fingers vertically | scroll | scroll |
+| Tap on the letterbox | show or hide the controls | — |
+
+Small and mostly what a phone already teaches. There are no three-finger chords or edge swipes to
+memorise, because a remote desktop is already unfamiliar to operate and a gesture nobody remembers
+is a feature nobody uses. Anything ambiguous — middle click, a right click without waiting — has an
+explicit button instead.
+
+`DIRECT` is the default. `TOUCHPAD` exists because precision work on a 1280-wide desktop shown at
+phone size is easier with a relative pointer than with a fingertip covering forty pixels of it.
+
+## 60. Modifiers latch
+
+There is no way to hold Ctrl and tap C at once on a touchscreen. Tapping `Ctrl` latches it, the
+toolbar shows it lit, and the next key or click is wrapped: modifier down, action, modifier up. The
+latch is then spent.
+
+The release is in a `finally`, and only modifiers that actually went down are released. A refused
+Ctrl+C that left Ctrl down would make every subsequent keystroke a shortcut, with nothing on the
+phone showing why — and that is precisely the bug the tests found in the first version of this code,
+where the modifier-down loop sat outside the `try`.
+
+Typing is never wrapped in modifiers. Ctrl plus a paragraph is not a thing anyone means.
+
+## 61. The indicator
+
+The PC always shows something while a phone is watching or driving it.
+
+| Mode | Input live | Watching only |
+|---|---|---|
+| `STANDARD` (default) | badge + tray | tray |
+| `MINIMAL` | tray | tray |
+| `ALWAYS_VISIBLE` | badge + tray | badge + tray |
+
+The badge is a small translucent pill in the corner of the work area: layered for per-pixel alpha,
+click-through, never activated, out of the taskbar and Alt+Tab. It cannot take focus or intercept a
+click.
+
+**There is no mode that shows nothing, and there will not be one.** A machine that can be watched
+and typed on with no sign of it is a surveillance tool, and the difference between Nexus and one is
+exactly that the owner can always tell. What the modes trade is how much the indication gets in the
+way. `MINIMAL` drops the badge for an owner who finds it distracting on their own machine; the tray
+entry stays, undisguised.
+
+The setting is **local-only**. `indicator.get` and `indicator.set` are not in the DEVICE allowlist,
+so a phone cannot quiet the sign that it is there. A test asserts that no combination of mode and
+activity produces an invisible session.
+
+## 62. Security state is not touched
+
+Remote control works in all three states and changes none of them.
+
+`SECURITY_SESSION` plus an authenticated phone driving the machine is **not** `OWNER_PRESENT`. The
+system does not get to conclude that whoever is controlling it must be the owner — that is the
+inference a "this was me" workflow exists to make explicitly, and it is not implemented here.
+
+## 63. Testing added in v0.6
+
+| Area | What it proves |
+|---|---|
+| Frame header | The layout by byte offset, and that every malformed shape is refused before an allocation |
+| Stream service | Latest-frame-wins under a slow reader; a lost capture reopens; an unavailable desktop is retried; stopping releases everything |
+| Input service | Normalised coordinates on multi-monitor layouts including negative origins; refusal rather than clamping; held state released in the right order; rate limiting; per-session budgets |
+| Indicator | The full mode/activity table, persistence, and that nothing can hide a live session |
+| Transport | Binary frames on a real socket beside JSON responses; input gated on a session; a dropped connection releases held buttons and modifiers |
+| Kotlin | Frame parsing and its malformed cases; letterbox mapping at the corners and in both orientations; modifier ordering including the failure paths |
+| Cross-language | The frame header byte for byte, every input envelope, and the key set in both directions |
+
+The Direct3D half cannot be faked, so it is verified against the real display by
+`--selftest-remote-control`, which measures capture, encoding, input injection and the indicator on
+the actual machine.
+
+## 64. Explicitly NOT in v0.6
+
+Live audio. Microphone or camera. Security-session recording or activity detection. Push
+notifications. A background Android service holding a socket open. File modification. Shell
+execution. Application automation. AI of any kind. H.264 or WebRTC — revisit only against a measured
+blocker, not a preference.

@@ -58,6 +58,14 @@ public static class ErrorCodes
     /// </summary>
     public const string NotAuthorized = "not_authorized";
 
+    /// <summary>
+    /// The caller is sending faster than the action permits. Distinct from
+    /// <see cref="NotAuthorized"/> because it is a "slow down", not a "you may not": the same caller
+    /// making the same request a moment later succeeds. Used by remote input, where a client stuck
+    /// in a loop would otherwise saturate both the link and the desktop.
+    /// </summary>
+    public const string RateLimited = "rate_limited";
+
     /// <summary>An unexpected fault. Details are deliberately suppressed.</summary>
     public const string InternalError = "internal_error";
 }

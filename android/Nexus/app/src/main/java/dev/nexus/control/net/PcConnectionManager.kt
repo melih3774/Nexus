@@ -13,6 +13,7 @@ import dev.nexus.control.protocol.NexusProtocol
 import dev.nexus.control.protocol.ProtocolError
 import dev.nexus.control.protocol.RequestEnvelope
 import dev.nexus.control.protocol.ResponseEnvelope
+import dev.nexus.control.protocol.StreamFrame
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -24,6 +25,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -33,6 +35,7 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import okio.ByteString
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
@@ -42,6 +45,22 @@ class NexusRequestException(val error: ProtocolError) : Exception("${error.code}
 
 /** Raised when there is no live session to send on. */
 class NotConnectedException : Exception("Not connected to the PC.")
+
+/**
+ * What a caller needs from the connection: ask, or tell.
+ *
+ * Narrow on purpose. [RemoteControlSession] does a lot of ordering that is worth testing — modifiers
+ * down before a key and up after it even when the key fails, held state forgotten on the way out —
+ * and none of it needs a socket to be right. This is the seam that lets those tests exist.
+ */
+interface NexusCommandChannel {
+
+    /** Sends and waits. Throws [NexusRequestException] when the PC refuses. */
+    suspend fun request(action: String, params: JsonElement? = null, timeoutMs: Long = 15_000): JsonElement?
+
+    /** Sends without waiting. False when there is no live socket. */
+    fun notify(action: String, params: JsonElement? = null): Boolean
+}
 
 /**
  * The one owner of the connection to PC Core.
@@ -65,7 +84,7 @@ class PcConnectionManager(
     private val scope: CoroutineScope,
     private val probe: PrivateNetworkProbe,
     private val http: OkHttpClient = defaultClient(),
-) {
+) : NexusCommandChannel {
     private val _state = MutableStateFlow<ConnectionState>(ConnectionState.Idle)
     val state: StateFlow<ConnectionState> = _state.asStateFlow()
 
@@ -75,6 +94,19 @@ class PcConnectionManager(
      */
     private val _events = MutableSharedFlow<EventEnvelope>(extraBufferCapacity = 64)
     val events: SharedFlow<EventEnvelope> = _events.asSharedFlow()
+
+    /**
+     * Live desktop frames, newest only.
+     *
+     * `extraBufferCapacity = 1` with `DROP_OLDEST`: the same latest-frame-wins rule the PC applies
+     * before sending. A frame that has been superseded on the wire has nothing to offer a viewer,
+     * and buffering it would only delay the one that has.
+     */
+    private val _frames = MutableSharedFlow<StreamFrame>(
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val frames: SharedFlow<StreamFrame> = _frames.asSharedFlow()
 
     private val pending = ConcurrentHashMap<String, CompletableDeferred<ResponseEnvelope>>()
     private val requestCounter = AtomicLong(0)
@@ -119,10 +151,10 @@ class PcConnectionManager(
      * @throws NotConnectedException when there is no session.
      * @throws NexusRequestException when PC Core refuses the request.
      */
-    suspend fun request(
+    override suspend fun request(
         action: String,
-        params: JsonElement? = null,
-        timeoutMs: Long = DEFAULT_REQUEST_TIMEOUT_MS,
+        params: JsonElement?,
+        timeoutMs: Long,
     ): JsonElement? {
         val response = send(action, params, timeoutMs)
 
@@ -133,6 +165,24 @@ class PcConnectionManager(
         }
 
         return response.result
+    }
+
+    /**
+     * Sends a request without waiting for its answer.
+     *
+     * For pointer movement during a drag, which arrives sixty times a second and has nothing useful
+     * to say back. Awaiting each one would put a network round trip between the finger and the
+     * cursor. The PC still replies — the protocol has no one-way messages — and the reply is simply
+     * dropped, which costs a few small frames and keeps the gesture smooth.
+     *
+     * Everything that can fail in a way the owner needs to see still uses [request].
+     */
+    override fun notify(action: String, params: JsonElement?): Boolean {
+        val live = socket ?: return false
+        val id = "n-${requestCounter.incrementAndGet()}"
+        val envelope = RequestEnvelope(id = id, action = action, params = params)
+
+        return live.send(NexusJson.encodeToString(RequestEnvelope.serializer(), envelope))
     }
 
     private suspend fun send(action: String, params: JsonElement?, timeoutMs: Long): ResponseEnvelope {
@@ -205,6 +255,20 @@ class PcConnectionManager(
             object : WebSocketListener() {
                 override fun onMessage(webSocket: WebSocket, text: String) {
                     incoming.trySend(text)
+                }
+
+                override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                    // Binary means one thing on this connection: a desktop frame. It goes straight
+                    // to the frame flow rather than through the request pump, so a stream running at
+                    // fifteen frames a second never queues behind a command or delays one.
+                    val frame = StreamFrame.parse(bytes.toByteArray())
+
+                    if (frame == null) {
+                        Log.d(TAG, "Discarded a malformed binary message")
+                        return
+                    }
+
+                    _frames.tryEmit(frame)
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {

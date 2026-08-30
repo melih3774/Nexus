@@ -98,6 +98,8 @@ public sealed class RemoteTransportTests : IAsyncLifetime
         var options = new RemoteTransportOptions { Port = FreePort(), MaxSessions = 2 };
         services.AddSingleton(options);
         services.AddSingleton<RemoteSessionRegistry>();
+        services.AddRemoteControlDoubles();
+        services.AddSingleton<RemoteStreamCoordinator>();
 
         _services = services.BuildServiceProvider();
 
@@ -408,13 +410,27 @@ public sealed class RemoteTransportTests : IAsyncLifetime
     }
 
     [Fact]
-    public void ThePolicyAllowlistIsExactlyTheEightDocumentedActions()
+    public void ThePolicyAllowlistIsExactlyTheDocumentedActions()
     {
+        // Stated in full rather than counted. The list is the security boundary between "the phone
+        // may look" and "the phone may act", and a capability joining it should require editing this
+        // test - which is a moment to think about whether it belongs there.
         Assert.Equal(
             [
                 "files.list",
                 "files.stat",
+                "input.begin",
+                "input.button",
+                "input.end",
+                "input.key",
+                "input.pointer",
+                "input.release_all",
+                "input.scroll",
+                "input.text",
                 "screen.capture",
+                "screen.list_displays",
+                "screen.stream.start",
+                "screen.stream.stop",
                 "security.arm",
                 "security.disarm",
                 "security.get_state",
@@ -422,6 +438,29 @@ public sealed class RemoteTransportTests : IAsyncLifetime
                 "system.list_processes",
             ],
             DefaultCapabilityPolicy.RemoteAllowedActions.Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void DeviceTrustAndIndicatorControlStayOutOfReachOfThePhone()
+    {
+        // The two things a remote caller must never gain: deciding which phone is trusted, and
+        // quieting the sign that it is there. v0.6 adds a great deal of remote power and neither of
+        // these came with it.
+        var phone = new CallerDescriptor("test", "c1", ActorType.Device, "device-1");
+        var policy = new DefaultCapabilityPolicy();
+
+        foreach (var action in new[]
+                 {
+                     "pairing.begin",
+                     "pairing.cancel",
+                     "device.get_primary",
+                     "device.unpair_primary",
+                     "indicator.get",
+                     "indicator.set",
+                 })
+        {
+            Assert.False(policy.Evaluate(action, phone).Allowed, action);
+        }
     }
 
     // --- Security state and events -----------------------------------------------------------------

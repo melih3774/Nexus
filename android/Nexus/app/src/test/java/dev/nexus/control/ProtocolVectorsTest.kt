@@ -12,6 +12,14 @@ import dev.nexus.control.protocol.ResponseEnvelope
 import dev.nexus.control.protocol.SecurityState
 import dev.nexus.control.protocol.SecurityStateChanged
 import dev.nexus.control.protocol.SecurityStateResult
+import dev.nexus.control.protocol.StreamFrame
+import dev.nexus.control.protocol.StreamFrameHeader
+import dev.nexus.control.protocol.NexusKey
+import dev.nexus.control.protocol.PointerParams
+import dev.nexus.control.protocol.ButtonParams
+import dev.nexus.control.protocol.ScrollParams
+import dev.nexus.control.protocol.KeyParams
+import dev.nexus.control.protocol.TextParams
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -332,6 +340,123 @@ class ProtocolVectorsTest {
     }
 
     // --- helpers ---------------------------------------------------------------------------------
+
+    // --- v0.6: live screen and remote input -------------------------------------------------------
+
+    @Test
+    fun `the stream frame header parses exactly as PC Core wrote it`() {
+        // The binary half of the contract, and the half with no safety net: a field read from the
+        // wrong offset produces a header that parses cleanly and describes a different frame.
+        val vector = vector("stream_frame_header")
+        val bytes = hex(vector["header_hex"]!!.jsonPrimitive.content)
+
+        assertEquals(StreamFrameHeader.SIZE, bytes.size)
+
+        val header = StreamFrameHeader.parse(bytes)
+        assertNotNull("the committed header did not parse", header)
+        header!!
+
+        assertEquals(vector["version"]!!.jsonPrimitive.int, header.version)
+        assertEquals(vector["encoding"]!!.jsonPrimitive.int, header.encoding)
+        assertEquals(vector["flags"]!!.jsonPrimitive.int, header.flags)
+        assertEquals(vector["display_index"]!!.jsonPrimitive.int, header.displayIndex)
+        assertEquals(vector["stream_id"]!!.jsonPrimitive.content.toLong(), header.streamId)
+        assertEquals(vector["sequence"]!!.jsonPrimitive.content.toLong(), header.sequence)
+        assertEquals(vector["timestamp_unix_ms"]!!.jsonPrimitive.content.toLong(), header.timestampUnixMs)
+        assertEquals(vector["width"]!!.jsonPrimitive.int, header.width)
+        assertEquals(vector["height"]!!.jsonPrimitive.int, header.height)
+
+        // The negative origin is the field most likely to be quietly wrong.
+        assertEquals(vector["desktop_left"]!!.jsonPrimitive.int, header.desktopLeft)
+        assertEquals(vector["desktop_top"]!!.jsonPrimitive.int, header.desktopTop)
+        assertEquals(vector["desktop_width"]!!.jsonPrimitive.int, header.desktopWidth)
+        assertEquals(vector["desktop_height"]!!.jsonPrimitive.int, header.desktopHeight)
+        assertEquals(vector["cursor_x"]!!.jsonPrimitive.int, header.cursorX)
+        assertEquals(vector["cursor_y"]!!.jsonPrimitive.int, header.cursorY)
+        assertEquals(vector["payload_length"]!!.jsonPrimitive.int, header.payloadLength)
+        assertTrue(header.cursorVisible)
+    }
+
+    @Test
+    fun `a complete frame message splits into header and payload`() {
+        val vector = vector("stream_frame_header")
+        val message = hex(vector["message_hex"]!!.jsonPrimitive.content)
+
+        val frame = StreamFrame.parse(message)
+        assertNotNull("the committed frame message did not parse", frame)
+        frame!!
+
+        assertArrayEqualsHex(
+            hex(vector["payload_hex"]!!.jsonPrimitive.content),
+            frame.message.copyOfRange(frame.payloadOffset, frame.message.size),
+        )
+    }
+
+    @Test
+    fun `input requests encode exactly as PC Core expects them`() {
+        // Each vector is the JSON PC Core produced for a request it accepts. Encoding the same
+        // command here and comparing strings catches a renamed field, a reordered one, or a number
+        // formatted differently — none of which would fail to compile.
+        for (entry in vectors["input_envelopes"]!!.jsonArray) {
+            val action = entry.jsonObject["action"]!!.jsonPrimitive.content
+            val expected = entry.jsonObject["encoded"]!!.jsonPrimitive.content
+            val decoded = Json.parseToJsonElement(expected).jsonObject
+
+            val params = decoded["params"]
+            val id = decoded["id"]!!.jsonPrimitive.content
+
+            val rebuilt = NexusJson.encodeToString(
+                RequestEnvelope.serializer(),
+                RequestEnvelope(id = id, action = action, params = params),
+            )
+
+            // Compared as parsed JSON rather than as text: both sides must agree on the content,
+            // and pinning key order would be pinning an implementation detail of two serializers.
+            assertEquals(action, Json.parseToJsonElement(expected), Json.parseToJsonElement(rebuilt))
+        }
+    }
+
+    @Test
+    fun `the input parameter types round trip through the shared vectors`() {
+        // Proves the phone can build each command from its own typed model, not just echo bytes.
+        for (entry in vectors["input_envelopes"]!!.jsonArray) {
+            val action = entry.jsonObject["action"]!!.jsonPrimitive.content
+            val params = Json.parseToJsonElement(entry.jsonObject["encoded"]!!.jsonPrimitive.content)
+                .jsonObject["params"] ?: continue
+
+            when (action) {
+                NexusProtocol.Actions.INPUT_POINTER ->
+                    NexusJson.decodeFromJsonElement(PointerParams.serializer(), params)
+
+                NexusProtocol.Actions.INPUT_BUTTON ->
+                    NexusJson.decodeFromJsonElement(ButtonParams.serializer(), params)
+
+                NexusProtocol.Actions.INPUT_SCROLL ->
+                    NexusJson.decodeFromJsonElement(ScrollParams.serializer(), params)
+
+                NexusProtocol.Actions.INPUT_KEY ->
+                    NexusJson.decodeFromJsonElement(KeyParams.serializer(), params)
+
+                NexusProtocol.Actions.INPUT_TEXT ->
+                    NexusJson.decodeFromJsonElement(TextParams.serializer(), params)
+            }
+        }
+    }
+
+    @Test
+    fun `the key set matches PC Core exactly`() {
+        // A key added on one side and forgotten on the other is a button that silently does
+        // nothing. Both directions are checked, because either gap is a bug.
+        val fromPc = vectors["input_key_names"]!!.jsonArray.map { it.jsonPrimitive.content }.toSet()
+        val fromPhone = NexusKey.entries.map { it.name }.toSet()
+
+        assertEquals(
+            "keys PC Core knows that the phone does not: ${fromPc - fromPhone}; " +
+                "keys the phone knows that PC Core does not: ${fromPhone - fromPc}",
+            fromPc,
+            fromPhone,
+        )
+    }
 
     private fun hex(value: String): ByteArray =
         ByteArray(value.length / 2) { value.substring(it * 2, it * 2 + 2).toInt(16).toByte() }

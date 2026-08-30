@@ -28,6 +28,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import dev.nexus.control.remote.RemoteScreen
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 
@@ -164,7 +165,7 @@ private fun PairedFlow(
                     )
                 }
 
-                composable(Destination.Screen.route) { ScreenScreen() }
+                composable(Destination.Screen.route) { RemoteScreen() }
                 composable(Destination.Files.route) { FilesScreen() }
                 composable(Destination.System.route) { SystemScreen() }
                 composable(Destination.Security.route) { SecurityScreen() }

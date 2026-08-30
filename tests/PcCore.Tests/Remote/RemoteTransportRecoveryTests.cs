@@ -77,6 +77,8 @@ public sealed class RemoteTransportRecoveryTests : IAsyncLifetime
         services.AddSingleton<INetworkInterfaceProvider>(_interfaces);
         services.AddSingleton<TailscaleAddressDetector>();
         services.AddSingleton<RemoteSessionRegistry>();
+        services.AddRemoteControlDoubles();
+        services.AddSingleton<RemoteStreamCoordinator>();
         services.AddSingleton<RemoteTransport>();
         services.AddSingleton<RemoteTransportService>();
 
@@ -186,6 +188,8 @@ public sealed class RemoteTransportRecoveryTests : IAsyncLifetime
         services.AddSingleton<INetworkInterfaceProvider>(_interfaces);
         services.AddSingleton<TailscaleAddressDetector>();
         services.AddSingleton<RemoteSessionRegistry>();
+        services.AddRemoteControlDoubles();
+        services.AddSingleton<RemoteStreamCoordinator>();
         services.AddSingleton<RemoteTransport>();
         services.AddSingleton<RemoteTransportService>();
 

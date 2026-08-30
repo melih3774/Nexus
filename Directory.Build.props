@@ -9,7 +9,7 @@
     <InvariantGlobalization>true</InvariantGlobalization>
 
     <!-- Single source of truth for the version reported by system.get_info. -->
-    <VersionPrefix>0.5.0</VersionPrefix>
+    <VersionPrefix>0.6.0</VersionPrefix>
     <Product>PC Core</Product>
     <Company>PC Core</Company>
 

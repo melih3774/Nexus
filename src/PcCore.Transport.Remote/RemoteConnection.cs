@@ -4,6 +4,8 @@ using System.Text;
 using Microsoft.Extensions.Logging;
 using PcCore.Capabilities.Abstractions;
 using PcCore.Capabilities.Identity;
+using PcCore.Capabilities.Input;
+using PcCore.Capabilities.Screen;
 using PcCore.Protocol;
 
 namespace PcCore.Transport.Remote;
@@ -55,7 +57,7 @@ public static class RemoteProtocol
 /// body.
 /// </para>
 /// </summary>
-internal sealed class RemoteConnection : IAsyncDisposable
+internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
 {
     private const int ReceiveBufferSize = 8 * 1024;
     private const int MaxConcurrentRequests = 4;
@@ -68,6 +70,8 @@ internal sealed class RemoteConnection : IAsyncDisposable
     private readonly IPcIdentityProvider _identity;
     private readonly IReadOnlyList<string> _allowedRoots;
     private readonly RemoteSessionRegistry _sessions;
+    private readonly RemoteStreamCoordinator _streams;
+    private readonly IInputService _input;
     private readonly RemoteTransportOptions _options;
     private readonly ILogger _logger;
     private readonly string _connectionId;
@@ -79,6 +83,19 @@ internal sealed class RemoteConnection : IAsyncDisposable
     private RemoteSession? _session;
     private IDisposable? _eventSubscription;
 
+    /// <summary>
+    /// How many control messages are queued. Frames wait for this to reach zero.
+    /// <para>
+    /// Both kinds of message share one send gate, and a 90 KB frame takes long enough on a phone
+    /// link that a response queued behind several of them arrives visibly late. Losing a frame costs
+    /// one repaint of content that is about to be replaced anyway; delaying a response makes the
+    /// whole interface feel stuck, and delaying a security event is worse than that.
+    /// </para>
+    /// </summary>
+    private int _controlPending;
+
+    private CancellationTokenSource? _framePump;
+
     public RemoteConnection(
         WebSocket socket,
         string connectionId,
@@ -89,6 +106,8 @@ internal sealed class RemoteConnection : IAsyncDisposable
         IPcIdentityProvider identity,
         IReadOnlyList<string> allowedRoots,
         RemoteSessionRegistry sessions,
+        RemoteStreamCoordinator streams,
+        IInputService input,
         RemoteTransportOptions options,
         ILogger logger)
     {
@@ -101,6 +120,8 @@ internal sealed class RemoteConnection : IAsyncDisposable
         _identity = identity;
         _allowedRoots = allowedRoots;
         _sessions = sessions;
+        _streams = streams;
+        _input = input;
         _options = options;
         _logger = logger;
     }
@@ -253,6 +274,9 @@ internal sealed class RemoteConnection : IAsyncDisposable
         // Subscribe before confirming, so no state change can slip through between the client
         // learning it is authenticated and the stream being live.
         _eventSubscription = events.Subscribe(OnEvent);
+
+        // Only now can this connection carry frames, and only now may it ask for them.
+        _streams.Register(_connectionId, this);
 
         await SendAsync(
             ProtocolCodec.Encode(ResponseEnvelope.Ok(request.Id, request.Action, new
@@ -508,12 +532,17 @@ internal sealed class RemoteConnection : IAsyncDisposable
             return;
         }
 
+        // Counted before waiting, so a frame deciding whether to send sees that a control message
+        // is on its way.
+        Interlocked.Increment(ref _controlPending);
+
         try
         {
             await _sendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
         {
+            Interlocked.Decrement(ref _controlPending);
             return;
         }
 
@@ -533,6 +562,109 @@ internal sealed class RemoteConnection : IAsyncDisposable
         catch (Exception ex) when (ex is WebSocketException or ObjectDisposedException or OperationCanceledException)
         {
             _logger.LogDebug("Send failed on remote connection {ConnectionId}; client has gone away.", _connectionId);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _controlPending);
+            _sendGate.Release();
+        }
+    }
+
+    // --- Live desktop frames ---------------------------------------------------------------------
+
+    /// <summary>
+    /// Starts pumping a live stream to this peer.
+    /// <para>
+    /// One task per stream, reading a channel that holds a single frame. There is no queue to grow
+    /// and nothing to flush: if this task is busy sending when a newer frame is captured, the older
+    /// one is discarded before it is ever offered here.
+    /// </para>
+    /// </summary>
+    public void Attach(DesktopStreamSession session)
+    {
+        Detach();
+
+        var pump = new CancellationTokenSource();
+        _framePump = pump;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await foreach (var frame in session.Frames.ReadAllAsync(pump.Token).ConfigureAwait(false))
+                {
+                    if (!await SendFrameAsync(frame, pump.Token).ConfigureAwait(false))
+                    {
+                        break;
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // The stream was stopped, or the connection ended.
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Frame delivery ended on connection {ConnectionId}.", _connectionId);
+            }
+        });
+    }
+
+    public void Detach()
+    {
+        var pump = _framePump;
+        _framePump = null;
+
+        if (pump is not null)
+        {
+            pump.Cancel();
+            pump.Dispose();
+        }
+    }
+
+    /// <summary>Sends one binary frame, yielding first to any control message that is waiting.</summary>
+    private async Task<bool> SendFrameAsync(byte[] message, CancellationToken cancellationToken)
+    {
+        if (_socket.State != WebSocketState.Open)
+        {
+            return false;
+        }
+
+        // Control traffic goes first. A short bounded wait is enough: responses are small and the
+        // gate is held briefly, so under normal load this yields once at most. The bound matters
+        // more than the delay - a frame must never wait indefinitely and stall the stream.
+        for (var i = 0; i < 50 && Volatile.Read(ref _controlPending) > 0; i++)
+        {
+            await Task.Delay(1, cancellationToken).ConfigureAwait(false);
+        }
+
+        try
+        {
+            await _sendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
+        {
+            return false;
+        }
+
+        try
+        {
+            if (_socket.State != WebSocketState.Open)
+            {
+                return false;
+            }
+
+            await _socket.SendAsync(
+                message,
+                WebSocketMessageType.Binary,
+                endOfMessage: true,
+                cancellationToken).ConfigureAwait(false);
+
+            return true;
+        }
+        catch (Exception ex) when (ex is WebSocketException or ObjectDisposedException or OperationCanceledException)
+        {
+            return false;
         }
         finally
         {
@@ -562,9 +694,36 @@ internal sealed class RemoteConnection : IAsyncDisposable
             code,
             code == ErrorCodes.AuthenticationFailed ? "Authentication failed." : "Request refused."));
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
-        // The session lives exactly as long as the connection. Nothing survives the socket.
+        // The session lives exactly as long as the connection. Nothing survives the socket - and in
+        // v0.6 that matters far more than it used to, because what could survive is a held mouse
+        // button, a latched Ctrl, a capture loop with no viewer, and an indicator still claiming a
+        // session that ended. Every one of those is cleaned up here, on every path out, including
+        // the ones nobody chose.
+        Detach();
+        _streams.Unregister(_connectionId);
+
+        try
+        {
+            await _streams.StopForConnectionAsync(_connectionId).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Stopping the stream for {ConnectionId} failed during cleanup.", _connectionId);
+        }
+
+        try
+        {
+            // Releases whatever this connection held down, then clears the input session so the
+            // indicator stops reporting that control is active.
+            _input.End(_connectionId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Ending remote input for {ConnectionId} failed during cleanup.", _connectionId);
+        }
+
         _eventSubscription?.Dispose();
 
         if (_session is not null)
@@ -576,7 +735,6 @@ internal sealed class RemoteConnection : IAsyncDisposable
 
         _sendGate.Dispose();
         _concurrency.Dispose();
-        return ValueTask.CompletedTask;
     }
 
     /// <summary>Handshake parameters. Bound through the shared codec like any other typed params.</summary>

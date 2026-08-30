@@ -372,3 +372,71 @@ adb install -r android/Nexus/app/build/outputs/apk/debug/app-debug.apk
 
 Live screen streaming, remote input, the AI bridge, security recording, activity detection, and every
 deferred item in SPEC.md §48.
+
+---
+
+# Nexus v0.6 — Live Screen and Remote Input
+
+Derived from [SPEC.md 49-64](SPEC.md). **Status: complete; no physical Android phone was available.**
+
+## Where the new code went
+
+| Concern | Location | Why there |
+|---|---|---|
+| Desktop Duplication, cursor drawing | `PcCore.Windows/DxgiDesktopStream.cs`, `Interop/DxgiInterop.cs` | The only Direct3D in Nexus, behind `IDesktopStream` |
+| JPEG encoding | `PcCore.Windows/JpegFrameEncoder.cs` | Behind `IFrameEncoder`; the codec is the part most likely to be replaced |
+| Capture loop, backpressure, lifetime | `PcCore.Capabilities/Screen/DesktopStreamService.cs` | Platform-neutral, so it is testable against a fake capture with no desktop |
+| Binary frame layout | `PcCore.Protocol/StreamFrame.cs` | A wire contract, shared with Kotlin and pinned by vectors |
+| Input validation, rate limit, held state | `PcCore.Capabilities/Input/` | Policy, not P/Invoke |
+| SendInput | `PcCore.Windows/WindowsInputController.cs` | Translation, not policy |
+| Indicator decision + persistence | `PcCore.Capabilities/Indicator/` | A pure function of three facts, with its own tests |
+| Badge window + tray | `PcCore.Windows/WindowsRemoteIndicator.cs` | Win32 window on its own message loop |
+| Frame sink, control priority | `PcCore.Transport.Remote/` | Transport doing transport |
+| Frame parse, decode pool, gestures, control surface | `android/.../protocol/StreamFrame.kt`, `remote/` | The phone half |
+
+## Steps as executed
+
+| # | Step | Verified by |
+|---|---|---|
+| 1 | Baseline: 357/357 PC, 55 Kotlin, 20 instrumented, clean tree at `v0.5-android-client` | all green |
+| 2 | Standalone DXGI probe before writing anything on top of it | real frames, clean release, every vtable slot correct |
+| 3 | `IDesktopStream` + `DesktopStreamService` + binary header | 33 tests including byte-offset assertions |
+| 4 | `IInputController` + `InputService` | 30 tests: coordinates, clamping, held state, rate limits |
+| 5 | Indicator service and Win32 badge | 11 tests including "no mode can hide a live session" |
+| 6 | Transport: binary sink, control priority, disconnect cleanup | 17 end-to-end tests over a real socket |
+| 7 | Measured encoding defaults on this machine | 1280x720 q65 chosen from four measured configurations |
+| 8 | Kotlin: frame parsing, letterbox mapping, control session | 48 new Kotlin tests |
+| 9 | Cross-language vectors extended | frame header, 10 input envelopes, 67 key names |
+| 10 | Version 0.6.0, docs, commit, tag | 486/486 PC, 103 Kotlin, 20 instrumented |
+
+## Decisions worth re-reading before v0.7
+
+1. **Screenshot and stream share no code.** A streaming fault must not break the screenshot that
+   diagnoses it. See SPEC 50.
+2. **Hand-written COM interop, validated by a probe first.** A wrong vtable slot is an access
+   violation, not an exception; the probe existed so that failure happened out of process. SPEC 51.
+3. **Normalised coordinates.** The phone sends fractions; the PC owns every pixel conversion. This
+   is what keeps DPI scaling and negative monitor origins out of the client entirely. SPEC 56.
+4. **Refuse, do not clamp.** An out-of-range position is a client bug; clamping hides it while still
+   clicking somewhere the owner did not touch.
+5. **Latest frame wins, on both sides.** One rule, applied at the encoder and again at the receiver.
+   SPEC 55.
+6. **Control is not connection.** Input needs an explicit session, and everything releases on the
+   way out. SPEC 57.
+7. **No invisible mode, ever.** SPEC 61. A test asserts it rather than a comment claiming it.
+8. **UIPI is kept.** Elevated windows stay out of reach; the phone is told why. SPEC 58.
+
+## Live condition at completion
+
+**No physical Android phone was available.** The APK builds and 20 instrumented tests run on an
+emulator, which is not the same thing and is not reported as such. Tailscale is still not installed
+on this machine, so the tailnet path remains unverified end to end, exactly as at v0.5.
+
+What *was* verified on real hardware is the Windows half: Desktop Duplication against the actual
+display for a sustained minute with no losses, JPEG encoding at the measured defaults, `SendInput`
+actually moving the pointer, and the indicator appearing in all three modes.
+
+## Not started
+
+Live audio, microphone, camera, security recording, activity detection, push notifications, file
+modification, shell execution, application automation, AI, and every deferred item in SPEC 64.

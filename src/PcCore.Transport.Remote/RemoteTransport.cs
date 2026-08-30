@@ -115,6 +115,8 @@ public sealed class RemoteTransport : IAsyncDisposable
         var dispatcher = _services.GetRequiredService<ICapabilityDispatcher>();
         var authenticator = _services.GetRequiredService<IDeviceAuthenticator>();
         var enrollment = _services.GetRequiredService<IRemoteEnrollmentService>();
+        var streams = _services.GetRequiredService<RemoteStreamCoordinator>();
+        var input = _services.GetRequiredService<PcCore.Capabilities.Input.IInputService>();
         var phones = _services.GetRequiredService<IPrimaryPhoneRegistry>();
         var identity = _services.GetRequiredService<IPcIdentityProvider>();
         var events = _services.GetRequiredService<IEventStream>();
@@ -157,6 +159,8 @@ public sealed class RemoteTransport : IAsyncDisposable
                 identity,
                 allowedRoots,
                 _sessions,
+                streams,
+                input,
                 _options,
                 connectionLogger);
 

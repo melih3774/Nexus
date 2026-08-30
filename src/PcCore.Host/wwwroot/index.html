@@ -81,6 +81,24 @@
     </fieldset>
 
     <fieldset>
+      <legend>remote-control indicator</legend>
+      <div class="row">
+        <button onclick="setIndicator('STANDARD')">STANDARD</button>
+        <button onclick="setIndicator('MINIMAL')">MINIMAL</button>
+        <button onclick="setIndicator('ALWAYS_VISIBLE')">ALWAYS_VISIBLE</button>
+        <button onclick="rpc('indicator.get').then(showIndicator)">indicator.get</button>
+      </div>
+      <div class="sub" style="margin:6px 0 0">
+        How visible this PC makes it that the phone is watching or driving it. STANDARD shows a small
+        badge while input is live and a tray entry while it is only being watched. MINIMAL drops the
+        badge but keeps the tray entry. ALWAYS_VISIBLE keeps the badge up for the whole session.
+        There is deliberately no mode that shows nothing: this setting is local-only, so a phone
+        cannot quiet the sign that it is there.
+      </div>
+      <div id="indicatorbox" class="sub" style="margin-top:8px"></div>
+    </fieldset>
+
+    <fieldset>
       <legend>pair primary phone</legend>
       <div class="row">
         <button onclick="pairBegin(false)">pairing.begin</button>
@@ -228,6 +246,24 @@ function wsSend(action, params) {
 // the Android app does not exist.
 // ---------------------------------------------------------------------------------------------
 let phoneCredential = null;
+
+async function setIndicator(mode) {
+  showIndicator(await rpc('indicator.set', { mode }));
+}
+
+function showIndicator(json) {
+  const box = document.getElementById('indicatorbox');
+  const result = json && json.result;
+
+  if (!result) {
+    box.textContent = '';
+    return;
+  }
+
+  box.textContent =
+    `mode ${result.mode} · overlay ${result.overlay_visible} · tray ${result.tray_visible}` +
+    ` · ${result.viewers} viewer(s) · ${result.input_sessions} input session(s)`;
+}
 
 async function pairBegin(replaceExisting) {
   const json = await rpc('pairing.begin', { replace_existing: replaceExisting });

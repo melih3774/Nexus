@@ -6,6 +6,8 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using PcCore.Capabilities.Abstractions;
 using PcCore.Capabilities.Files;
+using PcCore.Capabilities.Indicator;
+using PcCore.Capabilities.Input;
 using PcCore.Capabilities.Identity;
 using PcCore.Capabilities.Screen;
 using PcCore.Capabilities.Security;
@@ -32,6 +34,13 @@ public static class Program
         if (TryHandleStartupCommand(args, out var startupExitCode))
         {
             return startupExitCode;
+        }
+
+        // A local diagnostic for the three v0.6 pieces that only exist against real Windows.
+        if (args.Contains("--selftest-remote-control"))
+        {
+            using var selfTestLogs = LoggerFactory.Create(b => b.AddSimpleConsole(c => c.SingleLine = true));
+            return await RemoteControlSelfTest.RunAsync(args, selfTestLogs).ConfigureAwait(false);
         }
 
         // The development phone simulator is a client, not a server: it never opens a listener.
@@ -80,13 +89,15 @@ public static class Program
         var pairingOptions = Bind<PairingOptions>(builder.Configuration, PairingOptions.SectionName);
         var autoStartOptions = Bind<AutoStartOptions>(builder.Configuration, AutoStartOptions.SectionName);
         var remoteOptions = Bind<RemoteTransportOptions>(builder.Configuration, RemoteTransportOptions.SectionName);
+        var streamOptions = Bind<StreamOptions>(builder.Configuration, StreamOptions.SectionName);
+        var inputOptions = Bind<InputOptions>(builder.Configuration, InputOptions.SectionName);
 
         var token = SessionToken.Generate();
 
         builder.ConfigureLoopbackKestrel(transportOptions);
         builder.Services.AddLoopbackTransport(transportOptions, token);
 
-        RegisterCapabilities(builder.Services, filesOptions, screenOptions, pairingOptions);
+        RegisterCapabilities(builder.Services, filesOptions, screenOptions, pairingOptions, streamOptions, inputOptions);
         RegisterRemoteTransport(builder.Services, remoteOptions);
 
         var app = builder.Build();
@@ -141,6 +152,8 @@ public static class Program
             primaryPhone is null ? "not paired" : $"{primaryPhone.DeviceId} ({primaryPhone.DisplayName})");
 
         logger.LogInformation("Security state: {State}", app.Services.GetRequiredService<ISecurityStateService>().Current.State);
+
+        WireRemoteControl(app.Services, logger);
         logger.LogInformation("Remote transport port: {Port} (Tailscale only)", remoteOptions.Port);
 
         ApplyAutoStart(app.Services, autoStartOptions, logger);
@@ -176,7 +189,9 @@ public static class Program
         IServiceCollection services,
         FilesOptions filesOptions,
         ScreenOptions screenOptions,
-        PairingOptions pairingOptions)
+        PairingOptions pairingOptions,
+        StreamOptions streamOptions,
+        InputOptions inputOptions)
     {
         // --- Platform implementations (the only Windows-specific registrations) ---------------
         services.AddSingleton<IRealPathResolver, Win32RealPathResolver>();
@@ -187,6 +202,15 @@ public static class Program
         services.AddSingleton<IProcessLister, WindowsProcessLister>();
         services.AddSingleton<IDisplayGeometry, SystemDisplayGeometry>();
         services.AddSingleton<IScreenCapture, GdiScreenCapture>();
+
+        // v0.6 platform pieces. Live capture, input injection and the on-screen indicator are the
+        // only three things in this milestone that touch Windows directly, and all three sit behind
+        // an interface the capability layer declares.
+        services.AddSingleton<IDesktopStream, DxgiDesktopStream>();
+        services.AddSingleton<IDisplayCatalog>(p => p.GetRequiredService<IDesktopStream>());
+        services.AddSingleton<IFrameEncoder, JpegFrameEncoder>();
+        services.AddSingleton<IInputController, WindowsInputController>();
+        services.AddSingleton<IRemoteIndicator, WindowsRemoteIndicator>();
 
         // --- Persistent state (all under %LOCALAPPDATA%\Nexus, never in the repository) --------
         services.AddSingleton(StateDirectory.ForCurrentUser());
@@ -214,6 +238,13 @@ public static class Program
         // "one per request" are incompatible.
         services.AddSingleton<ISecurityStateService, SecurityStateService>();
 
+        // --- Live screen and remote input (v0.6) ------------------------------------------------
+        services.AddSingleton(streamOptions);
+        services.AddSingleton(inputOptions);
+        services.AddSingleton<DesktopStreamService>();
+        services.AddSingleton<IInputService, InputService>();
+        services.AddSingleton<RemoteIndicatorService>();
+
         // --- Protocol plumbing ------------------------------------------------------------------
         services.AddSingleton<EventBus>();
         services.AddSingleton<IEventPublisher>(p => p.GetRequiredService<EventBus>());
@@ -237,6 +268,54 @@ public static class Program
         services.AddSingleton<ICapabilityAction, BeginPairingAction>();
         services.AddSingleton<ICapabilityAction, CancelPairingAction>();
         services.AddSingleton<ICapabilityAction, UnpairPrimaryDeviceAction>();
+
+        // --- Capabilities added by v0.6 -----------------------------------------------------------
+        services.AddSingleton<ICapabilityAction, ListDisplaysAction>();
+        services.AddSingleton<ICapabilityAction, StartStreamAction>();
+        services.AddSingleton<ICapabilityAction, StopStreamAction>();
+
+        services.AddSingleton<ICapabilityAction, BeginInputAction>();
+        services.AddSingleton<ICapabilityAction, EndInputAction>();
+        services.AddSingleton<ICapabilityAction, PointerAction>();
+        services.AddSingleton<ICapabilityAction, ButtonInputAction>();
+        services.AddSingleton<ICapabilityAction, ScrollAction>();
+        services.AddSingleton<ICapabilityAction, KeyInputAction>();
+        services.AddSingleton<ICapabilityAction, TextInputAction>();
+        services.AddSingleton<ICapabilityAction, ReleaseAllInputAction>();
+
+        // Local-only, and deliberately absent from the DEVICE allowlist: how visible the PC makes
+        // remote access is a decision taken at the PC.
+        services.AddSingleton<ICapabilityAction, GetIndicatorAction>();
+        services.AddSingleton<ICapabilityAction, SetIndicatorAction>();
+    }
+
+    /// <summary>
+    /// Brings up the indicator and reports what live control can do on this machine.
+    /// <para>
+    /// The indicator follows input sessions rather than connections: being connected is not being in
+    /// control, and the badge must mean the second (SPEC.md 60).
+    /// </para>
+    /// </summary>
+    private static void WireRemoteControl(IServiceProvider services, ILogger logger)
+    {
+        // Resolved eagerly: constructing it is what subscribes it to input activity, and an
+        // indicator that only appears once something else happens to need it would be no indicator.
+        var indicator = services.GetRequiredService<RemoteIndicatorService>();
+
+        logger.LogInformation("Remote-control indicator: {Mode}", indicator.Mode);
+
+        var displays = services.GetRequiredService<IDisplayCatalog>().GetDisplays();
+
+        if (displays.Count == 0)
+        {
+            logger.LogWarning("No display could be enumerated for capture; live streaming will be unavailable.");
+        }
+        else
+        {
+            logger.LogInformation(
+                "Displays available for live streaming: {Displays}",
+                string.Join(", ", displays.Select(d => d.ToString())));
+        }
     }
 
     /// <summary>
@@ -258,6 +337,12 @@ public static class Program
         // transport's live bound endpoint, so a code can never advertise an address that is not
         // actually being served.
         services.AddSingleton<IDeviceEndpointProvider, RemoteTransportEndpointProvider>();
+
+        // Binds a stream request to the connection that will carry its frames, and reports what is
+        // going on to the indicator.
+        services.AddSingleton<RemoteStreamCoordinator>();
+        services.AddSingleton<IStreamCoordinator>(p => p.GetRequiredService<RemoteStreamCoordinator>());
+        services.AddSingleton<IIndicatorActivityProbe>(p => p.GetRequiredService<RemoteStreamCoordinator>());
     }
 
     private static T Bind<T>(IConfiguration configuration, string section) where T : new()

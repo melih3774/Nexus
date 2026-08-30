@@ -40,6 +40,13 @@ public sealed class DefaultCapabilityPolicy : ICapabilityPolicy
     /// adds it here.
     /// </para>
     /// </summary>
+    /// <remarks>
+    /// v0.6 adds live viewing and remote input. Both are a genuine step up in power — one lets the
+    /// phone watch the desktop continuously, the other lets it type — and both are listed here
+    /// explicitly rather than arriving as a side effect of existing. What stayed out is as
+    /// deliberate: <c>indicator.*</c> is local-only, so the phone cannot quiet the sign that it is
+    /// there, and <c>pairing.*</c> and <c>device.*</c> remain local-only exactly as before.
+    /// </remarks>
     private static readonly FrozenSet<string> DeviceAllowed = new[]
     {
         "system.get_info",
@@ -50,6 +57,22 @@ public sealed class DefaultCapabilityPolicy : ICapabilityPolicy
         "security.get_state",
         "security.arm",
         "security.disarm",
+
+        // v0.6 — live screen
+        "screen.list_displays",
+        "screen.stream.start",
+        "screen.stream.stop",
+
+        // v0.6 — remote input. input.begin is what actually turns typing on; the rest do nothing
+        // without it (SPEC.md 57).
+        "input.begin",
+        "input.end",
+        "input.pointer",
+        "input.button",
+        "input.scroll",
+        "input.key",
+        "input.text",
+        "input.release_all",
     }.ToFrozenSet(StringComparer.Ordinal);
 
     public PolicyDecision Evaluate(string action, CallerDescriptor caller)

@@ -66,6 +66,142 @@
     "NEXUS3.eyJ2IjozfQ",
     "eyJ2IjoyfQ"
   ],
+  "stream_frame_header": {
+    "note": "64 bytes, little-endian. The payload follows immediately after.",
+    "magic": "NXS1",
+    "header_size": 64,
+    "version": 1,
+    "encoding": 1,
+    "flags": 3,
+    "display_index": 1,
+    "stream_id": 287454020,
+    "sequence": 72623859790382856,
+    "timestamp_unix_ms": 1788000000123,
+    "width": 1280,
+    "height": 720,
+    "desktop_left": -1920,
+    "desktop_top": -120,
+    "desktop_width": 1920,
+    "desktop_height": 1080,
+    "cursor_x": 640,
+    "cursor_y": 360,
+    "cursor_visible": true,
+    "payload_length": 4,
+    "header_hex": "4e585331010103014433221108070605040302017bd81a4da00100000005d00280f8ffff88ffffff800700003804000080020000680100000100000004000000",
+    "payload_hex": "deadbeef",
+    "message_hex": "4e585331010103014433221108070605040302017bd81a4da00100000005d00280f8ffff88ffffff800700003804000080020000680100000100000004000000deadbeef"
+  },
+  "input_envelopes": [
+    {
+      "action": "input.begin",
+      "encoded": "{\u0022protocol_version\u0022:1,\u0022id\u0022:\u0022vec-input.begin\u0022,\u0022type\u0022:\u0022request\u0022,\u0022action\u0022:\u0022input.begin\u0022,\u0022params\u0022:null}"
+    },
+    {
+      "action": "input.end",
+      "encoded": "{\u0022protocol_version\u0022:1,\u0022id\u0022:\u0022vec-input.end\u0022,\u0022type\u0022:\u0022request\u0022,\u0022action\u0022:\u0022input.end\u0022,\u0022params\u0022:null}"
+    },
+    {
+      "action": "input.pointer",
+      "encoded": "{\u0022protocol_version\u0022:1,\u0022id\u0022:\u0022vec-input.pointer\u0022,\u0022type\u0022:\u0022request\u0022,\u0022action\u0022:\u0022input.pointer\u0022,\u0022params\u0022:{\u0022mode\u0022:\u0022ABSOLUTE\u0022,\u0022x\u0022:0.25,\u0022y\u0022:0.75,\u0022display_index\u0022:1}}"
+    },
+    {
+      "action": "input.pointer",
+      "encoded": "{\u0022protocol_version\u0022:1,\u0022id\u0022:\u0022vec-input.pointer\u0022,\u0022type\u0022:\u0022request\u0022,\u0022action\u0022:\u0022input.pointer\u0022,\u0022params\u0022:{\u0022mode\u0022:\u0022RELATIVE\u0022,\u0022dx\u0022:-12.5,\u0022dy\u0022:7.25}}"
+    },
+    {
+      "action": "input.button",
+      "encoded": "{\u0022protocol_version\u0022:1,\u0022id\u0022:\u0022vec-input.button\u0022,\u0022type\u0022:\u0022request\u0022,\u0022action\u0022:\u0022input.button\u0022,\u0022params\u0022:{\u0022button\u0022:\u0022RIGHT\u0022,\u0022action\u0022:\u0022DOUBLE_CLICK\u0022}}"
+    },
+    {
+      "action": "input.scroll",
+      "encoded": "{\u0022protocol_version\u0022:1,\u0022id\u0022:\u0022vec-input.scroll\u0022,\u0022type\u0022:\u0022request\u0022,\u0022action\u0022:\u0022input.scroll\u0022,\u0022params\u0022:{\u0022vertical\u0022:-3,\u0022horizontal\u0022:1}}"
+    },
+    {
+      "action": "input.key",
+      "encoded": "{\u0022protocol_version\u0022:1,\u0022id\u0022:\u0022vec-input.key\u0022,\u0022type\u0022:\u0022request\u0022,\u0022action\u0022:\u0022input.key\u0022,\u0022params\u0022:{\u0022key\u0022:\u0022PAGE_DOWN\u0022,\u0022action\u0022:\u0022PRESS\u0022}}"
+    },
+    {
+      "action": "input.key",
+      "encoded": "{\u0022protocol_version\u0022:1,\u0022id\u0022:\u0022vec-input.key\u0022,\u0022type\u0022:\u0022request\u0022,\u0022action\u0022:\u0022input.key\u0022,\u0022params\u0022:{\u0022key\u0022:\u0022CONTROL\u0022,\u0022action\u0022:\u0022DOWN\u0022}}"
+    },
+    {
+      "action": "input.text",
+      "encoded": "{\u0022protocol_version\u0022:1,\u0022id\u0022:\u0022vec-input.text\u0022,\u0022type\u0022:\u0022request\u0022,\u0022action\u0022:\u0022input.text\u0022,\u0022params\u0022:{\u0022text\u0022:\u0022merhaba d\\u00FCnya \\uD83D\\uDE42\u0022}}"
+    },
+    {
+      "action": "input.release_all",
+      "encoded": "{\u0022protocol_version\u0022:1,\u0022id\u0022:\u0022vec-input.release_all\u0022,\u0022type\u0022:\u0022request\u0022,\u0022action\u0022:\u0022input.release_all\u0022,\u0022params\u0022:null}"
+    }
+  ],
+  "input_key_names": [
+    "ESCAPE",
+    "TAB",
+    "ENTER",
+    "BACKSPACE",
+    "DELETE",
+    "INSERT",
+    "SPACE",
+    "HOME",
+    "END",
+    "PAGE_UP",
+    "PAGE_DOWN",
+    "ARROW_LEFT",
+    "ARROW_UP",
+    "ARROW_RIGHT",
+    "ARROW_DOWN",
+    "CONTROL",
+    "ALT",
+    "SHIFT",
+    "META",
+    "F1",
+    "F2",
+    "F3",
+    "F4",
+    "F5",
+    "F6",
+    "F7",
+    "F8",
+    "F9",
+    "F10",
+    "F11",
+    "F12",
+    "A",
+    "B",
+    "C",
+    "D",
+    "E",
+    "F",
+    "G",
+    "H",
+    "I",
+    "J",
+    "K",
+    "L",
+    "M",
+    "N",
+    "O",
+    "P",
+    "Q",
+    "R",
+    "S",
+    "T",
+    "U",
+    "V",
+    "W",
+    "X",
+    "Y",
+    "Z",
+    "DIGIT_0",
+    "DIGIT_1",
+    "DIGIT_2",
+    "DIGIT_3",
+    "DIGIT_4",
+    "DIGIT_5",
+    "DIGIT_6",
+    "DIGIT_7",
+    "DIGIT_8",
+    "DIGIT_9"
+  ],
   "request_envelope": {
     "id": "req-0001",
     "action": "files.list",

@@ -36,6 +36,22 @@ object NexusProtocol {
         const val GET_SECURITY_STATE = "security.get_state"
         const val ARM = "security.arm"
         const val DISARM = "security.disarm"
+
+        // v0.6 - live screen
+        const val LIST_DISPLAYS = "screen.list_displays"
+        const val STREAM_START = "screen.stream.start"
+        const val STREAM_STOP = "screen.stream.stop"
+
+        // v0.6 - remote input. INPUT_BEGIN is what actually turns typing on; the rest do nothing
+        // without it.
+        const val INPUT_BEGIN = "input.begin"
+        const val INPUT_END = "input.end"
+        const val INPUT_POINTER = "input.pointer"
+        const val INPUT_BUTTON = "input.button"
+        const val INPUT_SCROLL = "input.scroll"
+        const val INPUT_KEY = "input.key"
+        const val INPUT_TEXT = "input.text"
+        const val INPUT_RELEASE_ALL = "input.release_all"
     }
 
     object Events {
@@ -61,6 +77,7 @@ object NexusProtocol {
         const val PAIRING_FAILED = "pairing_failed"
         const val AUTHENTICATION_FAILED = "authentication_failed"
         const val NOT_AUTHORIZED = "not_authorized"
+        const val RATE_LIMITED = "rate_limited"
         const val INTERNAL_ERROR = "internal_error"
     }
 
