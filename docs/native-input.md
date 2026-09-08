@@ -165,12 +165,36 @@ WM_LBUTTONUP       extra=0xFF515792
 So an application that handles `WM_POINTER` gets genuine touch, and a legacy application gets the
 mouse messages Windows promotes it into. That is what "feels like a touch display" actually requires.
 
-One measurement worth recording: `SM_DIGITIZER` reads `0x0` before the first
-`InitializeTouchInjection` call and `0xC1` afterwards, with `SM_MAXIMUMTOUCHES` going 0 → 10.
-Nexus's own injection device makes the machine *look* like it has a digitizer. Anything asking
-"could a person touch this screen?" must therefore sample it before the first injector exists —
-`NativeInjector` has an explicit static constructor for exactly this reason, because a
-`beforefieldinit` lazy initialiser got it wrong first.
+One measurement caused two bugs and is worth recording in full. **Touch injection makes the machine
+look like it has a touchscreen**, and it does so system-wide:
+
+```
+before InitializeTouchInjection   SM_DIGITIZER = 0x0    SM_MAXIMUMTOUCHES = 0
+after  InitializeTouchInjection   SM_DIGITIZER = 0xC1   SM_MAXIMUMTOUCHES = 10
+```
+
+The first attempt at handling this sampled `SM_DIGITIZER` early, in a static field. That was wrong
+twice over. A class whose statics are only field initialisers is `beforefieldinit`, so the runtime
+deferred the sample until after injection had started; adding an explicit static constructor fixed
+that, but the metric is *system-wide*, so a freshly started PC Core still read `0xC1` merely because
+the broker was already running in another process.
+
+So the question is answered by enumerating raw input devices instead. Enumerating this machine shows
+why both exclusions are needed:
+
+```
+before injection
+  hid  page=0x0D usage=0x05  \?\HID#SYNA32E3&Col02#...     <- precision touchpad, not a touchscreen
+
+after injection
+  hid  page=0x0D usage=0x04  \?\VIRTUAL_DIGITIZER          <- Nexus's own injection device
+  hid  page=0x0D usage=0x05  \?\HID#SYNA32E3&Col02#...
+```
+
+`PhysicalDigitizer.IsPresent()` therefore counts usage `0x01`, `0x02` and `0x04` on usage page
+`0x0D`, skips `0x05` (Touch Pad), and skips any device named `VIRTUAL_DIGITIZER`. Verified: it
+answers `false` on this machine whether or not a broker is injecting, and
+`CreatingAnInjectorDoesNotGiveTheMachineATouchscreen` pins the property.
 
 ### Unicode
 

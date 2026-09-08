@@ -690,7 +690,7 @@ src/
   PcCore.Transport.Remote/    Tailscale-bound WebSocket, device authentication, sessions
   PcCore.Host/                composition root, config, logging, device endpoints, QR, test page
 tests/
-  PcCore.Tests/               585 tests
+  PcCore.Tests/               586 tests
 android/
   Nexus/                      the Android app: protocol/, data/, net/, ui/ (156 unit + device tests)
 shared/

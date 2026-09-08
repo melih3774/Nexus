@@ -34,23 +34,6 @@ public sealed class NativeInjector
     private bool _touchInitialised;
     private string? _touchDiagnostic;
 
-    /// <summary>
-    /// Explicit, and load-bearing.
-    /// <para>
-    /// A class whose statics are only field initialisers is marked <c>beforefieldinit</c>, which
-    /// lets the runtime defer them until the first static field is actually read. That is fine for
-    /// a constant and wrong for <see cref="HasPhysicalDigitizer"/>: deferred, it was sampled after
-    /// an instance had already called <c>InitializeTouchInjection</c>, and reported this
-    /// touchscreen-less laptop as having a digitizer — Nexus's own. An explicit static constructor
-    /// removes <c>beforefieldinit</c>, so the sample is guaranteed to happen before any instance of
-    /// this type exists.
-    /// </para>
-    /// </summary>
-    static NativeInjector()
-    {
-        HasPhysicalDigitizer = NativeInputInterop.GetSystemMetrics(NativeInputInterop.SmDigitizer) != 0;
-    }
-
     public NativeInjector()
     {
         // Failing to initialise touch is not fatal: pointer and keyboard still work, and the caller
@@ -82,17 +65,16 @@ public sealed class NativeInjector
     public string? TouchDiagnostic => _touchDiagnostic;
 
     /// <summary>
-    /// True when this machine has a pen or touch digitizer of its own.
+    /// True when this machine has a pen or touch-screen digitizer of its own.
     /// <para>
-    /// <b>Sampled once, before the first injector exists.</b> Calling
-    /// <c>InitializeTouchInjection</c> makes Windows start reporting a digitizer — measured on this
-    /// machine, where <c>SM_DIGITIZER</c> read <c>0x0</c> beforehand and <c>0xC1</c> afterwards, with
-    /// <c>SM_MAXIMUMTOUCHES</c> going from 0 to 10. Asking later would therefore be asking about
-    /// Nexus's own injection device. The question that matters is whether a person standing at this
-    /// PC could touch the screen, and it can only be answered before Nexus adds a way to.
+    /// Answered by enumerating raw input devices rather than by <c>SM_DIGITIZER</c>. That metric is
+    /// system-wide and counts injection: it read <c>0x0</c> on this machine, <c>0xC1</c> after the
+    /// first <c>InitializeTouchInjection</c> call, and <c>0xC1</c> in a freshly started process
+    /// simply because the Nexus Input Broker was running in another one. See
+    /// <see cref="PhysicalDigitizer"/>.
     /// </para>
     /// </summary>
-    public static readonly bool HasPhysicalDigitizer;
+    public static bool HasPhysicalDigitizer => PhysicalDigitizer.IsPresent();
 
     /// <summary>The whole virtual desktop in physical pixels. The left edge can be negative.</summary>
     public static (int Left, int Top, int Width, int Height) VirtualDesktop => (

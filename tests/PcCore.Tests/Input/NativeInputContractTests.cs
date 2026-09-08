@@ -314,6 +314,37 @@ public class NativeInputContractTests
         Assert.Contains("Input Broker", NativeInputInstaller.TaskPath, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// Whether this machine has a touchscreen must not change because Nexus started injecting touch.
+    /// <para>
+    /// It did, twice, in two different ways. First <c>SM_DIGITIZER</c> went from <c>0x0</c> to
+    /// <c>0xC1</c> once <c>InitializeTouchInjection</c> had been called. Then, after switching to
+    /// enumerating raw input devices, the injection device turned out to be enumerable too — a
+    /// touch-screen digitizer named VIRTUAL_DIGITIZER, appearing the moment injection started.
+    /// </para>
+    /// <para>
+    /// The answer feeds the security detector's decision about whether pen/touch-signature input
+    /// could have come from a person, so an answer that flips when Nexus starts up is exactly the
+    /// wrong kind of wrong. This asserts the property directly rather than the mechanism.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void CreatingAnInjectorDoesNotGiveTheMachineATouchscreen()
+    {
+        var before = NativeInjector.HasPhysicalDigitizer;
+
+        var injector = new NativeInjector();
+
+        try
+        {
+            Assert.Equal(before, NativeInjector.HasPhysicalDigitizer);
+        }
+        finally
+        {
+            injector.ReleaseAll();
+        }
+    }
+
     [Fact]
     public void TheFrameHeaderIsFourLittleEndianBytes()
     {
