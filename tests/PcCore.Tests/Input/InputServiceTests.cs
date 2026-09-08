@@ -1,6 +1,7 @@
 using PcCore.Capabilities.Abstractions;
 using PcCore.Capabilities.Input;
 using PcCore.Capabilities.Screen;
+using PcCore.Capabilities.Security.Detection;
 using PcCore.Protocol;
 using PcCore.Tests.TestSupport;
 using Xunit;
@@ -23,13 +24,15 @@ public sealed class InputServiceTests
     private static InputService Build(
         out RecordingInputController controller,
         IDisplayCatalog? displays = null,
-        InputOptions? options = null)
+        InputOptions? options = null,
+        INexusInputAttribution? attribution = null)
     {
         controller = new RecordingInputController();
 
         return new InputService(
             controller,
             displays ?? new FakeDisplayCatalog(),
+            attribution ?? new NullNexusInputAttribution(),
             options ?? new InputOptions(),
             TestLog.For<InputService>());
     }
@@ -340,7 +343,11 @@ public sealed class InputServiceTests
         controller.Events.Clear();
 
         Assert.Equal(0, service.ReleaseAll(Owner));
-        Assert.Empty(controller.Events);
+
+        // The platform is still asked to let go of anything it believes is held — the session's
+        // bookkeeping and Windows' can disagree after a broker restart, and only the controller
+        // knows the second. What must not happen is a button or key being pressed or released again.
+        Assert.Equal(["release-all-held"], controller.Events);
     }
 
     [Fact]
@@ -428,9 +435,12 @@ public sealed class InputServiceTests
     [Fact]
     public void TheBudgetRefillsOverTime()
     {
+        // Twenty events a second is one token every fifty milliseconds. Deliberately slow: at a
+        // thousand a second the bucket refilled within the microseconds between two calls, so the
+        // refusal this test is about depended on how fast the machine happened to be that day.
         var service = Build(
             out _,
-            options: new InputOptions { MaxEventsPerSecond = 1000, BurstEvents = 2 });
+            options: new InputOptions { MaxEventsPerSecond = 20, BurstEvents = 2 });
 
         service.Begin(Owner);
         service.MoveRelative(Owner, 1, 1);
@@ -438,7 +448,7 @@ public sealed class InputServiceTests
 
         Assert.Throws<CapabilityException>(() => service.MoveRelative(Owner, 1, 1));
 
-        Thread.Sleep(50);
+        Thread.Sleep(150);
         service.MoveRelative(Owner, 1, 1);
     }
 

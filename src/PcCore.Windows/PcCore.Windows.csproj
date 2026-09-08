@@ -15,6 +15,7 @@
   -->
   <ItemGroup>
     <ProjectReference Include="..\PcCore.Capabilities\PcCore.Capabilities.csproj" />
+    <ProjectReference Include="..\PcCore.NativeInput\PcCore.NativeInput.csproj" />
   </ItemGroup>
 
   <ItemGroup>

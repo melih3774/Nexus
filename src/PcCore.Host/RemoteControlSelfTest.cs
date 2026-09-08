@@ -4,9 +4,11 @@ using Microsoft.Extensions.Logging;
 using PcCore.Capabilities.Indicator;
 using PcCore.Capabilities.Input;
 using PcCore.Capabilities.Screen;
+using PcCore.Capabilities.Security.Detection;
 using PcCore.Capabilities.Storage;
 using PcCore.Protocol;
 using PcCore.Windows;
+using PcCore.Windows.Input;
 
 namespace PcCore.Host;
 
@@ -265,6 +267,7 @@ public static class RemoteControlSelfTest
             new WindowsInputController(
                 new SystemDisplayGeometry(), loggerFactory.CreateLogger<WindowsInputController>()),
             new DxgiDesktopStream(loggerFactory),
+            new NullNexusInputAttribution(),
             new InputOptions(),
             loggerFactory.CreateLogger<InputService>());
 

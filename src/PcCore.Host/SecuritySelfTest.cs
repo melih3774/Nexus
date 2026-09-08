@@ -9,6 +9,7 @@ using PcCore.Capabilities.Security.Sessions;
 using PcCore.Capabilities.Storage;
 using PcCore.Protocol;
 using PcCore.Windows;
+using PcCore.Windows.Input;
 
 namespace PcCore.Host;
 
@@ -67,8 +68,13 @@ public static class SecuritySelfTest
 
         var detector = new WindowsActivityDetector(loggerFactory.CreateLogger<WindowsActivityDetector>());
 
+        // The real ledger, so the self-test exercises the same attribution the running host uses.
+        var attribution = new NexusInputAttribution(
+            new AttributionOptions(), loggerFactory.CreateLogger<NexusInputAttribution>());
+
         var monitor = new SecurityActivityMonitor(
             detector,
+            attribution,
             stateService,
             events,
             new DetectionOptions { GraceSeconds = 0 },

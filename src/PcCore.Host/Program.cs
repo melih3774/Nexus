@@ -19,6 +19,7 @@ using PcCore.Capabilities.System;
 using PcCore.Transport.Loopback;
 using PcCore.Transport.Remote;
 using PcCore.Windows;
+using PcCore.Windows.Input;
 
 [assembly: SupportedOSPlatform("windows10.0.17763.0")]
 
@@ -39,11 +40,26 @@ public static class Program
             return startupExitCode;
         }
 
+        // Native input setup, for the same reason. This is the one-time, owner-driven part of the
+        // input story; normal use never touches it.
+        if (TryHandleNativeInputCommand(args, out var nativeExitCode))
+        {
+            return nativeExitCode;
+        }
+
         // Exercises the security workflow against this machine's real hooks, camera and microphone.
         if (args.Contains("--selftest-security"))
         {
             using var securityLogs = LoggerFactory.Create(b => b.AddSimpleConsole(c => c.SingleLine = true));
             return await SecuritySelfTest.RunAsync(args, securityLogs).ConfigureAwait(false);
+        }
+
+        // Exercises the native input path against this machine's real windows, keyboard and touch.
+        if (args.Contains("--selftest-native-input"))
+        {
+            DpiAwareness.TryEnablePerMonitorV2();
+            using var nativeLogs = LoggerFactory.Create(b => b.AddSimpleConsole(c => c.SingleLine = true));
+            return await NativeInputSelfTest.RunAsync(args, nativeLogs).ConfigureAwait(false);
         }
 
         // A local diagnostic for the three v0.6 pieces that only exist against real Windows.
@@ -103,6 +119,7 @@ public static class Program
         var inputOptions = Bind<InputOptions>(builder.Configuration, InputOptions.SectionName);
         var detectionOptions = Bind<DetectionOptions>(builder.Configuration, DetectionOptions.SectionName);
         var evidenceOptions = Bind<EvidenceOptions>(builder.Configuration, EvidenceOptions.SectionName);
+        var attributionOptions = Bind<AttributionOptions>(builder.Configuration, AttributionOptions.SectionName);
         var securityStorage = Bind<SecurityStorageOptions>(builder.Configuration, SecurityStorageOptions.SectionName);
 
         var token = SessionToken.Generate();
@@ -119,6 +136,7 @@ public static class Program
             inputOptions,
             detectionOptions,
             evidenceOptions,
+            attributionOptions,
             securityStorage);
         RegisterRemoteTransport(builder.Services, remoteOptions);
 
@@ -176,6 +194,7 @@ public static class Program
         logger.LogInformation("Security state: {State}", app.Services.GetRequiredService<ISecurityStateService>().Current.State);
 
         WireRemoteControl(app.Services, logger);
+        ReportNativeInput(app.Services, logger);
         StartSecurityWorkflow(app.Services, logger);
         logger.LogInformation("Remote transport port: {Port} (Tailscale only)", remoteOptions.Port);
 
@@ -217,6 +236,7 @@ public static class Program
         InputOptions inputOptions,
         DetectionOptions detectionOptions,
         EvidenceOptions evidenceOptions,
+        AttributionOptions attributionOptions,
         SecurityStorageOptions securityStorage)
     {
         // --- Platform implementations (the only Windows-specific registrations) ---------------
@@ -235,7 +255,15 @@ public static class Program
         services.AddSingleton<IDesktopStream, DxgiDesktopStream>();
         services.AddSingleton<IDisplayCatalog>(p => p.GetRequiredService<IDesktopStream>());
         services.AddSingleton<IFrameEncoder, JpegFrameEncoder>();
-        services.AddSingleton<IInputController, WindowsInputController>();
+        // The input path. WindowsInputController is PC Core injecting for itself; BrokerInputChannel
+        // is the pipe to the elevated Nexus Input Broker; NativeInputRouter picks between them on
+        // every event. Only the router is registered as IInputController, so nothing above this line
+        // can accidentally bypass the choice — and nothing has to be told which path is live.
+        services.AddSingleton<WindowsInputController>();
+        services.AddSingleton<BrokerInputChannel>();
+        services.AddSingleton<NativeInputInstaller>();
+        services.AddSingleton<NativeInputRouter>();
+        services.AddSingleton<IInputController>(p => p.GetRequiredService<NativeInputRouter>());
         services.AddSingleton<IRemoteIndicator, WindowsRemoteIndicator>();
 
         // v0.7 platform pieces. Detection reads two fields of an input event and never the key; the
@@ -276,6 +304,13 @@ public static class Program
         // --- Live screen and remote input (v0.6) ------------------------------------------------
         services.AddSingleton(streamOptions);
         services.AddSingleton(inputOptions);
+
+        // Attribution sits between input and security and belongs to neither: input declares what it
+        // injected, detection asks whether an observation was already accounted for. Registering it
+        // here, once, is what makes both sides talk about the same ledger.
+        services.AddSingleton(attributionOptions);
+        services.AddSingleton<NexusInputAttribution>();
+        services.AddSingleton<INexusInputAttribution>(p => p.GetRequiredService<NexusInputAttribution>());
         services.AddSingleton<DesktopStreamService>();
         services.AddSingleton<IInputService, InputService>();
         services.AddSingleton<RemoteIndicatorService>();
@@ -327,6 +362,10 @@ public static class Program
         services.AddSingleton<ICapabilityAction, KeyInputAction>();
         services.AddSingleton<ICapabilityAction, TextInputAction>();
         services.AddSingleton<ICapabilityAction, ReleaseAllInputAction>();
+
+        // --- Capabilities added by v0.8 -----------------------------------------------------------
+        services.AddSingleton<ICapabilityAction, TouchInputAction>();
+        services.AddSingleton<ICapabilityAction, GetInputStatusAction>();
 
         // Local-only, and deliberately absent from the DEVICE allowlist: how visible the PC makes
         // remote access is a decision taken at the PC.
@@ -542,6 +581,122 @@ public static class Program
         }
 
         autoStart.Register();
+    }
+
+    /// <summary>
+    /// Says which input path is live and what it can reach, once, at start-up.
+    /// <para>
+    /// Deliberately unmissable in the log, because this is the one fact about input that changes
+    /// what the owner can do from their phone — and the one they would otherwise only discover by
+    /// clicking an Administrator window and watching nothing happen.
+    /// </para>
+    /// </summary>
+    private static void ReportNativeInput(IServiceProvider services, ILogger logger)
+    {
+        services.GetRequiredService<NexusInputAttribution>().LogConfiguration();
+
+        var status = services.GetRequiredService<IInputController>().Status;
+
+        if (status.State == NativeInputState.Ready)
+        {
+            logger.LogInformation(
+                "Native input: READY via the Nexus Input Broker {Version}. Elevated application "
+                + "windows are reachable; touch injection {Touch}.",
+                status.BrokerVersion,
+                status.TouchAvailable ? "available" : "unavailable");
+        }
+        else
+        {
+            logger.LogWarning(
+                "Native input: {State}. {Diagnostic}",
+                status.State.ToString().ToUpperInvariant(),
+                status.Diagnostic);
+        }
+
+        if (status.PhysicalDigitizer)
+        {
+            // Worth saying out loud: on a machine with a real digitizer, a person touching the
+            // screen produces the same kind of promoted mouse messages Nexus's own touch does, and
+            // attribution then rests on the correlation ledger rather than on the source alone.
+            logger.LogInformation(
+                "This machine has a physical pen or touch digitizer; local touch is attributed by "
+                + "correlation rather than by signature.");
+        }
+    }
+
+    /// <summary>
+    /// Handles <c>--install-native-input</c>, <c>--uninstall-native-input</c> and
+    /// <c>--native-input-status</c>.
+    /// <para>
+    /// The whole owner-facing surface of native input, and it is three commands run once. Everything
+    /// after that is automatic: the broker starts at logon, PC Core finds it, and nothing has to be
+    /// enabled per session.
+    /// </para>
+    /// </summary>
+    private static bool TryHandleNativeInputCommand(string[] args, out int exitCode)
+    {
+        exitCode = 0;
+
+        var command = args.FirstOrDefault(a =>
+            a is "--install-native-input" or "--uninstall-native-input"
+                or "--repair-native-input" or "--native-input-status");
+
+        if (command is null)
+        {
+            return false;
+        }
+
+        using var factory = LoggerFactory.Create(b => b.AddSimpleConsole(c => c.SingleLine = true));
+        var installer = new NativeInputInstaller(factory.CreateLogger<NativeInputInstaller>());
+
+        switch (command)
+        {
+            case "--install-native-input":
+            case "--repair-native-input":
+                var installed = installer.Install();
+                Describe(installed);
+
+                if (!installed.UpToDate)
+                {
+                    exitCode = 1;
+
+                    if (!NativeInputInstaller.IsElevated)
+                    {
+                        Console.WriteLine();
+                        Console.WriteLine("  Run this from an elevated terminal:");
+                        Console.WriteLine($"    \"{Environment.ProcessPath}\" {command}");
+                    }
+                }
+
+                break;
+
+            case "--uninstall-native-input":
+                Console.WriteLine(installer.Uninstall()
+                    ? "Native input removed. Nexus will inject input itself from now on."
+                    : "Native input could not be removed; see the message above.");
+                break;
+
+            default:
+                Describe(installer.GetStatus());
+                break;
+        }
+
+        return true;
+
+        static void Describe(NativeInputInstallation installation)
+        {
+            Console.WriteLine($"Task       : {NativeInputInstaller.TaskPath}");
+            Console.WriteLine($"Registered : {installation.Registered}");
+            Console.WriteLine($"Elevated   : {installation.Elevated}");
+            Console.WriteLine($"Command    : {installation.RegisteredCommand ?? "(none)"}");
+            Console.WriteLine($"Expected   : {installation.ExpectedCommand}");
+            Console.WriteLine($"Up to date : {installation.UpToDate}");
+
+            if (installation.Diagnostic is { } diagnostic)
+            {
+                Console.WriteLine($"Note       : {diagnostic}");
+            }
+        }
     }
 
     /// <summary>

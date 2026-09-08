@@ -227,3 +227,20 @@ public sealed class FixedDeviceEndpoint : IDeviceEndpointProvider
 
     public DeviceEndpoint? Current { get; }
 }
+
+/// <summary>
+/// A clock a test can move.
+/// <para>
+/// Written here rather than taken from a package because it needs to do exactly one thing, and the
+/// alternative is a dependency on a testing library for a class with two members. Everything in
+/// Nexus that cares about time takes a <see cref="TimeProvider"/> for this reason.
+/// </para>
+/// </summary>
+public sealed class AdvanceableTimeProvider(DateTimeOffset? start = null) : TimeProvider
+{
+    private DateTimeOffset _now = start ?? new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
+
+    public override DateTimeOffset GetUtcNow() => _now;
+
+    public void Advance(TimeSpan by) => _now += by;
+}

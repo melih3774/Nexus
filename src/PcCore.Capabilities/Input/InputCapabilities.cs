@@ -15,7 +15,10 @@ public sealed record InputAck
 {
     public required bool Delivered { get; init; }
 
-    /// <summary>One of <c>DELIVERED</c>, <c>BLOCKED_BY_INTEGRITY</c>, <c>FAILED</c>.</summary>
+    /// <summary>
+    /// One of <c>DELIVERED</c>, <c>BLOCKED_BY_INTEGRITY</c>, <c>BLOCKED_BY_SECURE_DESKTOP</c>,
+    /// <c>UNSUPPORTED</c>, <c>FAILED</c>.
+    /// </summary>
     public required string Delivery { get; init; }
 
     /// <summary>Safe, short explanation when something was refused. Never a stack trace.</summary>
@@ -28,6 +31,8 @@ public sealed record InputAck
         {
             InputDelivery.Delivered => "DELIVERED",
             InputDelivery.BlockedByIntegrity => "BLOCKED_BY_INTEGRITY",
+            InputDelivery.BlockedBySecureDesktop => "BLOCKED_BY_SECURE_DESKTOP",
+            InputDelivery.Unsupported => "UNSUPPORTED",
             _ => "FAILED",
         },
         Diagnostic = result.Diagnostic,
@@ -309,4 +314,85 @@ public sealed class ReleaseAllInputAction : CapabilityAction<NoParameters, Relea
         CapabilityContext context,
         CancellationToken cancellationToken) =>
         ValueTask.FromResult(new ReleaseAllResult { Released = _input.ReleaseAll(context.Caller.ConnectionId) });
+}
+
+public sealed record TouchParameters
+{
+    /// <summary><c>DOWN</c>, <c>MOVE</c>, <c>UP</c> or <c>CANCEL</c>.</summary>
+    public TouchAction Action { get; init; } = TouchAction.Cancel;
+
+    /// <summary>Position across the display, 0 to 1.</summary>
+    public double X { get; init; }
+
+    /// <summary>Position down the display, 0 to 1.</summary>
+    public double Y { get; init; }
+
+    public int DisplayIndex { get; init; }
+
+    /// <summary>Which finger. Direct mode uses one contact and leaves this at zero.</summary>
+    public int ContactId { get; init; }
+}
+
+/// <summary>
+/// Drives a touch contact.
+/// <para>
+/// <b>Why this is separate from <c>input.pointer</c>.</b> Direct mode is not a mouse being dragged
+/// around; it is a finger on a picture of the desktop. Windows can be told that directly, and when
+/// it is, a tap is a tap, a press and hold becomes a right-click without Nexus deciding that, and
+/// applications that handle touch get touch. Expressing the same gesture as a pointer move plus a
+/// button was always an approximation of this message.
+/// </para>
+/// <para>
+/// The phone sends this regardless of what the PC can do. If real touch injection is unavailable,
+/// PC Core turns it back into pointer and button events — the fallback belongs here, where it can
+/// see what the machine supports, not on the phone, which cannot.
+/// </para>
+/// </summary>
+public sealed class TouchInputAction : InputAction<TouchParameters>
+{
+    public TouchInputAction(IInputService input) : base(input)
+    {
+    }
+
+    public override string Name => "input.touch";
+
+    public override string Description => "Put a touch contact down, move it, or lift it.";
+
+    protected override ValueTask<InputAck> ExecuteAsync(
+        TouchParameters parameters,
+        CapabilityContext context,
+        CancellationToken cancellationToken) =>
+        ValueTask.FromResult(InputAck.From(Input.Touch(
+            OwnerOf(context),
+            parameters.DisplayIndex,
+            parameters.ContactId,
+            parameters.Action,
+            parameters.X,
+            parameters.Y)));
+}
+
+/// <summary>
+/// What is carrying input, and how healthy it is.
+/// <para>
+/// A diagnostic, never a switch. The owner does not choose an input path and is not asked to enable
+/// one: Nexus uses the best one available and reports which it got. This exists so that "the pointer
+/// will not click that Administrator window" has an answer on the phone instead of being a mystery,
+/// and so that a degraded path is visible rather than silently pretended away.
+/// </para>
+/// </summary>
+public sealed class GetInputStatusAction : CapabilityAction<NoParameters, NativeInputStatus>
+{
+    private readonly IInputService _input;
+
+    public GetInputStatusAction(IInputService input) => _input = input;
+
+    public override string Name => "input.status";
+
+    public override string Description => "Report which input path is in use and whether it is healthy.";
+
+    protected override ValueTask<NativeInputStatus> ExecuteAsync(
+        NoParameters parameters,
+        CapabilityContext context,
+        CancellationToken cancellationToken) =>
+        ValueTask.FromResult(_input.Status);
 }

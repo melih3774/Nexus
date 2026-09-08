@@ -4,6 +4,7 @@ using PcCore.Capabilities.Abstractions;
 using PcCore.Capabilities.Indicator;
 using PcCore.Capabilities.Input;
 using PcCore.Capabilities.Screen;
+using PcCore.Capabilities.Security.Detection;
 using PcCore.Capabilities.Storage;
 using PcCore.Protocol;
 
@@ -169,6 +170,43 @@ public sealed class RecordingInputController : IInputController
     public InputResult Key(NexusKey key, bool down) => Record($"key {key} {(down ? "down" : "up")}");
 
     public InputResult Text(string text) => Record($"text {text}");
+
+    /// <summary>When false, touch reports UNSUPPORTED so the pointer fallback can be exercised.</summary>
+    public bool TouchAvailable { get; set; } = true;
+
+    public InputResult Touch(int contactId, TouchAction action, int x, int y)
+    {
+        if (!TouchAvailable)
+        {
+            Events.Add($"touch-unsupported {action}");
+            return InputResult.Unsupported("no touch on this fake");
+        }
+
+        return Record($"touch {contactId} {action} {x},{y}");
+    }
+
+    public NativeInputStatus Status { get; set; } = new()
+    {
+        Path = InputPath.Local,
+        State = NativeInputState.NotInstalled,
+        ReachesElevatedWindows = false,
+        TouchAvailable = true,
+        PhysicalDigitizer = false,
+        Desktop = "DEFAULT",
+    };
+
+    /// <summary>What the platform is pretending to hold, for release-path tests.</summary>
+    public int PlatformHeld { get; set; }
+
+    public int ReleaseAllHeld()
+    {
+        Events.Add("release-all-held");
+
+        var held = PlatformHeld;
+        PlatformHeld = 0;
+
+        return held;
+    }
 }
 
 /// <summary>A display catalog with no capture behind it, for testing input coordinate mapping.</summary>
@@ -196,6 +234,7 @@ public static class RemoteControlTestServices
         services.AddSingleton<RecordingInputController>();
         services.AddSingleton<IInputController>(p => p.GetRequiredService<RecordingInputController>());
         services.AddSingleton(new InputOptions());
+        services.AddSingleton<INexusInputAttribution, NullNexusInputAttribution>();
         services.AddSingleton<IInputService, InputService>();
 
         services.AddSingleton<NullRemoteIndicator>();
@@ -238,6 +277,24 @@ public sealed class NoInput : IInputService
     public InputResult Key(string ownerId, NexusKey key, KeyAction action) => InputResult.Ok;
 
     public InputResult Text(string ownerId, string text) => InputResult.Ok;
+
+    public InputResult Touch(
+        string ownerId,
+        int displayIndex,
+        int contactId,
+        TouchAction action,
+        double x,
+        double y) => InputResult.Ok;
+
+    public NativeInputStatus Status => new()
+    {
+        Path = InputPath.Local,
+        State = NativeInputState.NotInstalled,
+        ReachesElevatedWindows = false,
+        TouchAvailable = false,
+        PhysicalDigitizer = false,
+        Desktop = "DEFAULT",
+    };
 
     public int ReleaseAll(string ownerId) => 0;
 

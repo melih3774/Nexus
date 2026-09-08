@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using PcCore.Capabilities.Abstractions;
 using PcCore.Capabilities.Screen;
+using PcCore.Capabilities.Security.Detection;
 using PcCore.Protocol;
 
 namespace PcCore.Capabilities.Input;
@@ -83,6 +84,19 @@ public interface IInputService
 
     InputResult Text(string ownerId, string text);
 
+    /// <summary>
+    /// Drives one touch contact at a position on a display, 0 to 1 on each axis.
+    /// <para>
+    /// The phone sends this for Direct mode and does not need to know whether the PC turns it into
+    /// real Windows touch or into a pointer and a button. That decision belongs here, where it can
+    /// follow what the machine can actually do.
+    /// </para>
+    /// </summary>
+    InputResult Touch(string ownerId, int displayIndex, int contactId, TouchAction action, double x, double y);
+
+    /// <summary>Which mechanism is carrying input, and how healthy it is.</summary>
+    NativeInputStatus Status { get; }
+
     /// <summary>Releases everything this session holds. Returns how many events that took.</summary>
     int ReleaseAll(string ownerId);
 }
@@ -94,6 +108,7 @@ public sealed class InputService : IInputService
 {
     private readonly IInputController _controller;
     private readonly IDisplayCatalog _displays;
+    private readonly INexusInputAttribution _attribution;
     private readonly InputOptions _options;
     private readonly ILogger<InputService> _logger;
     private readonly Lock _gate = new();
@@ -104,14 +119,18 @@ public sealed class InputService : IInputService
     public InputService(
         IInputController controller,
         IDisplayCatalog displays,
+        INexusInputAttribution attribution,
         InputOptions options,
         ILogger<InputService> logger)
     {
         _controller = controller;
         _displays = displays;
+        _attribution = attribution;
         _options = options;
         _logger = logger;
     }
+
+    public NativeInputStatus Status => _controller.Status;
 
     public IReadOnlyList<InputSession> Active
     {
@@ -200,7 +219,7 @@ public sealed class InputService : IInputService
         var pixelX = display.Left + (int)Math.Round(x * (display.Width - 1));
         var pixelY = display.Top + (int)Math.Round(y * (display.Height - 1));
 
-        return Record(state, _controller.MovePointerAbsolute(pixelX, pixelY));
+        return Record(state, _controller.MovePointerAbsolute(pixelX, pixelY), ActivityKind.PointerActivity, 1);
     }
 
     public InputResult MoveRelative(string ownerId, double dx, double dy)
@@ -216,7 +235,7 @@ public sealed class InputService : IInputService
         var moveX = (int)Math.Round(Math.Clamp(dx, -limit, limit));
         var moveY = (int)Math.Round(Math.Clamp(dy, -limit, limit));
 
-        return Record(state, _controller.MovePointerRelative(moveX, moveY));
+        return Record(state, _controller.MovePointerRelative(moveX, moveY), ActivityKind.PointerActivity, 1);
     }
 
     public InputResult Button(string ownerId, PointerButton button, ButtonAction action)
@@ -229,6 +248,7 @@ public sealed class InputService : IInputService
         }
 
         InputResult result;
+        var events = 1;
 
         switch (action)
         {
@@ -255,14 +275,16 @@ public sealed class InputService : IInputService
 
             case ButtonAction.Click:
                 result = Chord(button, 1);
+                events = 2;
                 break;
 
             default:
                 result = Chord(button, 2);
+                events = 4;
                 break;
         }
 
-        return Record(state, result);
+        return Record(state, result, ActivityKind.PointerActivity, events);
     }
 
     public InputResult Scroll(string ownerId, double horizontal, double vertical)
@@ -280,7 +302,9 @@ public sealed class InputService : IInputService
             state,
             _controller.Scroll(
                 (int)Math.Round(Math.Clamp(horizontal, -limit, limit)),
-                (int)Math.Round(Math.Clamp(vertical, -limit, limit))));
+                (int)Math.Round(Math.Clamp(vertical, -limit, limit))),
+            ActivityKind.PointerActivity,
+            2);
     }
 
     public InputResult Key(string ownerId, NexusKey key, KeyAction action)
@@ -293,6 +317,7 @@ public sealed class InputService : IInputService
         }
 
         InputResult result;
+        var events = 1;
 
         switch (action)
         {
@@ -319,6 +344,8 @@ public sealed class InputService : IInputService
 
             default:
                 result = _controller.Key(key, down: true);
+                events = 2;
+
                 if (result.Succeeded)
                 {
                     result = _controller.Key(key, down: false);
@@ -327,7 +354,7 @@ public sealed class InputService : IInputService
                 break;
         }
 
-        return Record(state, result);
+        return Record(state, result, ActivityKind.KeyboardActivity, events);
     }
 
     public InputResult Text(string ownerId, string text)
@@ -356,13 +383,81 @@ public sealed class InputService : IInputService
             }
         }
 
-        return Record(state, _controller.Text(text));
+        // Two events per character: KEYEVENTF_UNICODE sends a down and an up for each one.
+        return Record(state, _controller.Text(text), ActivityKind.KeyboardActivity, text.Length * 2);
+    }
+
+    /// <summary>
+    /// Drives one touch contact.
+    /// <para>
+    /// The position is validated and mapped exactly as an absolute pointer move is, and for the same
+    /// reason: the phone works in fractions of a display, and every fact about pixels, DPI scaling
+    /// and monitor origins stays on this side where it is testable. A contact on a second monitor
+    /// whose origin is negative is the case that a hard-coded origin would silently get wrong.
+    /// </para>
+    /// </summary>
+    public InputResult Touch(
+        string ownerId,
+        int displayIndex,
+        int contactId,
+        TouchAction action,
+        double x,
+        double y)
+    {
+        var state = Authorize(ownerId);
+
+        if (!Enum.IsDefined(action))
+        {
+            throw new CapabilityException(ErrorCodes.InvalidParameters, "Unknown touch action.");
+        }
+
+        if (contactId < 0 || contactId >= MaxTouchContacts)
+        {
+            throw new CapabilityException(
+                ErrorCodes.InvalidParameters, $"Touch contact must be between 0 and {MaxTouchContacts - 1}.");
+        }
+
+        if (!double.IsFinite(x) || !double.IsFinite(y) || x < 0 || x > 1 || y < 0 || y > 1)
+        {
+            throw new CapabilityException(
+                ErrorCodes.InvalidParameters, "Touch position must be between 0 and 1 on both axes.");
+        }
+
+        var display = _displays.GetDisplays().FirstOrDefault(d => d.Index == displayIndex)
+            ?? throw new CapabilityException(ErrorCodes.InvalidParameters, "No such display.");
+
+        var pixelX = display.Left + (int)Math.Round(x * (display.Width - 1));
+        var pixelY = display.Top + (int)Math.Round(y * (display.Height - 1));
+
+        var result = _controller.Touch(contactId, action, pixelX, pixelY);
+
+        if (result.Succeeded)
+        {
+            lock (_gate)
+            {
+                if (action is TouchAction.Up or TouchAction.Cancel)
+                {
+                    state.HeldContacts.Remove(contactId);
+                }
+                else
+                {
+                    // The last known position is kept so a contact abandoned by a dropped connection
+                    // can be lifted where it actually is. Windows rejects a touch-up whose position
+                    // differs from the previous update, and a rejected release would leave a finger
+                    // pressed on the desktop with nothing left to lift it.
+                    state.HeldContacts[contactId] = (x, y, displayIndex);
+                }
+            }
+        }
+
+        return Record(state, result, ActivityKind.PointerActivity, 1);
     }
 
     public int ReleaseAll(string ownerId)
     {
         PointerButton[] buttons;
         NexusKey[] keys;
+        KeyValuePair<int, (double X, double Y, int DisplayIndex)>[] contacts;
 
         lock (_gate)
         {
@@ -373,14 +468,34 @@ public sealed class InputService : IInputService
 
             buttons = [.. state.HeldButtons];
             keys = [.. state.HeldKeys];
+            contacts = [.. state.HeldContacts];
 
             state.HeldButtons.Clear();
             state.HeldKeys.Clear();
+            state.HeldContacts.Clear();
         }
 
         var released = 0;
 
-        // Buttons first: releasing a modifier while a drag is still down can turn a drag into a
+        // Contacts first. A live touch contact makes Windows treat pointer state as still in
+        // progress, so lifting the finger before anything else is what stops a cancelled gesture
+        // leaving the desktop mid-drag.
+        foreach (var (contactId, position) in contacts)
+        {
+            var display = _displays.GetDisplays().FirstOrDefault(d => d.Index == position.DisplayIndex);
+
+            if (display is not null)
+            {
+                var pixelX = display.Left + (int)Math.Round(position.X * (display.Width - 1));
+                var pixelY = display.Top + (int)Math.Round(position.Y * (display.Height - 1));
+
+                Safely(() => _controller.Touch(contactId, TouchAction.Cancel, pixelX, pixelY));
+            }
+
+            released++;
+        }
+
+        // Buttons next: releasing a modifier while a drag is still down can turn a drag into a
         // shortcut on the way out.
         foreach (var button in buttons)
         {
@@ -394,10 +509,17 @@ public sealed class InputService : IInputService
             released++;
         }
 
+        // Finally, whatever the platform itself still believes is held. The per-session bookkeeping
+        // above knows what this phone pressed; only the controller knows what Windows was left
+        // holding, and after a broker restart or a lost event those two can disagree.
+        released += SafelyCount(_controller.ReleaseAllHeld);
+
         if (released > 0)
         {
             _logger.LogInformation(
-                "Released {Buttons} held button(s) and {Keys} held key(s) for {Owner}.",
+                "Released {Contacts} touch contact(s), {Buttons} held button(s) and {Keys} held key(s) "
+                + "for {Owner}.",
+                contacts.Length,
                 buttons.Length,
                 keys.Length,
                 ownerId);
@@ -405,6 +527,12 @@ public sealed class InputService : IInputService
 
         return released;
     }
+
+    /// <summary>
+    /// Simultaneous touch contacts the protocol allows. Direct mode uses one; the bound exists so a
+    /// contact id off the wire cannot index anything unexpected.
+    /// </summary>
+    private const int MaxTouchContacts = 10;
 
     private InputResult Chord(PointerButton button, int times)
     {
@@ -446,20 +574,63 @@ public sealed class InputService : IInputService
         }
     }
 
-    /// <summary>Logs a refusal once per session rather than once per event, and passes it through.</summary>
-    private InputResult Record(SessionState state, InputResult result)
+    /// <summary>
+    /// The single point every delivered event passes through on its way back to the caller.
+    /// <para>
+    /// Two things happen here, and both are the kind that must not be left to call sites to
+    /// remember. Refusals are logged once per session rather than once per event, so a phone aimed
+    /// at an elevated window does not fill the log. And every event that actually reached Windows is
+    /// declared to <see cref="INexusInputAttribution"/>, which is what lets the security detector
+    /// recognise Nexus's own input even on the paths where no signature survives.
+    /// </para>
+    /// <para>
+    /// Only successful deliveries are declared. An event Windows refused produced nothing for the
+    /// detector to see, and a claim left outstanding for it could only ever be spent excusing
+    /// somebody else's.
+    /// </para>
+    /// </summary>
+    private InputResult Record(SessionState state, InputResult result, ActivityKind kind, int events)
     {
+        if (result.Succeeded)
+        {
+            _attribution.Expect(kind, events);
+        }
+
         if (result.Delivery == InputDelivery.BlockedByIntegrity && !state.WarnedAboutIntegrity)
         {
             state.WarnedAboutIntegrity = true;
             _logger.LogWarning(
-                "Input was refused by Windows for {Owner}: {Reason}. PC Core runs as a standard user "
-                + "and cannot send input to an elevated window; this is a Windows boundary, not a bug.",
+                "Input was refused by Windows for {Owner}: {Reason}. Native input is not carrying "
+                + "this session, so elevated application windows are out of reach; "
+                + "run 'PcCore.Host --install-native-input' to change that.",
+                state.Session.OwnerId,
+                result.Diagnostic);
+        }
+
+        if (result.Delivery == InputDelivery.BlockedBySecureDesktop && !state.WarnedAboutSecureDesktop)
+        {
+            state.WarnedAboutSecureDesktop = true;
+            _logger.LogInformation(
+                "Input for {Owner} stopped at the Secure Desktop: {Reason}",
                 state.Session.OwnerId,
                 result.Diagnostic);
         }
 
         return result;
+    }
+
+    /// <summary>As <see cref="Safely"/>, for a cleanup step that reports how much it released.</summary>
+    private int SafelyCount(Func<int> action)
+    {
+        try
+        {
+            return action();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Releasing platform-held input failed.");
+            return 0;
+        }
     }
 
     private void Safely(Func<InputResult> action)
@@ -485,7 +656,12 @@ public sealed class InputService : IInputService
 
         public HashSet<NexusKey> HeldKeys { get; } = [];
 
+        /// <summary>Touch contacts this session has put down and not yet lifted.</summary>
+        public Dictionary<int, (double X, double Y, int DisplayIndex)> HeldContacts { get; } = [];
+
         public bool WarnedAboutIntegrity { get; set; }
+
+        public bool WarnedAboutSecureDesktop { get; set; }
     }
 
     /// <summary>

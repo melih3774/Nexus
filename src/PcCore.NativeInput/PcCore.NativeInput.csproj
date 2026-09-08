@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.17763.0</TargetFramework>
+    <RootNamespace>PcCore.NativeInput</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <!--
+    The smallest project in the solution, and deliberately so.
+
+    Everything that actually touches the Windows input stack lives here and nowhere else, because
+    two processes need it: PC Core itself, and the elevated Nexus Input Broker. The broker runs at
+    a higher integrity level than anything else Nexus ships, so its dependency surface is part of
+    its threat model — it must not drag in configuration, logging, DI, HTTP or JSON just to press a
+    mouse button. This project therefore has no package references and no project references at all.
+  -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="PcCore.Tests" />
+  </ItemGroup>
+
+</Project>

@@ -87,6 +87,7 @@ public enum IncidentTrigger
 public sealed class SecurityActivityMonitor : IDisposable
 {
     private readonly ISecurityActivityDetector _detector;
+    private readonly INexusInputAttribution _attribution;
     private readonly ISecurityStateService _state;
     private readonly IEventStream _events;
     private readonly DetectionOptions _options;
@@ -116,6 +117,7 @@ public sealed class SecurityActivityMonitor : IDisposable
 
     public SecurityActivityMonitor(
         ISecurityActivityDetector detector,
+        INexusInputAttribution attribution,
         ISecurityStateService state,
         IEventStream events,
         DetectionOptions options,
@@ -123,6 +125,7 @@ public sealed class SecurityActivityMonitor : IDisposable
         TimeProvider? time = null)
     {
         _detector = detector;
+        _attribution = attribution;
         _state = state;
         _events = events;
         _options = options;
@@ -206,11 +209,40 @@ public sealed class SecurityActivityMonitor : IDisposable
         }
 
         // 2. State. This is the line that makes "no recording while the owner is present" true rather
-        //    than merely intended: in OWNER_PRESENT nothing downstream is ever reached.
+        //    than merely intended: in OWNER_PRESENT nothing downstream is ever reached — including
+        //    the attribution ledger below, which has no work to do in a state where no incident can
+        //    begin and would only spend claims that could never have mattered.
         var current = _state.Current.State;
 
         if (current == SecurityState.OwnerPresent)
         {
+            return;
+        }
+
+        // 3. The second attribution rule, for the input Nexus causes that carries no signature of
+        //    its own.
+        //
+        //    The signature check above is exact and remains the primary rule: a SendInput event
+        //    either carries Nexus's tag in dwExtraInfo or it does not. But Nexus no longer reaches
+        //    the desktop only through SendInput. Touch injection has no field for a tag, and the
+        //    mouse messages Windows promotes a touch contact into carry Windows' own pen/touch
+        //    signature instead. On this machine injected touch produced no low-level hook events at
+        //    all, which would be enough on its own — but "measured once, on one build of Windows" is
+        //    not a boundary, and the cost of being wrong is Nexus raising an alarm about the owner
+        //    using their own PC.
+        //
+        //    So every event Nexus successfully injects is declared, and anything that looks local
+        //    while a matching declaration is outstanding is Nexus's own work. Claims expire in
+        //    fractions of a second and are counted exactly, so this absorbs precisely what Nexus
+        //    caused and nothing more.
+        //
+        //    It sits above the SECURITY_SESSION branch deliberately. Using the phone to look at what
+        //    is happening during an incident must not write the owner's own remote input into that
+        //    incident's timeline — which is the same reason the signature check has always been
+        //    first.
+        if (_attribution.TryClaim(activity.Kind, _time.GetUtcNow()))
+        {
+            Interlocked.Increment(ref _ignoredNexusInput);
             return;
         }
 
@@ -225,7 +257,7 @@ public sealed class SecurityActivityMonitor : IDisposable
             return;
         }
 
-        // 3. Armed. Only now can an incident begin.
+        // 4. Armed. Only now can an incident begin.
         if (!PassesNoiseFilter(activity))
         {
             return;

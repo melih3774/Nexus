@@ -55,6 +55,7 @@ public sealed class EvidenceLifecycleTests : IDisposable
 
         _monitor = new SecurityActivityMonitor(
             _detector,
+            new NullNexusInputAttribution(),
             _stateService,
             _events,
             new DetectionOptions { GraceSeconds = 0, PointerMovementThreshold = 40, CoalesceMilliseconds = 0 },

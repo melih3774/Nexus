@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using Microsoft.Extensions.Logging;
 using PcCore.Capabilities.Security.Detection;
+using PcCore.NativeInput;
 using PcCore.Windows.Interop;
 
 // System.Diagnostics defines its own ActivityKind and ActivitySource for tracing. Aliased rather
@@ -266,10 +267,25 @@ public sealed class WindowsActivityDetector : ISecurityActivityDetector
     private static ActivitySource Attribute(nint extraInfo, bool injected)
     {
         // Compared on the low 32 bits, which is all Windows carries through the mouse hook. See
-        // InputInterop.NexusInjectionTag for the measurement behind that.
-        if ((extraInfo.ToInt64() & 0xFFFFFFFF) == InputInterop.NexusInjectionTag)
+        // NexusInputTag for the measurement behind that.
+        if (NexusInputTag.IsNexus(extraInfo.ToInt64()))
         {
             return ActivitySource.NexusRemote;
+        }
+
+        // Windows' own marker on mouse messages promoted from a pen or touch contact. Nexus's touch
+        // path produces these, and so would a person using a real touchscreen — which is exactly why
+        // this cannot be the deciding rule on its own. It says "not a mouse", not "not a person".
+        // Whether a particular one was Nexus is settled by INexusInputAttribution, in the monitor.
+        //
+        // Reported as Local rather than Synthetic on purpose: on a machine with a real digitizer,
+        // calling every touch synthetic would mean an intruder using the touchscreen while the PC is
+        // ARMED raises nothing at all.
+        if (NexusInputTag.IsPenOrTouch(extraInfo.ToInt64()))
+        {
+            return injected && !NativeInjector.HasPhysicalDigitizer
+                ? ActivitySource.Synthetic
+                : ActivitySource.Local;
         }
 
         return injected ? ActivitySource.Synthetic : ActivitySource.Local;

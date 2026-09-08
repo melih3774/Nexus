@@ -24,6 +24,14 @@ public sealed class SecurityWorkflowTests : IDisposable
 {
     private readonly TempStateDirectory _state = new("security-workflow");
     private readonly ScriptedActivityDetector _detector = new();
+
+    /// <summary>
+    /// A real ledger rather than the null one, because the regression that matters most in this
+    /// suite is that Nexus's own input never raises a session. See NexusInputAttributionTests and
+    /// the ARMED tests below.
+    /// </summary>
+    private readonly NexusInputAttribution _attribution =
+        new(new AttributionOptions(), TestLog.For<NexusInputAttribution>());
     private readonly EventBus _events;
     private readonly SecurityStateService _stateService;
     private readonly SecurityConfigurationStore _configuration;
@@ -44,6 +52,7 @@ public sealed class SecurityWorkflowTests : IDisposable
 
         _monitor = new SecurityActivityMonitor(
             _detector,
+            _attribution,
             _stateService,
             _events,
             new DetectionOptions { GraceSeconds = 0, PointerMovementThreshold = 40, CoalesceMilliseconds = 0 },
@@ -218,6 +227,7 @@ public sealed class SecurityWorkflowTests : IDisposable
         using var detector = new ScriptedActivityDetector();
         using var monitor = new SecurityActivityMonitor(
             detector,
+            new NullNexusInputAttribution(),
             stateService,
             events,
             new DetectionOptions { GraceSeconds = 30 },
@@ -525,7 +535,12 @@ public sealed class SecurityWorkflowTests : IDisposable
 
         using var detector = new ScriptedActivityDetector();
         using var monitor = new SecurityActivityMonitor(
-            detector, stateService, events, new DetectionOptions(), TestLog.For<SecurityActivityMonitor>());
+            detector,
+            new NullNexusInputAttribution(),
+            stateService,
+            events,
+            new DetectionOptions(),
+            TestLog.For<SecurityActivityMonitor>());
 
         await using var incidents = new SecurityIncidentService(
             store,

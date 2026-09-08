@@ -17,7 +17,28 @@
     <ProjectReference Include="..\PcCore.Transport.Loopback\PcCore.Transport.Loopback.csproj" />
     <ProjectReference Include="..\PcCore.Transport.Remote\PcCore.Transport.Remote.csproj" />
     <ProjectReference Include="..\PcCore.Windows\PcCore.Windows.csproj" />
+
+    <!--
+      Referenced so that building PC Core also builds the broker. ReferenceOutputAssembly is false
+      because PC Core does not call into it: they are two processes that speak a pipe protocol, and
+      linking them would defeat the point of the broker being a small separate binary.
+    -->
+    <ProjectReference Include="..\PcCore.InputBroker\PcCore.InputBroker.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
+
+  <!--
+    The broker has to end up next to PcCore.Host.exe. Both ends of the pipe check that: the broker
+    only accepts a connection from the PC Core beside it, and PC Core only accepts a pipe served by
+    the broker beside it. Those checks are what stops another program the owner happens to be running
+    from either driving the elevated input path or intercepting what the owner types — so the two
+    files travelling together is a correctness requirement, not packaging convenience.
+  -->
+  <Target Name="CopyInputBroker" AfterTargets="Build">
+    <ItemGroup>
+      <BrokerOutput Include="$(MSBuildThisFileDirectory)..\PcCore.InputBroker\bin\$(Configuration)\$(TargetFramework)\PcCore.InputBroker.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(BrokerOutput)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
 
   <ItemGroup>
     <!-- QR rendering for the pairing code. Presentation only, so it stays in the host and never

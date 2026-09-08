@@ -140,11 +140,25 @@ public enum InputDelivery
     Delivered,
 
     /// <summary>
-    /// Windows refused the event. In practice this means the foreground window belongs to a process
-    /// at a higher integrity level: a standard-user process cannot send input to an elevated window,
-    /// and PC Core deliberately stays a standard-user process.
+    /// Windows refused the event because the foreground window belongs to a process at a higher
+    /// integrity level. With the Nexus Input Broker installed this should not happen for an ordinary
+    /// elevated application; without it, it is the expected outcome and always was.
     /// </summary>
     BlockedByIntegrity,
+
+    /// <summary>
+    /// Windows is showing the Secure Desktop — a UAC consent prompt, the lock screen, or
+    /// Ctrl+Alt+Del — and Nexus does not send input there.
+    /// <para>
+    /// This is a refusal by policy, not a failure. The boundary exists to be respected: whatever
+    /// the input path is technically capable of, remote approval of an elevation prompt is not
+    /// something Nexus offers. The owner answers that prompt at the PC.
+    /// </para>
+    /// </summary>
+    BlockedBySecureDesktop,
+
+    /// <summary>The action is not available on this system. Touch, on a path that cannot inject it.</summary>
+    Unsupported,
 
     /// <summary>The call failed for some other reason. The diagnostic says what Windows reported.</summary>
     Failed,
@@ -156,9 +170,31 @@ public readonly record struct InputResult(InputDelivery Delivery, string? Diagno
 
     public static InputResult Blocked(string diagnostic) => new(InputDelivery.BlockedByIntegrity, diagnostic);
 
+    public static InputResult SecureDesktop(string diagnostic) =>
+        new(InputDelivery.BlockedBySecureDesktop, diagnostic);
+
+    public static InputResult Unsupported(string diagnostic) => new(InputDelivery.Unsupported, diagnostic);
+
     public static InputResult Failed(string diagnostic) => new(InputDelivery.Failed, diagnostic);
 
     public bool Succeeded => Delivery == InputDelivery.Delivered;
+}
+
+/// <summary>What one touch contact is being told to do. Mirrors the phone's own touch events.</summary>
+public enum TouchAction
+{
+    [JsonStringEnumMemberName("DOWN")]
+    Down,
+
+    [JsonStringEnumMemberName("MOVE")]
+    Move,
+
+    [JsonStringEnumMemberName("UP")]
+    Up,
+
+    /// <summary>Abandon the contact without completing it. For an interrupted gesture.</summary>
+    [JsonStringEnumMemberName("CANCEL")]
+    Cancel,
 }
 
 /// <summary>
@@ -190,4 +226,31 @@ public interface IInputController
 
     /// <summary>Types text as Unicode, so anything the phone's keyboard can produce arrives intact.</summary>
     InputResult Text(string text);
+
+    /// <summary>
+    /// Drives one touch contact at a point in virtual-desktop pixels.
+    /// <para>
+    /// Real Windows touch where the platform can inject it, which is what makes Direct mode behave
+    /// like a touch display rather than a mouse being dragged around: a tap is a tap, a press and
+    /// hold is a right-click without Nexus having to decide that, and applications that handle touch
+    /// get touch. Where touch cannot be injected, the implementation is expected to fall back to
+    /// pointer and button events rather than refuse — the phone should not have to know which.
+    /// </para>
+    /// </summary>
+    /// <param name="contactId">Which finger. Zero for the single contact Direct mode uses today.</param>
+    InputResult Touch(int contactId, TouchAction action, int x, int y);
+
+    /// <summary>Which mechanism is carrying input, and how healthy it is.</summary>
+    NativeInputStatus Status { get; }
+
+    /// <summary>
+    /// Releases anything this controller is holding at the platform level.
+    /// <para>
+    /// Distinct from the per-session bookkeeping in <see cref="InputService"/>: that knows what a
+    /// particular phone pressed, this knows what Windows currently believes is down. Both have to be
+    /// cleared, and only this one can clear a touch contact.
+    /// </para>
+    /// </summary>
+    /// <returns>How many held buttons, keys and contacts were released.</returns>
+    int ReleaseAllHeld();
 }
