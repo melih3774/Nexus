@@ -147,3 +147,61 @@ data class InputSessionStarted(
     val active: Boolean = false,
     @SerialName("max_events_per_second") val maxEventsPerSecond: Int = 0,
 )
+
+/**
+ * What one touch contact is being told to do.
+ *
+ * Direct mode sends these instead of a pointer move plus a button. Whether the PC turns them into
+ * real Windows touch or back into a pointer and a button is the PC's business: it is the only side
+ * that knows what the machine can do, and putting the decision there means the phone has one
+ * gesture implementation rather than two.
+ */
+@Serializable
+enum class TouchAction { DOWN, MOVE, UP, CANCEL }
+
+/**
+ * One touch contact, at a position on a display expressed as a fraction of it.
+ *
+ * Exactly the coordinate space `input.pointer` uses in absolute mode, deliberately: a tap and a
+ * pointer move at the same place on the phone must land on the same pixel of the PC.
+ */
+@Serializable
+data class TouchParams(
+    val action: TouchAction,
+    val x: Double = 0.0,
+    val y: Double = 0.0,
+    @SerialName("display_index") val displayIndex: Int = 0,
+    @SerialName("contact_id") val contactId: Int = 0,
+)
+
+/**
+ * Which mechanism is carrying input on the PC, and how healthy it is.
+ *
+ * A diagnostic, never a setting. The owner does not pick an input path and is never asked to enable
+ * one — the PC uses the best available and reports which it got. This exists so that "the pointer
+ * will not click that Administrator window" has an answer on the phone instead of being a mystery.
+ */
+@Serializable
+data class NativeInputStatus(
+    val path: String = "LOCAL",
+    val state: String = "NOT_INSTALLED",
+    @SerialName("reaches_elevated_windows") val reachesElevatedWindows: Boolean = false,
+    @SerialName("touch_available") val touchAvailable: Boolean = false,
+    @SerialName("physical_digitizer") val physicalDigitizer: Boolean = false,
+    val desktop: String = "DEFAULT",
+    @SerialName("secure_desktop_active") val secureDesktopActive: Boolean = false,
+    @SerialName("broker_version") val brokerVersion: String? = null,
+    val diagnostic: String? = null,
+    val summary: String = "",
+) {
+    /** True when input reaches everything on the desktop, elevated windows included. */
+    val isFullyNative: Boolean get() = state == "READY" && reachesElevatedWindows
+
+    /** What the status line shows. Falls back to composing one if the PC sent none. */
+    val label: String
+        get() = when {
+            summary.isNotBlank() -> summary
+            isFullyNative -> "Native input: ready"
+            else -> "Standard input"
+        }
+}

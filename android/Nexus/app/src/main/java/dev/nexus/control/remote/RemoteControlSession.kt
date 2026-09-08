@@ -20,7 +20,10 @@ import dev.nexus.control.protocol.PointerParams
 import dev.nexus.control.protocol.ScrollParams
 import dev.nexus.control.protocol.StartStreamParams
 import dev.nexus.control.protocol.StreamStarted
+import dev.nexus.control.protocol.NativeInputStatus
 import dev.nexus.control.protocol.TextParams
+import dev.nexus.control.protocol.TouchAction
+import dev.nexus.control.protocol.TouchParams
 import kotlinx.coroutines.CancellationException
 
 /**
@@ -42,6 +45,7 @@ class RemoteControlSession(private val connection: NexusCommandChannel) {
 
     private var inputActive = false
     private var pointerDown = false
+    private var contactDown = false
 
     /** Set when Windows refuses input, so the screen can explain rather than appear broken. */
     var lastRefusal: String? = null
@@ -126,12 +130,14 @@ class RemoteControlSession(private val connection: NexusCommandChannel) {
         quietly { connection.request(NexusProtocol.Actions.INPUT_RELEASE_ALL) }
         latched.clear()
         pointerDown = false
+        contactDown = false
     }
 
     /** Local-only cleanup, for when there is no connection left to tell. */
     fun forgetHeldState() {
         inputActive = false
         pointerDown = false
+        contactDown = false
         latched.clear()
     }
 
@@ -190,6 +196,59 @@ class RemoteControlSession(private val connection: NexusCommandChannel) {
     suspend fun releaseButton(button: PointerButton = PointerButton.LEFT) {
         pointerDown = false
         send(NexusProtocol.Actions.INPUT_BUTTON, ButtonParams.serializer(), ButtonParams(button, ButtonAction.UP))
+    }
+
+    // --- Touch ---------------------------------------------------------------------------------
+
+    /**
+     * Puts a touch contact down, moves it, or lifts it.
+     *
+     * Sent without awaiting a reply for the same reason moves are: during a drag these arrive as
+     * fast as fingers move, and a round trip per contact update would put the network between the
+     * finger and what it is dragging.
+     *
+     * `touchDown` is tracked locally as well, so that an interrupted gesture — a call arriving, the
+     * app being backgrounded — can lift a contact the PC is still holding. A finger left pressed on
+     * the desktop is the touch equivalent of a stuck mouse button, and worse, because there is no
+     * cursor to show it.
+     */
+    fun touch(action: TouchAction, point: DesktopPoint, displayIndex: Int) {
+        contactDown = when (action) {
+            TouchAction.DOWN, TouchAction.MOVE -> true
+            TouchAction.UP, TouchAction.CANCEL -> false
+        }
+
+        connection.notify(
+            NexusProtocol.Actions.INPUT_TOUCH,
+            NexusJson.encodeToJsonElement(
+                TouchParams.serializer(),
+                TouchParams(
+                    action = action,
+                    x = point.x,
+                    y = point.y,
+                    displayIndex = displayIndex,
+                ),
+            ),
+        )
+    }
+
+    /** True while the phone believes a contact is still down on the PC. */
+    val isContactDown: Boolean get() = contactDown
+
+    /**
+     * Which input path the PC is using.
+     *
+     * Best-effort: a PC too old to know this action is not an error, it just has no native input,
+     * and the phone shows nothing rather than a failure.
+     */
+    suspend fun inputStatus(): NativeInputStatus? = try {
+        connection.request(NexusProtocol.Actions.INPUT_STATUS)
+            ?.let { NexusJson.decodeFromJsonElement(NativeInputStatus.serializer(), it) }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.d(TAG, "Input status is unavailable: ${e.javaClass.simpleName}")
+        null
     }
 
     /** Wheel notches. Positive scrolls up, matching Windows and the PC's validation. */

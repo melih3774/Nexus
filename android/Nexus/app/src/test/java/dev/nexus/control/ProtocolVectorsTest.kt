@@ -25,6 +25,9 @@ import dev.nexus.control.protocol.ButtonParams
 import dev.nexus.control.protocol.ScrollParams
 import dev.nexus.control.protocol.KeyParams
 import dev.nexus.control.protocol.TextParams
+import dev.nexus.control.protocol.TouchAction
+import dev.nexus.control.protocol.TouchParams
+import dev.nexus.control.protocol.NativeInputStatus
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -444,8 +447,53 @@ class ProtocolVectorsTest {
 
                 NexusProtocol.Actions.INPUT_TEXT ->
                     NexusJson.decodeFromJsonElement(TextParams.serializer(), params)
+
+                NexusProtocol.Actions.INPUT_TOUCH ->
+                    NexusJson.decodeFromJsonElement(TouchParams.serializer(), params)
             }
         }
+    }
+
+    @Test
+    fun `the touch actions match PC Core exactly`() {
+        val fromPc = vectors["input_touch_actions"]!!.jsonArray.map { it.jsonPrimitive.content }
+        val fromPhone = TouchAction.entries.map { it.name }
+
+        assertEquals(fromPc, fromPhone)
+    }
+
+    @Test
+    fun `the input status decodes with every field the PC sends`() {
+        // The status line is the one place the phone tells the owner why a click on an
+        // Administrator window did nothing. A renamed field here would not fail to compile; it
+        // would quietly leave the line blank, which is the worst possible way to report a boundary.
+        val status = NexusJson.decodeFromJsonElement(
+            NativeInputStatus.serializer(),
+            vectors["input_status"]!!,
+        )
+
+        assertEquals("NATIVE_BROKER", status.path)
+        assertEquals("READY", status.state)
+        assertTrue("the status should reach elevated windows", status.reachesElevatedWindows)
+        assertTrue("touch should be available", status.touchAvailable)
+        assertFalse("this machine has no digitizer of its own", status.physicalDigitizer)
+        assertFalse("the secure desktop is not up", status.secureDesktopActive)
+        assertEquals("0.8.0", status.brokerVersion)
+        assertTrue("a ready broker is fully native", status.isFullyNative)
+        assertEquals("Native input: ready", status.label)
+    }
+
+    @Test
+    fun `a status the phone cannot fully understand still reads as not native`() {
+        // A PC newer than the phone must never read as "ready" by accident: the phone falls back to
+        // the safe answer, which is that elevated windows may not be reachable.
+        val status = NexusJson.decodeFromJsonElement(
+            NativeInputStatus.serializer(),
+            Json.parseToJsonElement("""{"path":"SOMETHING_NEW","state":"SOMETHING_NEW"}"""),
+        )
+
+        assertFalse("an unknown state is not fully native", status.isFullyNative)
+        assertEquals("Standard input", status.label)
     }
 
     @Test

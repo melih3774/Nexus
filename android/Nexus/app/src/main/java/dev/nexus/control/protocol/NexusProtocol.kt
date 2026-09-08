@@ -53,6 +53,11 @@ object NexusProtocol {
         const val INPUT_TEXT = "input.text"
         const val INPUT_RELEASE_ALL = "input.release_all"
 
+        // v0.8 - native input. INPUT_TOUCH is what Direct mode sends; INPUT_STATUS is a diagnostic
+        // and never a switch, because the owner does not choose an input path.
+        const val INPUT_TOUCH = "input.touch"
+        const val INPUT_STATUS = "input.status"
+
         // v0.7 - the security workflow. The phone receives the alert, so it can inspect the incident
         // and answer it. Deleting evidence and changing security settings are deliberately absent:
         // those stay at the PC, behind Windows Hello.

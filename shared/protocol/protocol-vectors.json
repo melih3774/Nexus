@@ -131,7 +131,45 @@
     {
       "action": "input.release_all",
       "encoded": "{\u0022protocol_version\u0022:1,\u0022id\u0022:\u0022vec-input.release_all\u0022,\u0022type\u0022:\u0022request\u0022,\u0022action\u0022:\u0022input.release_all\u0022,\u0022params\u0022:null}"
+    },
+    {
+      "action": "input.touch",
+      "encoded": "{\u0022protocol_version\u0022:1,\u0022id\u0022:\u0022vec-input.touch\u0022,\u0022type\u0022:\u0022request\u0022,\u0022action\u0022:\u0022input.touch\u0022,\u0022params\u0022:{\u0022action\u0022:\u0022DOWN\u0022,\u0022x\u0022:0.125,\u0022y\u0022:0.875,\u0022display_index\u0022:1,\u0022contact_id\u0022:0}}"
+    },
+    {
+      "action": "input.touch",
+      "encoded": "{\u0022protocol_version\u0022:1,\u0022id\u0022:\u0022vec-input.touch\u0022,\u0022type\u0022:\u0022request\u0022,\u0022action\u0022:\u0022input.touch\u0022,\u0022params\u0022:{\u0022action\u0022:\u0022MOVE\u0022,\u0022x\u0022:0.5,\u0022y\u0022:0.5,\u0022display_index\u0022:1,\u0022contact_id\u0022:0}}"
+    },
+    {
+      "action": "input.touch",
+      "encoded": "{\u0022protocol_version\u0022:1,\u0022id\u0022:\u0022vec-input.touch\u0022,\u0022type\u0022:\u0022request\u0022,\u0022action\u0022:\u0022input.touch\u0022,\u0022params\u0022:{\u0022action\u0022:\u0022UP\u0022,\u0022x\u0022:0.5,\u0022y\u0022:0.5,\u0022display_index\u0022:1,\u0022contact_id\u0022:0}}"
+    },
+    {
+      "action": "input.touch",
+      "encoded": "{\u0022protocol_version\u0022:1,\u0022id\u0022:\u0022vec-input.touch\u0022,\u0022type\u0022:\u0022request\u0022,\u0022action\u0022:\u0022input.touch\u0022,\u0022params\u0022:{\u0022action\u0022:\u0022CANCEL\u0022,\u0022x\u0022:0,\u0022y\u0022:0,\u0022display_index\u0022:0,\u0022contact_id\u0022:2}}"
+    },
+    {
+      "action": "input.status",
+      "encoded": "{\u0022protocol_version\u0022:1,\u0022id\u0022:\u0022vec-input.status\u0022,\u0022type\u0022:\u0022request\u0022,\u0022action\u0022:\u0022input.status\u0022,\u0022params\u0022:null}"
     }
+  ],
+  "input_status": {
+    "path": "NATIVE_BROKER",
+    "state": "READY",
+    "reaches_elevated_windows": true,
+    "touch_available": true,
+    "physical_digitizer": false,
+    "desktop": "DEFAULT",
+    "secure_desktop_active": false,
+    "broker_version": "0.8.0",
+    "diagnostic": null,
+    "summary": "Native input: ready"
+  },
+  "input_touch_actions": [
+    "DOWN",
+    "MOVE",
+    "UP",
+    "CANCEL"
   ],
   "input_key_names": [
     "ESCAPE",

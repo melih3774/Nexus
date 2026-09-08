@@ -84,13 +84,32 @@ fun RemoteScreen(
             pointerMode = state.pointerMode,
             inputEnabled = state.inputEnabled,
             onTap = { point ->
-                if (state.pointerMode == PointerModeUi.DIRECT && point != null) viewModel.moveTo(point)
-                viewModel.click()
+                if (state.directUsesTouch && point != null) {
+                    // A real tap: the contact goes down and comes straight back up. Windows turns
+                    // that into a click for applications that only understand a mouse, and into an
+                    // actual tap for the ones that understand touch.
+                    viewModel.touchDown(point)
+                    viewModel.touchUp(point)
+                } else {
+                    if (state.pointerMode == PointerModeUi.DIRECT && point != null) viewModel.moveTo(point)
+                    viewModel.click()
+                }
             },
             onDoubleTap = { point ->
-                if (state.pointerMode == PointerModeUi.DIRECT && point != null) viewModel.moveTo(point)
-                viewModel.doubleClick()
+                if (state.directUsesTouch && point != null) {
+                    viewModel.touchDown(point)
+                    viewModel.touchUp(point)
+                    viewModel.touchDown(point)
+                    viewModel.touchUp(point)
+                } else {
+                    if (state.pointerMode == PointerModeUi.DIRECT && point != null) viewModel.moveTo(point)
+                    viewModel.doubleClick()
+                }
             },
+            // Deliberately still a real right click rather than a held touch contact. Windows does
+            // turn press-and-hold into a right click on its own, but only after its own timer — and
+            // the phone has already waited 450 ms to decide this was a long press. Waiting twice
+            // would make the commonest gesture on a desktop feel broken.
             onLongPress = { point ->
                 if (state.pointerMode == PointerModeUi.DIRECT && point != null) viewModel.moveTo(point)
                 viewModel.click(PointerButton.RIGHT)
@@ -99,15 +118,26 @@ fun RemoteScreen(
             // onMove and never touches a button — the two are separate actions, which is the whole
             // point of the v0.7.1 gesture fix.
             onDragStart = { point ->
-                // Direct: the button must go down where the finger is, not wherever the pointer was
-                // left, so the move comes first.
-                if (state.pointerMode == PointerModeUi.DIRECT && point != null) viewModel.moveTo(point)
-                viewModel.pressPointer()
+                if (state.directUsesTouch && point != null) {
+                    viewModel.touchDown(point)
+                } else {
+                    // Direct: the button must go down where the finger is, not wherever the pointer
+                    // was left, so the move comes first.
+                    if (state.pointerMode == PointerModeUi.DIRECT && point != null) viewModel.moveTo(point)
+                    viewModel.pressPointer()
+                }
             },
             onMove = { point, dx, dy ->
                 if (state.pointerMode == PointerModeUi.DIRECT) {
-                    // Direct: the pointer goes where the finger is.
-                    point?.let(viewModel::moveTo)
+                    if (state.directUsesTouch && viewModel.isDragging && point != null) {
+                        // A contact is down: this is a drag, and the contact follows the finger.
+                        viewModel.touchMove(point)
+                    } else {
+                        // No contact down. Touch has no equivalent of moving without touching, so
+                        // the pointer moves instead — which is also the only way the owner can see
+                        // where they are on the streamed image before committing to a tap.
+                        point?.let(viewModel::moveTo)
+                    }
                 } else {
                     // Touchpad: the pointer moves by what the finger moved, scaled so a movement
                     // covers the same amount of desktop however far the stream is scaled down.
@@ -122,7 +152,13 @@ fun RemoteScreen(
                     viewModel.moveBy((dx * scale).toDouble(), (dy * scale).toDouble())
                 }
             },
-            onDragEnd = { viewModel.releasePointer() },
+            onDragEnd = {
+                if (state.directUsesTouch && viewModel.isDragging) {
+                    viewModel.endTouchDrag()
+                } else {
+                    viewModel.releasePointer()
+                }
+            },
             onScroll = { notches -> viewModel.scroll(notches.toDouble()) },
             onBackgroundTap = { viewModel.toggleChrome() },
         )
@@ -193,7 +229,10 @@ fun RemoteScreen(
                 PointerControls(
                     mode = state.pointerMode,
                     inputEnabled = state.inputEnabled,
+                    directGesture = state.directGesture,
+                    inputStatus = state.inputStatus,
                     onModeChange = viewModel::setPointerMode,
+                    onDirectGestureChange = viewModel::setDirectGesture,
                     onInputEnabledChange = viewModel::setInputEnabled,
                     onClick = viewModel::click,
                     onDoubleClick = viewModel::doubleClick,

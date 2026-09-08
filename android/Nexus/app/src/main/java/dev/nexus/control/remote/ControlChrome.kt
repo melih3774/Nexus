@@ -30,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import dev.nexus.control.protocol.NativeInputStatus
 import dev.nexus.control.protocol.NexusKey
 import dev.nexus.control.protocol.PointerButton
 
@@ -44,7 +45,10 @@ import dev.nexus.control.protocol.PointerButton
 fun PointerControls(
     mode: PointerModeUi,
     inputEnabled: Boolean,
+    directGesture: DirectGesture,
+    inputStatus: NativeInputStatus?,
     onModeChange: (PointerModeUi) -> Unit,
+    onDirectGestureChange: (DirectGesture) -> Unit,
     onInputEnabledChange: (Boolean) -> Unit,
     onClick: (PointerButton) -> Unit,
     onDoubleClick: () -> Unit,
@@ -77,6 +81,30 @@ fun PointerControls(
             }
         }
 
+        // Only in Direct mode, and only when the PC can actually inject touch. Offering the choice
+        // on a machine that would silently fall back either way would be offering a switch that does
+        // nothing.
+        if (mode == PointerModeUi.DIRECT && inputStatus?.touchAvailable != false) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Direct acts as", style = MaterialTheme.typography.labelMedium)
+                Spacer(Modifier.width(8.dp))
+
+                SingleChoiceSegmentedButtonRow {
+                    DirectGesture.entries.forEachIndexed { index, entry ->
+                        SegmentedButton(
+                            selected = directGesture == entry,
+                            onClick = { onDirectGestureChange(entry) },
+                            shape = SegmentedButtonDefaults.itemShape(index, DirectGesture.entries.size),
+                        ) {
+                            Text(if (entry == DirectGesture.TOUCH) "Touch" else "Mouse")
+                        }
+                    }
+                }
+            }
+        }
+
+        InputPathStatus(inputStatus)
+
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilledTonalButton(onClick = { onClick(PointerButton.LEFT) }, enabled = inputEnabled) { Text("Left") }
             FilledTonalButton(onClick = onDoubleClick, enabled = inputEnabled) { Text("Double") }
@@ -84,6 +112,40 @@ fun PointerControls(
             FilledTonalButton(onClick = { onClick(PointerButton.MIDDLE) }, enabled = inputEnabled) { Text("Middle") }
         }
     }
+}
+
+/**
+ * One line saying which mechanism is carrying input, and nothing more.
+ *
+ * **This is not a setup screen and must never grow into one.** The whole design of native input is
+ * that the owner does not enable it per session and does not choose a path: the PC uses the best it
+ * has and says which it got. What this line is for is the moment when a click on an Administrator
+ * window does nothing — so that the answer is on screen instead of being a mystery.
+ *
+ * A degraded path says so. Reporting "ready" for a broker that is running without the rights it
+ * needs would be worse than reporting nothing, because the owner would only find out by trying.
+ */
+@Composable
+private fun InputPathStatus(status: NativeInputStatus?, modifier: Modifier = Modifier) {
+    if (status == null) return
+
+    val colours = MaterialTheme.colorScheme
+
+    val (text, colour) = when {
+        status.secureDesktopActive ->
+            "Local administrator confirmation required on the PC" to colours.error
+
+        status.isFullyNative ->
+            "Native input: ready — elevated windows included" to colours.primary
+
+        status.state == "DEGRADED" ->
+            "Native input installed but not elevated — elevated windows are out of reach" to colours.error
+
+        else ->
+            "Standard input — elevated windows are out of reach" to colours.onSurfaceVariant
+    }
+
+    Text(text = text, style = MaterialTheme.typography.labelSmall, color = colour, modifier = modifier)
 }
 
 /**

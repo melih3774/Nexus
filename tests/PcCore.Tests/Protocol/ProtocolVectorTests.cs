@@ -189,6 +189,7 @@ public sealed class ProtocolVectorTests
                 "input.scroll" => typeof(ScrollParameters),
                 "input.key" => typeof(KeyParameters),
                 "input.text" => typeof(TextParameters),
+                "input.touch" => typeof(TouchParameters),
                 _ => typeof(NoParameters),
             };
 
@@ -503,7 +504,71 @@ public sealed class ProtocolVectorTests
                 InputVector(
                     "input.text",
                     new Dictionary<string, object?> { ["text"] = "merhaba dünya 🙂" }),
-                InputVector("input.release_all", null)),
+                InputVector("input.release_all", null),
+
+                // v0.8. Direct mode sends these; the touch phases and the contact id are the parts
+                // both sides have to agree on exactly, and a negative display origin is the case a
+                // hard-coded origin would get wrong.
+                InputVector(
+                    "input.touch",
+                    new Dictionary<string, object?>
+                    {
+                        ["action"] = "DOWN",
+                        ["x"] = 0.125,
+                        ["y"] = 0.875,
+                        ["display_index"] = 1,
+                        ["contact_id"] = 0,
+                    }),
+                InputVector(
+                    "input.touch",
+                    new Dictionary<string, object?>
+                    {
+                        ["action"] = "MOVE",
+                        ["x"] = 0.5,
+                        ["y"] = 0.5,
+                        ["display_index"] = 1,
+                        ["contact_id"] = 0,
+                    }),
+                InputVector(
+                    "input.touch",
+                    new Dictionary<string, object?>
+                    {
+                        ["action"] = "UP",
+                        ["x"] = 0.5,
+                        ["y"] = 0.5,
+                        ["display_index"] = 1,
+                        ["contact_id"] = 0,
+                    }),
+                InputVector(
+                    "input.touch",
+                    new Dictionary<string, object?>
+                    {
+                        ["action"] = "CANCEL",
+                        ["x"] = 0.0,
+                        ["y"] = 0.0,
+                        ["display_index"] = 0,
+                        ["contact_id"] = 2,
+                    }),
+                InputVector("input.status", null)),
+
+            // The status shape the phone decodes. Pinned because a spelling change here is how a
+            // status line silently becomes blank rather than failing loudly.
+            ["input_status"] = JsonSerializer.SerializeToNode(
+                new NativeInputStatus
+                {
+                    Path = InputPath.NativeBroker,
+                    State = NativeInputState.Ready,
+                    ReachesElevatedWindows = true,
+                    TouchAvailable = true,
+                    PhysicalDigitizer = false,
+                    Desktop = "DEFAULT",
+                    BrokerVersion = "0.8.0",
+                    Diagnostic = null,
+                },
+                ProtocolCodec.Options),
+
+            ["input_touch_actions"] = new JsonArray(
+                [.. Enum.GetValues<TouchAction>().Select(action => (JsonNode)JsonValue.Create(WireName(action))!)]),
 
             ["input_key_names"] = new JsonArray(
                 [.. Enum.GetValues<NexusKey>().Select(key => (JsonNode)JsonValue.Create(WireName(key))!)]),

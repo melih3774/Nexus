@@ -12,8 +12,10 @@ import dev.nexus.control.net.ConnectionState
 import dev.nexus.control.net.PcConnectionManager
 import dev.nexus.control.nexusContainer
 import dev.nexus.control.protocol.DisplayInfo
+import dev.nexus.control.protocol.NativeInputStatus
 import dev.nexus.control.protocol.NexusKey
 import dev.nexus.control.protocol.PointerButton
+import dev.nexus.control.protocol.TouchAction
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,6 +25,21 @@ import kotlinx.coroutines.launch
 
 /** Which pointer model the touch surface is using. */
 enum class PointerModeUi { DIRECT, TOUCHPAD }
+
+/**
+ * What a finger means in Direct mode.
+ *
+ * **This is a choice about behaviour, not about plumbing.** It does not select between input
+ * mechanisms — the PC decides that on its own and the phone never sees it. It decides whether a tap
+ * on the desktop image is a touch on a touch display or a mouse click at that point, which are
+ * genuinely different things on Windows and which the owner may reasonably prefer differently.
+ *
+ * [TOUCH] is the default because it is what Direct mode is trying to be. A tap is a tap, a drag
+ * drags, and applications that understand touch get touch instead of a mouse being moved around.
+ * [POINTER] is there because some desktop software behaves worse under touch than under a mouse,
+ * and finding that out is the owner's business rather than something to argue with.
+ */
+enum class DirectGesture { TOUCH, POINTER }
 
 data class RemoteUiState(
     val streaming: Boolean = false,
@@ -37,7 +54,23 @@ data class RemoteUiState(
     val keyboardVisible: Boolean = false,
     val diagnosticsVisible: Boolean = false,
     val refusal: String? = null,
-)
+    val directGesture: DirectGesture = DirectGesture.TOUCH,
+
+    /** What the PC says about its own input path. Null until it has been asked, or on an older PC. */
+    val inputStatus: NativeInputStatus? = null,
+) {
+    /**
+     * Whether Direct mode should send touch right now.
+     *
+     * Both halves matter. The owner may prefer pointer behaviour, and the PC may not be able to
+     * inject touch at all — in which case sending touch would still work, because the PC falls back
+     * for us, but there is no reason to make it.
+     */
+    val directUsesTouch: Boolean
+        get() = pointerMode == PointerModeUi.DIRECT &&
+            directGesture == DirectGesture.TOUCH &&
+            (inputStatus?.touchAvailable ?: true)
+}
 
 /**
  * The remote-control screen's state and lifecycle.
@@ -82,6 +115,7 @@ class RemoteControlViewModel(
             connection.state.collect { state ->
                 if (state !is ConnectionState.Connected && _state.value.streaming) {
                     session.forgetHeldState()
+                    lastContact = null
                     pipeline.stop()
 
                     _state.value = _state.value.copy(
@@ -145,6 +179,10 @@ class RemoteControlViewModel(
      * between would leave the PC holding a button with no viewer and no obvious cause.
      */
     fun stop() {
+        // Before anything else. input.end releases whatever the PC is holding, but a contact the
+        // phone still believes in would make the next gesture start mid-drag after a reconnect.
+        if (session.isContactDown) cancelContact()
+
         frameJob?.cancel()
         frameJob = null
 
@@ -152,6 +190,8 @@ class RemoteControlViewModel(
 
         val wasStreaming = _state.value.streaming
         val hadInput = _state.value.inputEnabled
+
+        lastContact = null
 
         _state.value = _state.value.copy(
             streaming = false,
@@ -221,15 +261,49 @@ class RemoteControlViewModel(
                     inputEnabled = ok,
                     error = if (ok) _state.value.error else "The PC would not enable remote input.",
                 )
+
+                if (ok) refreshInputStatus()
             } else {
+                if (session.isContactDown) cancelContact()
                 session.endInput()
+                lastContact = null
                 _state.value = _state.value.copy(inputEnabled = false, modifiers = emptySet())
             }
         }
     }
 
     fun setPointerMode(mode: PointerModeUi) {
+        if (mode == _state.value.pointerMode) return
+
+        // A contact belonging to the mode being left has nothing to lift it later.
+        if (session.isContactDown) cancelContact()
+
         _state.value = _state.value.copy(pointerMode = mode)
+    }
+
+    fun setDirectGesture(gesture: DirectGesture) {
+        if (gesture == _state.value.directGesture) return
+
+        if (session.isContactDown) cancelContact()
+
+        _state.value = _state.value.copy(directGesture = gesture)
+    }
+
+    /**
+     * Asks the PC which input path it is using.
+     *
+     * Called when the screen opens and after input is enabled, not on a timer: the answer changes
+     * when the broker starts or stops, which is rare, and polling it would put a round trip on the
+     * same connection the frames are coming down.
+     */
+    fun refreshInputStatus() {
+        viewModelScope.launch {
+            val status = session.inputStatus()
+
+            if (status != null) {
+                _state.value = _state.value.copy(inputStatus = status)
+            }
+        }
     }
 
     fun toggleChrome() {
@@ -247,6 +321,67 @@ class RemoteControlViewModel(
     fun dismissError() {
         _state.value = _state.value.copy(error = null, refusal = null)
     }
+
+    // --- Touch ---------------------------------------------------------------------------------
+
+    /** True while a contact is down, which is what makes a move a drag rather than a hover. */
+    val isDragging: Boolean get() = session.isContactDown
+
+    fun touchDown(point: DesktopPoint) = touch(TouchAction.DOWN, point)
+
+    fun touchMove(point: DesktopPoint) = touch(TouchAction.MOVE, point)
+
+    fun touchUp(point: DesktopPoint) = touch(TouchAction.UP, point)
+
+    /**
+     * Finishes a drag by lifting the contact where it actually is.
+     *
+     * Not a cancel: cancelling tells Windows to abandon the gesture, which would drop whatever was
+     * being dragged back where it started rather than where the owner let go. The last position is
+     * remembered here because Windows refuses a release at any other point.
+     */
+    fun endTouchDrag() {
+        val last = lastContact
+
+        if (last != null) {
+            touchUp(last)
+        } else {
+            cancelContact()
+        }
+    }
+
+    /**
+     * Lifts a contact the phone believes is still down, wherever it was.
+     *
+     * The position is not needed: the PC remembers where the contact last was, because Windows
+     * refuses a touch release at a different place than the last update and a refused release is how
+     * a finger gets stuck on the desktop.
+     */
+    fun cancelContact() {
+        if (!session.isContactDown) return
+
+        session.touch(
+            TouchAction.CANCEL,
+            lastContact ?: DesktopPoint(0.0, 0.0),
+            _state.value.displayIndex,
+        )
+
+        lastContact = null
+    }
+
+    private fun touch(action: TouchAction, point: DesktopPoint) {
+        if (!_state.value.inputEnabled) return
+
+        lastContact = when (action) {
+            TouchAction.DOWN, TouchAction.MOVE -> point
+            TouchAction.UP, TouchAction.CANCEL -> null
+        }
+
+        session.touch(action, point, _state.value.displayIndex)
+    }
+
+    /** Where the live contact was last seen. Windows refuses a release anywhere else. */
+    private var lastContact: DesktopPoint? = null
 
     // --- Pointer -------------------------------------------------------------------------------
 
