@@ -7,6 +7,8 @@ using PcCore.Capabilities.Abstractions;
 using PcCore.Capabilities.Identity;
 using PcCore.Capabilities.Input;
 using PcCore.Capabilities.Security;
+using PcCore.Capabilities.Security.Detection;
+using PcCore.Capabilities.Security.Sessions;
 using PcCore.Protocol;
 using Xunit;
 
@@ -226,12 +228,64 @@ public sealed class ProtocolVectorTests
     /// <summary>
     /// The wire name of a key, read from the attribute the serializer uses rather than restated.
     /// </summary>
-    private static string WireName(NexusKey key) =>
-        typeof(NexusKey).GetField(key.ToString())!
+    /// <summary>
+    /// The spelling a member actually goes out as, read from the attribute that pins it.
+    /// <para>
+    /// <c>Single()</c> rather than a fallback to the naming policy, deliberately: a protocol enum
+    /// whose member is not pinned fails here. That is the check v0.7.1 was missing — an unpinned
+    /// <see cref="IncidentTrigger"/> silently inherited <c>snake_case</c> and no test noticed.
+    /// </para>
+    /// </summary>
+    private static string WireName<TEnum>(TEnum value)
+        where TEnum : struct, Enum =>
+        typeof(TEnum).GetField(value.ToString()!)!
             .GetCustomAttributes(typeof(System.Text.Json.Serialization.JsonStringEnumMemberNameAttribute), false)
             .Cast<System.Text.Json.Serialization.JsonStringEnumMemberNameAttribute>()
             .Single()
             .Name;
+
+    /// <summary>
+    /// One incident, fixed in every field, built from the real records the capabilities return.
+    /// <para>
+    /// Deliberately carries a resolved-looking mix — an end time, several evidence kinds, a
+    /// timeline entry — so the vector pins more than the happy path of an empty session.
+    /// </para>
+    /// </summary>
+    private static SecuritySession SampleSession(
+        IncidentTrigger trigger = IncidentTrigger.PointerActivity) => new()
+    {
+        SessionId = "0123456789abcdef",
+        StartedAtUtc = Timestamp,
+        EndedAtUtc = Timestamp.AddMinutes(3),
+        Trigger = trigger,
+        Resolution = SessionResolution.Active,
+        HighAlert = false,
+        Timeline =
+        [
+            new SecurityTimelineEntry
+            {
+                AtUtc = Timestamp,
+                Code = "session.started",
+                Message = "Security session started",
+            },
+        ],
+        Evidence =
+        [
+            new SecurityEvidence
+            {
+                EvidenceId = "ev00000000000001",
+                SessionId = "0123456789abcdef",
+                Kind = EvidenceKind.CameraImage,
+                CreatedAtUtc = Timestamp,
+                FileName = "camera-20260829-123456-789.jpg",
+                ContentType = "image/jpeg",
+                SizeBytes = 55_512,
+                DurationMs = 0,
+                Sha256 = "0000000000000000000000000000000000000000000000000000000000000000",
+                Note = "1280x720",
+            },
+        ],
+    };
 
     private static JsonObject BuildFrameHeaderVector()
     {
@@ -504,6 +558,72 @@ public sealed class ProtocolVectorTests
                     Payload = new ChallengeVector(SessionId, Challenge, Timestamp),
                     TimestampUtc = Timestamp,
                 }),
+            },
+
+            // --- the security incident shape ---------------------------------------------------
+            // Added in v0.7.1, after a physical phone showed why it was missing. Every enum in a
+            // session summary except `trigger` had its wire spelling pinned by attribute; `trigger`
+            // inherited the codec's snake_case policy and so went out as "pointer_activity" while
+            // the phone expected "POINTER_ACTIVITY". Nothing failed on the PC — the responses were
+            // well-formed and logged as successes — but the phone could not decode any of them, so
+            // the Security screen errored, the incident history stayed empty, and the alert
+            // notification was silently dropped. One mis-spelled enum, three broken features, and
+            // no test on either side that looked at the actual bytes.
+            //
+            // These vectors are the fix for that class of bug rather than that one instance: they
+            // pin every enum a session summary carries, generated from the real records.
+            ["security_session_summary"] = new JsonObject
+            {
+                ["encoded"] = JsonSerializer.Serialize(
+                    SecuritySessionSummary.From(SampleSession()), ProtocolCodec.Options),
+                ["session_id"] = "0123456789abcdef",
+                ["trigger"] = "POINTER_ACTIVITY",
+                ["resolution"] = "ACTIVE",
+                ["started_at_utc"] = "2026-08-29T12:34:56.789+00:00",
+            },
+
+            ["security_session_detail"] = new JsonObject
+            {
+                ["encoded"] = JsonSerializer.Serialize(
+                    new GetSessionResult
+                    {
+                        Session = SessionDetail.From(SampleSession()),
+                        HasActiveSession = true,
+                        State = SecurityState.SecuritySession,
+                    },
+                    ProtocolCodec.Options),
+                ["state"] = "SECURITY_SESSION",
+                ["evidence_kind"] = "CAMERA_IMAGE",
+            },
+
+            ["security_session_started_event"] = new JsonObject
+            {
+                ["encoded"] = ProtocolCodec.Encode(new EventEnvelope
+                {
+                    Id = "evt-0003",
+                    EventName = SecurityEvents.SessionStarted,
+
+                    // A different trigger from the summary vector on purpose, so the pair covers
+                    // two members rather than proving one member twice.
+                    Payload = SecuritySessionSummary.From(SampleSession(IncidentTrigger.KeyboardActivity)),
+                    TimestampUtc = Timestamp,
+                }),
+                ["event"] = SecurityEvents.SessionStarted,
+                ["trigger"] = "KEYBOARD_ACTIVITY",
+            },
+
+            // Every member of every enum a session summary carries, so a member added on one side
+            // and forgotten on the other fails here rather than on a phone.
+            ["security_enum_names"] = new JsonObject
+            {
+                ["incident_trigger"] = new JsonArray(
+                    [.. Enum.GetValues<IncidentTrigger>().Select(v => (JsonNode)JsonValue.Create(WireName(v))!)]),
+                ["session_resolution"] = new JsonArray(
+                    [.. Enum.GetValues<SessionResolution>().Select(v => (JsonNode)JsonValue.Create(WireName(v))!)]),
+                ["evidence_kind"] = new JsonArray(
+                    [.. Enum.GetValues<EvidenceKind>().Select(v => (JsonNode)JsonValue.Create(WireName(v))!)]),
+                ["security_state"] = new JsonArray(
+                    [.. Enum.GetValues<SecurityState>().Select(v => (JsonNode)JsonValue.Create(WireName(v))!)]),
             },
         };
 

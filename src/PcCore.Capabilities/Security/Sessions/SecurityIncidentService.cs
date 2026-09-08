@@ -66,6 +66,22 @@ public sealed class SecurityIncidentService : IAsyncDisposable
     private DateTimeOffset _lastClip;
     private Task? _continuous;
 
+    /// <summary>
+    /// Cancelled when the open incident ends, for any reason. Linked to <see cref="_stopping"/>, so
+    /// shutting the service down stops evidence as surely as resolving the incident does.
+    /// </summary>
+    /// <remarks>
+    /// This is what v0.7.1 was missing. Resolution wrote the record and moved the state, and then
+    /// trusted every producer to notice on its own the next time it happened to look. Work that had
+    /// already looked — a capture waiting on <see cref="_captureGate"/>, a continuous loop between
+    /// segments, an ongoing-capture task that had been queued a moment earlier — never looked
+    /// again, and went on writing evidence into an incident the owner had already answered.
+    /// </remarks>
+    private CancellationTokenSource? _incident;
+
+    /// <summary>The incident whose producers are running. Null when nothing is capturing.</summary>
+    private string? _capturingSessionId;
+
     public SecurityIncidentService(
         ISecuritySessionStore store,
         ISecurityStateService state,
@@ -98,6 +114,113 @@ public sealed class SecurityIncidentService : IAsyncDisposable
     /// <summary>The open incident, or null.</summary>
     public SecuritySession? Active => _store.Active();
 
+    // --- Evidence session lifecycle ----------------------------------------------------------------
+
+    /// <summary>
+    /// The incident evidence is currently being captured for, or null.
+    /// <para>
+    /// Deliberately separate from <see cref="Active"/>. "There is an open incident" and "producers
+    /// are running for it" are two facts, and treating them as one is what let capture outlive the
+    /// answer to it. Exposed so a test can assert the producers actually stopped rather than
+    /// inferring it from the absence of files.
+    /// </para>
+    /// </summary>
+    public string? CapturingSessionId
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _capturingSessionId;
+            }
+        }
+    }
+
+    public bool IsCapturingEvidence => CapturingSessionId is not null;
+
+    /// <summary>
+    /// Opens the evidence session for an incident and returns the token every producer runs under.
+    /// </summary>
+    private CancellationToken StartEvidenceSession(string sessionId)
+    {
+        lock (_gate)
+        {
+            // Whatever was running belonged to a different incident and is over.
+            _incident?.Cancel();
+            _incident?.Dispose();
+
+            _incident = CancellationTokenSource.CreateLinkedTokenSource(_stopping.Token);
+            _capturingSessionId = sessionId;
+
+            // Per-incident, not per-process: these rate-limit an incident's own capture, and
+            // carrying them across would let a previous incident suppress the first evidence of
+            // the next one.
+            _lastScreenshot = default;
+            _lastClip = default;
+
+            return _incident.Token;
+        }
+    }
+
+    /// <summary>
+    /// Stops every evidence producer for an incident.
+    /// <para>
+    /// <b>Idempotent, and safe from anywhere.</b> Calling it twice, for an incident that already
+    /// stopped, for one that never started, during a failing capture, or while shutting down, all
+    /// do the same thing: nothing beyond the first time. The one caller that matters is resolution,
+    /// which must not be able to fail because a camera did.
+    /// </para>
+    /// <para>
+    /// Cancels rather than disposes: a producer may still be holding the token, and disposing the
+    /// source underneath it turns a clean stop into an <see cref="ObjectDisposedException"/> on a
+    /// background thread. The source is disposed when the next incident starts, or with the service.
+    /// </para>
+    /// </summary>
+    private void StopEvidenceSession(string sessionId, string reason)
+    {
+        CancellationTokenSource? stopping;
+
+        lock (_gate)
+        {
+            if (_capturingSessionId != sessionId)
+            {
+                // Already stopped, or this is not the incident that is capturing. Either way there
+                // is nothing to do and saying so twice would be noise in the timeline.
+                return;
+            }
+
+            stopping = _incident;
+            _capturingSessionId = null;
+        }
+
+        try
+        {
+            stopping?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Raced with disposal. The producers are stopping either way.
+        }
+
+        _logger.LogInformation("Evidence capture stopped for session {SessionId}: {Reason}", sessionId, reason);
+        Record(sessionId, "evidence.stopped", reason);
+    }
+
+    /// <summary>
+    /// The token producers run under. Already-cancelled when no incident is capturing, so work that
+    /// arrives late has nothing to run against.
+    /// </summary>
+    private CancellationToken EvidenceToken
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _capturingSessionId is null ? new CancellationToken(canceled: true) : _incident!.Token;
+            }
+        }
+    }
+
     /// <summary>
     /// Reconciles with whatever was left behind by the last run.
     /// <para>
@@ -124,6 +247,7 @@ public sealed class SecurityIncidentService : IAsyncDisposable
 
                 var recreated = NewSession(IncidentTrigger.PointerActivity, "Session record was missing at startup");
                 _store.Save(recreated);
+                StartEvidenceSession(recreated.SessionId);
                 StartContinuousIfConfigured();
                 return;
             }
@@ -131,6 +255,9 @@ public sealed class SecurityIncidentService : IAsyncDisposable
             _store.Save(Append(active, "session.restarted", "Nexus restarted during an active security session"));
             _logger.LogWarning("Resumed active security session {SessionId} after restart.", active.SessionId);
 
+            // The incident continues across the restart, so its evidence session does too — and it
+            // gets a token that resolution can cancel, exactly as it would have had before.
+            StartEvidenceSession(active.SessionId);
             StartContinuousIfConfigured();
             return;
         }
@@ -173,7 +300,11 @@ public sealed class SecurityIncidentService : IAsyncDisposable
         // rather than after several seconds of camera and audio capture.
         _events.Publish(SecurityEvents.SessionStarted, SecuritySessionSummary.From(session));
 
-        _ = Task.Run(() => CaptureInitialEvidenceAsync(session.SessionId));
+        // The producers are started through the lifecycle rather than just spawned, so there is
+        // always something that can stop them.
+        var token = StartEvidenceSession(session.SessionId);
+
+        _ = Task.Run(() => CaptureInitialEvidenceAsync(session.SessionId, token));
     }
 
     private SecuritySession NewSession(IncidentTrigger trigger, string firstLine)
@@ -207,10 +338,9 @@ public sealed class SecurityIncidentService : IAsyncDisposable
     /// muted, or absent. If they are, their absence is a timeline entry and the incident continues.
     /// </para>
     /// </summary>
-    private async Task CaptureInitialEvidenceAsync(string sessionId)
+    private async Task CaptureInitialEvidenceAsync(string sessionId, CancellationToken token)
     {
         var config = _configuration.Current;
-        var token = _stopping.Token;
 
         try
         {
@@ -257,7 +387,7 @@ public sealed class SecurityIncidentService : IAsyncDisposable
         _store.Save(Append(session, "detection.activity", Describe(activity)));
         _events.Publish(SecurityEvents.SessionUpdated, SecuritySessionSummary.From(_store.Find(session.SessionId)!));
 
-        _ = Task.Run(() => CaptureOngoingEvidenceAsync(session.SessionId, activity));
+        _ = Task.Run(() => CaptureOngoingEvidenceAsync(session.SessionId, activity, EvidenceToken));
     }
 
     /// <summary>
@@ -267,11 +397,13 @@ public sealed class SecurityIncidentService : IAsyncDisposable
     /// machine for an hour would produce a screenshot per movement and a camera clip per keystroke.
     /// </para>
     /// </summary>
-    private async Task CaptureOngoingEvidenceAsync(string sessionId, LocalActivity activity)
+    private async Task CaptureOngoingEvidenceAsync(
+        string sessionId,
+        LocalActivity activity,
+        CancellationToken token)
     {
         var config = _configuration.Current;
         var now = _time.GetUtcNow();
-        var token = _stopping.Token;
 
         try
         {
@@ -325,13 +457,13 @@ public sealed class SecurityIncidentService : IAsyncDisposable
                 return;
             }
 
-            _continuous = Task.Run(ContinuousLoopAsync);
+            var token = EvidenceToken;
+            _continuous = Task.Run(() => ContinuousLoopAsync(token));
         }
     }
 
-    private async Task ContinuousLoopAsync()
+    private async Task ContinuousLoopAsync(CancellationToken token)
     {
-        var token = _stopping.Token;
         var segment = TimeSpan.FromSeconds(Math.Clamp(_options.ContinuousSegmentSeconds, 10, 600));
 
         try
@@ -380,6 +512,17 @@ public sealed class SecurityIncidentService : IAsyncDisposable
 
     // --- Capture helpers -------------------------------------------------------------------------
 
+    /// <summary>
+    /// The token a device recording runs under: service shutdown only, never incident resolution.
+    /// <para>
+    /// A camera or microphone file that has already started is finished rather than cut off. The
+    /// alternative — cancelling the recorder mid-file — would leave a truncated clip, which is
+    /// destroying evidence to enforce a rule that exists to preserve it. Scheduling is what
+    /// resolution stops; a file already being written is allowed to become a whole file.
+    /// </para>
+    /// </summary>
+    private CancellationToken MediaToken => _stopping.Token;
+
     private async Task CaptureScreenshotAsync(string sessionId, string reason, CancellationToken token)
     {
         var captured = await CaptureAsync(
@@ -387,7 +530,7 @@ public sealed class SecurityIncidentService : IAsyncDisposable
             EvidenceKind.Screenshot,
             reason,
             "Screen evidence unavailable",
-            folder => _screen.CaptureStillAsync(folder, token),
+            folder => _screen.CaptureStillAsync(folder, MediaToken),
             token).ConfigureAwait(false);
 
         if (captured)
@@ -403,7 +546,7 @@ public sealed class SecurityIncidentService : IAsyncDisposable
             EvidenceKind.CameraImage,
             "Camera image captured",
             "Camera evidence unavailable",
-            folder => _camera.CaptureStillAsync(folder, token),
+            folder => _camera.CaptureStillAsync(folder, MediaToken),
             token).ConfigureAwait(false);
 
         if (!still || !includeClip)
@@ -416,7 +559,7 @@ public sealed class SecurityIncidentService : IAsyncDisposable
             EvidenceKind.CameraVideo,
             "Camera clip recorded",
             "Camera clip unavailable",
-            folder => _camera.CaptureClipAsync(folder, TimeSpan.FromSeconds(_options.CameraClipSeconds), token),
+            folder => _camera.CaptureClipAsync(folder, TimeSpan.FromSeconds(_options.CameraClipSeconds), MediaToken),
             token).ConfigureAwait(false);
 
         _lastClip = _time.GetUtcNow();
@@ -429,7 +572,7 @@ public sealed class SecurityIncidentService : IAsyncDisposable
             EvidenceKind.Audio,
             "Audio clip recorded",
             "Microphone evidence unavailable",
-            folder => _audio.CaptureClipAsync(folder, duration, token),
+            folder => _audio.CaptureClipAsync(folder, duration, MediaToken),
             token).ConfigureAwait(false);
 
         _lastClip = _time.GetUtcNow();
@@ -451,6 +594,15 @@ public sealed class SecurityIncidentService : IAsyncDisposable
         Func<string, ValueTask<CapturedEvidence?>> capture,
         CancellationToken token)
     {
+        // The incident is over. Checked before anything else and again after the gate, because the
+        // gap between those two lines is where the bug lived: a capture could pass every check,
+        // wait behind a twenty-second audio clip, and reach the device long after the owner had
+        // answered the incident it belonged to.
+        if (token.IsCancellationRequested || IsResolved(sessionId))
+        {
+            return false;
+        }
+
         var session = _store.Find(sessionId);
 
         if (session is null)
@@ -469,10 +621,25 @@ public sealed class SecurityIncidentService : IAsyncDisposable
             return false;
         }
 
-        await _captureGate.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            await _captureGate.WaitAsync(token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Resolved while queued. Nothing was started, so there is nothing to finish.
+            return false;
+        }
 
         try
         {
+            // The last word before a device is touched. Everything above may have been true
+            // several seconds ago.
+            if (token.IsCancellationRequested || IsResolved(sessionId))
+            {
+                return false;
+            }
+
             var folder = _store.EvidenceFolder(sessionId);
             var captured = await capture(folder).ConfigureAwait(false);
 
@@ -557,20 +724,49 @@ public sealed class SecurityIncidentService : IAsyncDisposable
     /// actually happened.
     /// </para>
     /// </summary>
+    /// <remarks>
+    /// <b>Reachable from NOT ME, deliberately.</b> An incident marked NOT ME stays open, so it is
+    /// still the active one and the owner can still answer it — which is the point. Pressing NOT ME
+    /// by accident and then correcting it with a biometric-confirmed THIS WAS ME is a sequence a
+    /// person will actually perform, and treating CONFIRMED_NOT_OWNER as terminal would leave them
+    /// with an incident they could not close and a machine stuck in SECURITY_SESSION. The high
+    /// alert is cleared with it: the owner has since authenticated and said it was them, and that
+    /// is a better answer than the one it replaces. The timeline keeps both.
+    /// </remarks>
     public SecuritySession? AcknowledgeAsOwner(string resolvedBy)
     {
         var session = _store.Active();
 
         if (session is null)
         {
+            // Nothing open. Acknowledging twice is not an error — the second one has simply
+            // already happened.
             return null;
         }
 
         var now = _time.GetUtcNow();
+        var correcting = session.Resolution == SessionResolution.ConfirmedNotOwner;
 
-        var resolved = Append(session, "session.acknowledged", $"Owner marked: THIS WAS ME ({resolvedBy})") with
+        // Producers stop first, before the record is written and before the state moves. Doing it
+        // in this order means there is no window in which the incident is answered on disk while
+        // something is still capturing into it.
+        StopEvidenceSession(session.SessionId, "The owner acknowledged the incident");
+
+        var message = correcting
+            ? $"Owner corrected incident: THIS WAS ME ({resolvedBy})"
+            : $"Owner marked: THIS WAS ME ({resolvedBy})";
+
+        var acknowledged = Append(_store.Find(session.SessionId) ?? session, "session.acknowledged", message);
+
+        if (correcting)
+        {
+            acknowledged = Append(acknowledged, "session.high_alert_cleared", "High Alert cleared by the owner");
+        }
+
+        var resolved = Append(acknowledged, "session.closed", "Security session closed") with
         {
             Resolution = SessionResolution.AcknowledgedOwner,
+            HighAlert = false,
             EndedAtUtc = now,
             ResolvedAtUtc = now,
             ResolvedBy = resolvedBy,
@@ -579,7 +775,11 @@ public sealed class SecurityIncidentService : IAsyncDisposable
         _store.Save(resolved);
         _state.RequestTransition(SecurityState.OwnerPresent, "security.this_was_me");
 
-        _logger.LogInformation("Security session {SessionId} acknowledged by the owner.", resolved.SessionId);
+        _logger.LogInformation(
+            "Security session {SessionId} acknowledged by the owner{Correction}.",
+            resolved.SessionId,
+            correcting ? " (correcting an earlier NOT ME)" : string.Empty);
+
         _events.Publish(SecurityEvents.SessionResolved, SecuritySessionSummary.From(resolved));
 
         return resolved;
@@ -602,7 +802,11 @@ public sealed class SecurityIncidentService : IAsyncDisposable
             return null;
         }
 
-        var resolved = Append(session, "session.not_me", $"Owner marked: NOT ME ({resolvedBy})") with
+        // Evidence deliberately keeps running: the incident is not over, it is worse. This is the
+        // one resolution path that does not stop the producers.
+        var flagged = Append(session, "session.not_me", $"Owner marked: NOT ME ({resolvedBy})");
+
+        var resolved = Append(flagged, "session.high_alert", "High Alert enabled") with
         {
             Resolution = SessionResolution.ConfirmedNotOwner,
             HighAlert = true,
@@ -634,6 +838,25 @@ public sealed class SecurityIncidentService : IAsyncDisposable
         }
 
         _logger.LogInformation("Security audit: {Message}", message);
+    }
+
+    /// <summary>
+    /// Whether an incident has been answered, according to what is on disk.
+    /// <para>
+    /// The persisted record rather than the cancellation token, because the two answer slightly
+    /// different questions and both matter. The token is the active signal — it stops work that is
+    /// already in flight the instant the owner answers. This is the durable one: it is still true
+    /// after a restart, when there is no token because there is no running incident, and it catches
+    /// anything the signal could have missed.
+    /// </para>
+    /// </summary>
+    private bool IsResolved(string sessionId)
+    {
+        var session = _store.Find(sessionId);
+
+        return session is null
+            || session.EndedAtUtc is not null
+            || session.Resolution == SessionResolution.AcknowledgedOwner;
     }
 
     private void Record(string sessionId, string code, string message)
@@ -690,6 +913,13 @@ public sealed class SecurityIncidentService : IAsyncDisposable
         }
 
         _stopping.Dispose();
+        lock (_gate)
+        {
+            _incident?.Dispose();
+            _incident = null;
+            _capturingSessionId = null;
+        }
+
         _captureGate.Dispose();
     }
 }

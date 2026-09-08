@@ -40,14 +40,49 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.nexus.control.protocol.SecurityState
 
+/** What the state control at the foot of the Security screen offers, given where things stand. */
+enum class StateControl { ARM, DISARM, ANSWER_INCIDENT, NONE }
+
 /**
- * The security state, and the two controls that change it.
+ * Which state control belongs on screen.
+ *
+ * **A function rather than a `when` inside the layout because the wrong answer here is a security
+ * bug, not a cosmetic one.** In v0.7.0 the layout showed one button that read "Arm" in
+ * OWNER_PRESENT and "Disarm" in both ARMED and SECURITY_SESSION — same place, same size, different
+ * meaning. On a real phone that was pressed as if it were Arm during a live incident, and
+ * `security.disarm` took SECURITY_SESSION straight back to OWNER_PRESENT: the incident closed, with
+ * no biometric prompt and nothing recording that the owner had decided anything.
+ *
+ * The rule is now stated once, in one place, and asserted in `SecurityStateControlTest`:
+ *
+ * - an open incident is answered, never armed or disarmed away
+ * - ARMED still stands down freely, because that is only a statement about where the owner is
+ * - SECURITY_SESSION with nothing left to answer still stands down, so a state the phone cannot
+ *   leave is never reachable
+ */
+fun stateControlFor(state: SecurityState?, hasOpenIncident: Boolean): StateControl = when (state) {
+    SecurityState.OWNER_PRESENT -> StateControl.ARM
+
+    SecurityState.ARMED -> StateControl.DISARM
+
+    // The incident owns this state while it is open. Arming or disarming must not answer it.
+    SecurityState.SECURITY_SESSION ->
+        if (hasOpenIncident) StateControl.ANSWER_INCIDENT else StateControl.DISARM
+
+    null -> StateControl.NONE
+}
+
+/**
+ * The security state, the incident open against it, and the history behind both.
  *
  * The protocol values are shown as human phrases, but the wire spelling stays underneath them
- * unchanged — the app never invents a state name and never sends one PC Core would reject. Only Arm
- * and Disarm exist here because they are the only transitions PC Core accepts from a caller; there
- * is no "This was me", no notification, no recording, and nothing that pretends the machine is
- * watching for anything yet.
+ * unchanged — the app never invents a state name and never sends one PC Core would reject.
+ *
+ * **Arm and Disarm are not the whole story, and treating them as if they were is what went wrong.**
+ * They move the state between OWNER_PRESENT and ARMED, which is a statement about where the owner
+ * is. An open incident is a different kind of thing: it is a question the PC is asking, and it is
+ * answered above, by name, through the incident panel. The state control below deliberately offers
+ * nothing while that question is outstanding.
  */
 @Composable
 fun SecurityScreen(
@@ -124,8 +159,23 @@ fun SecurityScreen(
             Spacer(Modifier.height(20.dp))
         }
 
-        when (state.state) {
-            SecurityState.OWNER_PRESENT -> Button(
+        /*
+         * The state control, and the one state that deliberately has none.
+         *
+         * In SECURITY_SESSION this used to show "Disarm" in the same place, at the same size, as
+         * "Arm" — one button whose meaning silently changed with the state. On a real phone that
+         * read as the Arm control, and pressing it stood a live incident down: `security.disarm`
+         * moves SECURITY_SESSION straight to OWNER_PRESENT, with no biometric prompt and no record
+         * of the owner having decided anything. An incident answered by accident is an incident
+         * that was never answered.
+         *
+         * So an open incident is now resolved only through the panel above it, where the two
+         * answers are named — `This was me`, behind the phone's own owner confirmation, and
+         * `Not me`, which keeps the session open and flags it. Neither is a button you press by
+         * muscle memory while reaching for something else.
+         */
+        when (stateControlFor(state.state, hasOpenIncident = incidents.active != null)) {
+            StateControl.ARM -> Button(
                 onClick = viewModel::arm,
                 enabled = !state.busy,
                 modifier = Modifier.fillMaxWidth(),
@@ -133,7 +183,7 @@ fun SecurityScreen(
                 Text("Arm")
             }
 
-            SecurityState.ARMED, SecurityState.SECURITY_SESSION -> Button(
+            StateControl.DISARM -> Button(
                 onClick = viewModel::disarm,
                 enabled = !state.busy,
                 modifier = Modifier.fillMaxWidth(),
@@ -141,7 +191,14 @@ fun SecurityScreen(
                 Text("Disarm")
             }
 
-            null -> Unit
+            StateControl.ANSWER_INCIDENT -> Text(
+                "An incident is open. Answer it above with “This was me” or " +
+                    "“Not me” — arming or disarming will not close it.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            StateControl.NONE -> Unit
         }
 
         Spacer(Modifier.height(12.dp))
@@ -169,8 +226,9 @@ fun SecurityScreen(
             Spacer(Modifier.height(12.dp))
             Explanation(
                 "Security Session",
-                "The system considers a security incident active. Only the PC starts one; you can " +
-                    "stand it down from here.",
+                "The system considers a security incident active. Only the PC starts one, and it " +
+                    "ends only when you answer it — “This was me” confirms it with your " +
+                    "fingerprint or screen lock. Arming does not close it.",
             )
         }
 

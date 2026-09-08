@@ -95,11 +95,16 @@ fun RemoteScreen(
                 if (state.pointerMode == PointerModeUi.DIRECT && point != null) viewModel.moveTo(point)
                 viewModel.click(PointerButton.RIGHT)
             },
+            // Only ever reached after a deliberate hold-then-move. Ordinary movement goes through
+            // onMove and never touches a button — the two are separate actions, which is the whole
+            // point of the v0.7.1 gesture fix.
             onDragStart = { point ->
+                // Direct: the button must go down where the finger is, not wherever the pointer was
+                // left, so the move comes first.
                 if (state.pointerMode == PointerModeUi.DIRECT && point != null) viewModel.moveTo(point)
                 viewModel.pressPointer()
             },
-            onDrag = { point, dx, dy ->
+            onMove = { point, dx, dy ->
                 if (state.pointerMode == PointerModeUi.DIRECT) {
                     // Direct: the pointer goes where the finger is.
                     point?.let(viewModel::moveTo)

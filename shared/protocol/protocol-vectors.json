@@ -234,5 +234,47 @@
   },
   "challenge_event": {
     "encoded": "{\u0022protocol_version\u0022:1,\u0022id\u0022:\u0022evt-0002\u0022,\u0022type\u0022:\u0022event\u0022,\u0022event\u0022:\u0022auth.challenge\u0022,\u0022payload\u0022:{\u0022challenge_id\u0022:\u0022Q0xxUkdQVGtnUXNCd2c1Zw\u0022,\u0022challenge\u0022:\u00228J-Qq0hlbGxvLU5leHVzLUNoYWxsZW5nZS0wMDAxISE\u0022,\u0022expires_at_utc\u0022:\u00222026-08-29T12:34:56.789\u002B00:00\u0022},\u0022timestamp_utc\u0022:\u00222026-08-29T12:34:56.789\u002B00:00\u0022}"
+  },
+  "security_session_summary": {
+    "encoded": "{\u0022session_id\u0022:\u00220123456789abcdef\u0022,\u0022started_at_utc\u0022:\u00222026-08-29T12:34:56.789\u002B00:00\u0022,\u0022ended_at_utc\u0022:\u00222026-08-29T12:37:56.789\u002B00:00\u0022,\u0022trigger\u0022:\u0022POINTER_ACTIVITY\u0022,\u0022resolution\u0022:\u0022ACTIVE\u0022,\u0022high_alert\u0022:false,\u0022duration_seconds\u0022:180,\u0022timeline_count\u0022:1,\u0022screenshot_count\u0022:0,\u0022camera_count\u0022:1,\u0022audio_count\u0022:0}",
+    "session_id": "0123456789abcdef",
+    "trigger": "POINTER_ACTIVITY",
+    "resolution": "ACTIVE",
+    "started_at_utc": "2026-08-29T12:34:56.789\u002B00:00"
+  },
+  "security_session_detail": {
+    "encoded": "{\u0022session\u0022:{\u0022summary\u0022:{\u0022session_id\u0022:\u00220123456789abcdef\u0022,\u0022started_at_utc\u0022:\u00222026-08-29T12:34:56.789\u002B00:00\u0022,\u0022ended_at_utc\u0022:\u00222026-08-29T12:37:56.789\u002B00:00\u0022,\u0022trigger\u0022:\u0022POINTER_ACTIVITY\u0022,\u0022resolution\u0022:\u0022ACTIVE\u0022,\u0022high_alert\u0022:false,\u0022duration_seconds\u0022:180,\u0022timeline_count\u0022:1,\u0022screenshot_count\u0022:0,\u0022camera_count\u0022:1,\u0022audio_count\u0022:0},\u0022timeline\u0022:[{\u0022at_utc\u0022:\u00222026-08-29T12:34:56.789\u002B00:00\u0022,\u0022code\u0022:\u0022session.started\u0022,\u0022message\u0022:\u0022Security session started\u0022}],\u0022evidence\u0022:[{\u0022evidence_id\u0022:\u0022ev00000000000001\u0022,\u0022kind\u0022:\u0022CAMERA_IMAGE\u0022,\u0022created_at_utc\u0022:\u00222026-08-29T12:34:56.789\u002B00:00\u0022,\u0022content_type\u0022:\u0022image/jpeg\u0022,\u0022size_bytes\u0022:55512,\u0022duration_ms\u0022:0,\u0022sha256\u0022:\u00220000000000000000000000000000000000000000000000000000000000000000\u0022,\u0022note\u0022:\u00221280x720\u0022}]},\u0022has_active_session\u0022:true,\u0022state\u0022:\u0022SECURITY_SESSION\u0022}",
+    "state": "SECURITY_SESSION",
+    "evidence_kind": "CAMERA_IMAGE"
+  },
+  "security_session_started_event": {
+    "encoded": "{\u0022protocol_version\u0022:1,\u0022id\u0022:\u0022evt-0003\u0022,\u0022type\u0022:\u0022event\u0022,\u0022event\u0022:\u0022security.session_started\u0022,\u0022payload\u0022:{\u0022session_id\u0022:\u00220123456789abcdef\u0022,\u0022started_at_utc\u0022:\u00222026-08-29T12:34:56.789\u002B00:00\u0022,\u0022ended_at_utc\u0022:\u00222026-08-29T12:37:56.789\u002B00:00\u0022,\u0022trigger\u0022:\u0022KEYBOARD_ACTIVITY\u0022,\u0022resolution\u0022:\u0022ACTIVE\u0022,\u0022high_alert\u0022:false,\u0022duration_seconds\u0022:180,\u0022timeline_count\u0022:1,\u0022screenshot_count\u0022:0,\u0022camera_count\u0022:1,\u0022audio_count\u0022:0},\u0022timestamp_utc\u0022:\u00222026-08-29T12:34:56.789\u002B00:00\u0022}",
+    "event": "security.session_started",
+    "trigger": "KEYBOARD_ACTIVITY"
+  },
+  "security_enum_names": {
+    "incident_trigger": [
+      "POINTER_ACTIVITY",
+      "KEYBOARD_ACTIVITY",
+      "SESSION_UNLOCKED",
+      "INTERACTIVE_LOGON"
+    ],
+    "session_resolution": [
+      "ACTIVE",
+      "ACKNOWLEDGED_OWNER",
+      "CONFIRMED_NOT_OWNER"
+    ],
+    "evidence_kind": [
+      "SCREENSHOT",
+      "SCREEN_RECORDING",
+      "CAMERA_IMAGE",
+      "CAMERA_VIDEO",
+      "AUDIO"
+    ],
+    "security_state": [
+      "OWNER_PRESENT",
+      "ARMED",
+      "SECURITY_SESSION"
+    ]
   }
 }

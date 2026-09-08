@@ -3,6 +3,11 @@ package dev.nexus.control
 import dev.nexus.control.protocol.AuthChallenge
 import dev.nexus.control.protocol.Base64Url
 import dev.nexus.control.protocol.EventEnvelope
+import dev.nexus.control.protocol.EvidenceKind
+import dev.nexus.control.protocol.GetSessionResult
+import dev.nexus.control.protocol.IncidentTrigger
+import dev.nexus.control.protocol.SecuritySessionSummary
+import dev.nexus.control.protocol.SessionResolution
 import dev.nexus.control.protocol.NexusCrypto
 import dev.nexus.control.protocol.NexusJson
 import dev.nexus.control.protocol.NexusProtocol
@@ -455,6 +460,104 @@ class ProtocolVectorsTest {
                 "keys the phone knows that PC Core does not: ${fromPhone - fromPc}",
             fromPc,
             fromPhone,
+        )
+    }
+
+    // --- the security incident shape ------------------------------------------------------------
+
+    /*
+     * These four tests exist because of a bug a real phone found and no test did.
+     *
+     * PC Core answered `security.sessions.get` and `security.sessions.list` successfully, held
+     * three incidents on disk with their screenshots and camera images, and published
+     * `security.session_started` — and the phone showed "Something went wrong talking to the PC",
+     * an empty history, and no notification. The whole cause was that `trigger` arrived as
+     * "pointer_activity" while this app declared @SerialName("POINTER_ACTIVITY"), like every other
+     * security enum. kotlinx.serialization throws on an unknown enum value, the Security screen
+     * caught it as a generic failure, and SecurityAlertService swallowed it with
+     * `runCatching{}.getOrNull()` and posted nothing.
+     *
+     * The existing tests all built a SecuritySessionSummary in Kotlin and read it back in Kotlin,
+     * so they agreed with themselves perfectly. These decode the bytes PC Core actually emits.
+     */
+
+    @Test
+    fun `a session summary from PC Core decodes`() {
+        val encoded = text("security_session_summary", "encoded")
+        val summary = NexusJson.decodeFromString(SecuritySessionSummary.serializer(), encoded)
+
+        assertEquals(vector("security_session_summary")["session_id"]!!.jsonPrimitive.content, summary.sessionId)
+        assertEquals(IncidentTrigger.POINTER_ACTIVITY, summary.trigger)
+        assertEquals(SessionResolution.ACTIVE, summary.resolution)
+
+        // The screen renders this directly, so a summary that decodes but has no readable
+        // timestamp is still a broken history row.
+        assertNotNull(OffsetDateTime.parse(summary.startedAtUtc))
+    }
+
+    @Test
+    fun `a full session detail from PC Core decodes`() {
+        val result = NexusJson.decodeFromString(
+            GetSessionResult.serializer(),
+            text("security_session_detail", "encoded"),
+        )
+
+        assertTrue("expected an active session", result.hasActiveSession)
+        assertEquals(SecurityState.SECURITY_SESSION, result.securityState)
+
+        val session = result.session
+        assertNotNull("the detail carried no session", session)
+
+        val evidence = session!!.evidence.single()
+        assertEquals(EvidenceKind.CAMERA_IMAGE, evidence.kind)
+        assertTrue("camera images must be viewable in this version", evidence.kind.isViewableImage)
+        assertNotNull(OffsetDateTime.parse(evidence.createdAtUtc))
+        assertEquals(1, session.timeline.size)
+    }
+
+    /**
+     * The payload behind the alert notification.
+     *
+     * `SecurityAlertService` decodes exactly this and gives up quietly when it cannot, so a decode
+     * failure here is a notification that never arrives rather than an error anyone sees.
+     */
+    @Test
+    fun `the session started event payload decodes`() {
+        val envelope = NexusJson.decodeFromString(
+            EventEnvelope.serializer(),
+            text("security_session_started_event", "encoded"),
+        )
+
+        assertEquals(NexusProtocol.Events.SECURITY_SESSION_STARTED, envelope.eventName)
+
+        val summary = NexusJson.decodeFromJsonElement(
+            SecuritySessionSummary.serializer(),
+            envelope.payload!!,
+        )
+
+        assertEquals(IncidentTrigger.KEYBOARD_ACTIVITY, summary.trigger)
+        assertTrue("the notification text needs a label", summary.trigger.label.isNotBlank())
+    }
+
+    @Test
+    fun `the security enum members match PC Core exactly`() {
+        // Both directions for each enum: a member on one side only is either a value the phone
+        // cannot decode or a value it will never see, and the first of those breaks a screen.
+        assertEnumMatches("incident_trigger", IncidentTrigger.entries.map { it.name })
+        assertEnumMatches("session_resolution", SessionResolution.entries.map { it.name })
+        assertEnumMatches("evidence_kind", EvidenceKind.entries.map { it.name })
+        assertEnumMatches("security_state", SecurityState.entries.map { it.wire })
+    }
+
+    private fun assertEnumMatches(name: String, fromPhone: List<String>) {
+        val fromPc = vector("security_enum_names")[name]!!.jsonArray.map { it.jsonPrimitive.content }.toSet()
+        val phone = fromPhone.toSet()
+
+        assertEquals(
+            "$name: PC Core has ${fromPc - phone} that the phone does not; " +
+                "the phone has ${phone - fromPc} that PC Core does not",
+            fromPc,
+            phone,
         )
     }
 

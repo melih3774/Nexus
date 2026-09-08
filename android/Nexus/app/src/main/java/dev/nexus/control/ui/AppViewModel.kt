@@ -68,6 +68,23 @@ class AppViewModel(private val repository: NexusRepository) : ViewModel() {
         }
     }
 
+    /**
+     * Whether a PC is paired, answered synchronously.
+     *
+     * **Not the same as `uiState.value.isPaired`, and the difference was a real bug.** [uiState] is
+     * a `stateIn` whose first value is an empty [AppUiState], so `isPaired` reads false until the
+     * combined flow emits — which happens after `ON_START` has already run. Opening the app
+     * therefore skipped `connect()` and left it sitting on "Disconnected" until something made the
+     * lifecycle start again, at which point it connected immediately.
+     *
+     * That is almost certainly what was being blamed on Tailscale: the owner opened Nexus, saw no
+     * connection, went to check the VPN, came back — and coming back is what actually fixed it.
+     *
+     * The credential itself is loaded in `Application.onCreate`, before anything composes, so this
+     * is already correct at the instant the lifecycle starts.
+     */
+    val isPairedNow: Boolean get() = repository.pairedPc.value != null
+
     /** Called when the app comes to the foreground. */
     fun connect() = repository.connect()
 

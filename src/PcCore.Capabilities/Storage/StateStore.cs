@@ -78,7 +78,12 @@ public sealed class AtomicJsonFileStore<T> where T : class
         PropertyNameCaseInsensitive = true,
         WriteIndented = true,
         MaxDepth = 16,
-        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.SnakeCaseLower) },
+
+        // Tolerant on the way in, exact on the way out. A state file has to be readable by every
+        // later version of this program, and the wire format's strictness would only mean throwing
+        // away the owner's own history whenever a spelling was corrected. See
+        // <see cref="PersistedEnumConverter"/> for the incident that established this.
+        Converters = { new PersistedEnumConverter(JsonNamingPolicy.SnakeCaseLower) },
     };
 
     private readonly StateDirectory _directory;

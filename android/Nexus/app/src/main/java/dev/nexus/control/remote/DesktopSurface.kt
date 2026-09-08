@@ -16,11 +16,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalViewConfiguration
-import kotlin.math.abs
 
 /**
  * What the owner touches: the PC's desktop, and the gestures over it.
@@ -29,6 +27,11 @@ import kotlin.math.abs
  * drag, two-finger scroll. There are no three-finger chords or edge swipes to memorise, because a
  * remote desktop is already an unfamiliar thing to operate and a gesture nobody can remember is a
  * feature nobody uses. Anything ambiguous has an explicit button on the toolbar instead.
+ *
+ * Which gesture is which is decided by [PointerGestureRecognizer], which is plain Kotlin and
+ * tested. This function only turns Compose pointer events into calls on it and its answers into
+ * callbacks — deliberately, because the v0.7.0 bug where every pointer movement dragged with the
+ * left button held lived in exactly this loop and had no test that could reach it.
  */
 @Composable
 fun DesktopSurface(
@@ -39,7 +42,7 @@ fun DesktopSurface(
     onDoubleTap: (DesktopPoint?) -> Unit,
     onLongPress: (DesktopPoint?) -> Unit,
     onDragStart: (DesktopPoint?) -> Unit,
-    onDrag: (DesktopPoint?, Float, Float) -> Unit,
+    onMove: (DesktopPoint?, Float, Float) -> Unit,
     onDragEnd: () -> Unit,
     onScroll: (Float) -> Unit,
     onBackgroundTap: () -> Unit,
@@ -69,85 +72,52 @@ fun DesktopSurface(
             .pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
-                    val startedAt = System.currentTimeMillis()
+                    val gesture = PointerGestureRecognizer(touchSlop)
 
-                    var pointers = 1
-                    var dragging = false
-                    var scrolled = false
-                    var longPressFired = false
-                    var totalMovement = 0f
-                    var scrollRemainder = 0f
-                    var last = down.position
+                    gesture.down(down.position.x, down.position.y, System.currentTimeMillis())
+
+                    var tapped: GestureOutcome.Tap? = null
 
                     while (true) {
                         val event = awaitPointerEvent()
                         val changes = event.changes.filter { it.pressed }
-                        pointers = maxOf(pointers, changes.size)
 
-                        if (changes.isEmpty()) break
+                        if (changes.isEmpty()) {
+                            tapped = gesture.up(System.currentTimeMillis())
+                                .onEach { dispatch(it, current, onDragStart, onMove, onDragEnd, onScroll, onLongPress) }
+                                .filterIsInstance<GestureOutcome.Tap>()
+                                .firstOrNull()
+
+                            break
+                        }
 
                         val primary = changes.first()
-                        val movement = primary.positionChange()
-                        totalMovement += abs(movement.x) + abs(movement.y)
 
+                        val outcomes = gesture.move(
+                            primary.position.x,
+                            primary.position.y,
+                            System.currentTimeMillis(),
+                            changes.size,
+                        )
+
+                        outcomes.forEach {
+                            dispatch(it, current, onDragStart, onMove, onDragEnd, onScroll, onLongPress)
+                        }
+
+                        // Consumed once the gesture is doing something, so a parent scroll container
+                        // cannot take the rest of it away mid-drag.
                         if (changes.size >= 2) {
-                            // Two fingers: scroll. Accumulated so that slow movement still produces
-                            // whole wheel notches rather than being rounded away to nothing.
-                            scrolled = true
-                            scrollRemainder += movement.y
-
-                            val notches = (scrollRemainder / SCROLL_PIXELS_PER_NOTCH).toInt()
-                            if (notches != 0) {
-                                scrollRemainder -= notches * SCROLL_PIXELS_PER_NOTCH
-                                onScroll(notches.toFloat())
-                            }
-
                             changes.forEach { it.consume() }
-                            last = primary.position
-                            continue
-                        }
-
-                        val heldLongEnough = System.currentTimeMillis() - startedAt > LONG_PRESS_MS
-
-                        if (!dragging && !scrolled && !longPressFired &&
-                            heldLongEnough && totalMovement < touchSlop
-                        ) {
-                            // Held in place: a right click, and the gesture ends there so it cannot
-                            // also become a drag.
-                            longPressFired = true
-                            onLongPress(current.toDesktop(down.position.x, down.position.y))
-                        }
-
-                        if (!longPressFired && !scrolled && totalMovement > touchSlop) {
-                            if (!dragging) {
-                                dragging = true
-                                onDragStart(current.toDesktop(down.position.x, down.position.y))
-                            }
-
-                            onDrag(
-                                current.toDesktop(primary.position.x, primary.position.y),
-                                primary.position.x - last.x,
-                                primary.position.y - last.y,
-                            )
-                        }
-
-                        last = primary.position
-
-                        if (dragging || scrolled) {
+                        } else if (outcomes.isNotEmpty()) {
                             primary.consume()
                         }
                     }
 
-                    if (dragging) {
-                        onDragEnd()
-                        return@awaitEachGesture
-                    }
-
-                    if (scrolled || longPressFired || pointers > 1) return@awaitEachGesture
+                    val tap = tapped ?: return@awaitEachGesture
 
                     // A plain tap. Outside the image it means "show or hide the controls" rather
                     // than a click somewhere the owner did not touch.
-                    val point = current.toDesktop(down.position.x, down.position.y)
+                    val point = current.toDesktop(tap.x, tap.y)
 
                     if (point == null && mode == PointerModeUi.DIRECT) {
                         onBackgroundTap()
@@ -183,12 +153,39 @@ fun DesktopSurface(
 }
 
 /**
- * How far a finger travels for one wheel notch. Chosen so a comfortable swipe scrolls a few lines
- * rather than a whole page.
+ * Turns one recogniser answer into the matching callback.
+ *
+ * Every branch is a straight hand-off. [GestureOutcome.Tap] is the exception and is handled by the
+ * caller, because deciding between one click and two means waiting, and waiting belongs in the
+ * gesture coroutine rather than here.
  */
-private const val SCROLL_PIXELS_PER_NOTCH = 48f
+private fun dispatch(
+    outcome: GestureOutcome,
+    rendered: RenderedDesktop,
+    onDragStart: (DesktopPoint?) -> Unit,
+    onMove: (DesktopPoint?, Float, Float) -> Unit,
+    onDragEnd: () -> Unit,
+    onScroll: (Float) -> Unit,
+    onLongPress: (DesktopPoint?) -> Unit,
+) {
+    when (outcome) {
+        is GestureOutcome.Move -> onMove(
+            rendered.toDesktop(outcome.x, outcome.y),
+            outcome.dx,
+            outcome.dy,
+        )
 
-private const val LONG_PRESS_MS = 450L
+        is GestureOutcome.DragStart -> onDragStart(rendered.toDesktop(outcome.x, outcome.y))
+
+        GestureOutcome.DragEnd -> onDragEnd()
+
+        is GestureOutcome.Scroll -> onScroll(outcome.notches)
+
+        is GestureOutcome.RightClick -> onLongPress(rendered.toDesktop(outcome.x, outcome.y))
+
+        is GestureOutcome.Tap -> Unit
+    }
+}
 
 /**
  * How long a single tap waits to find out whether it is really a double tap.

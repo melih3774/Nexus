@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 using PcCore.Capabilities.Abstractions;
 using PcCore.Protocol;
@@ -38,12 +39,35 @@ public sealed class DetectionOptions
     public int CoalesceMilliseconds { get; set; } = 500;
 }
 
-/// <summary>Why a security session started. Recorded on the session and shown to the owner.</summary>
+/// <summary>
+/// Why a security session started. Recorded on the session and shown to the owner.
+/// <para>
+/// The wire values are pinned by attribute, exactly as <see cref="SecurityState"/>,
+/// <see cref="Sessions.SessionResolution"/> and <see cref="Evidence.EvidenceKind"/> are. This enum
+/// travels to the phone inside every session summary — in <c>security.sessions.list</c>,
+/// <c>security.sessions.get</c> and the <c>security.session_started</c> event — so its spelling is
+/// a cross-language contract, not an implementation detail.
+/// </para>
+/// <para>
+/// It is pinned rather than left to the codec's naming policy because leaving it produced the one
+/// bug that made three features look broken at once: the policy spelled it <c>pointer_activity</c>,
+/// the phone expected <c>POINTER_ACTIVITY</c> like every other security enum, and the resulting
+/// decode failure emptied the incident history, broke the Security screen, and silently dropped
+/// the alert notification. <c>SecuritySessionWireFormatTests</c> now holds the spelling still.
+/// </para>
+/// </summary>
 public enum IncidentTrigger
 {
+    [JsonStringEnumMemberName("POINTER_ACTIVITY")]
     PointerActivity,
+
+    [JsonStringEnumMemberName("KEYBOARD_ACTIVITY")]
     KeyboardActivity,
+
+    [JsonStringEnumMemberName("SESSION_UNLOCKED")]
     SessionUnlocked,
+
+    [JsonStringEnumMemberName("INTERACTIVE_LOGON")]
     InteractiveLogon,
 }
 

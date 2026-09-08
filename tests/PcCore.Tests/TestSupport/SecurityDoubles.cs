@@ -79,6 +79,29 @@ public sealed class FakeEvidenceSource : IScreenEvidenceSource, ICameraEvidenceS
 
     public int Captures { get; private set; }
 
+    /// <summary>
+    /// Captures that reached the device, whether or not they finished.
+    /// <para>
+    /// Distinct from <see cref="Captures"/> so a test can tell "the recorder was never started"
+    /// from "the recorder started and the file was discarded" — which is the whole question when
+    /// an incident is resolved mid-capture.
+    /// </para>
+    /// </summary>
+    public int Started { get; private set; }
+
+    /// <summary>
+    /// Held open to keep a capture in flight, the way a real twenty-second audio clip would be.
+    /// <para>
+    /// The bug this exists to reproduce needs a capture that has already begun when the owner
+    /// acknowledges the incident, and another queued behind it. Without a hook there is no way to
+    /// arrange that deterministically, which is why the race survived a hundred passing tests.
+    /// </para>
+    /// </summary>
+    public TaskCompletionSource? Hold { get; set; }
+
+    /// <summary>Completes once a capture has entered the device and is waiting on <see cref="Hold"/>.</summary>
+    public TaskCompletionSource InFlight { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     public IReadOnlyList<EvidenceDevice> Devices { get; set; } =
         [new EvidenceDevice("device-1", "Test device", true)];
 
@@ -95,8 +118,16 @@ public sealed class FakeEvidenceSource : IScreenEvidenceSource, ICameraEvidenceS
         TimeSpan duration,
         CancellationToken cancellationToken) => CaptureAsync(folder, (long)duration.TotalMilliseconds);
 
-    private ValueTask<CapturedEvidence?> CaptureAsync(string folder, long durationMs)
+    private async ValueTask<CapturedEvidence?> CaptureAsync(string folder, long durationMs)
     {
+        Started++;
+
+        if (Hold is { } hold)
+        {
+            InFlight.TrySetResult();
+            await hold.Task.ConfigureAwait(false);
+        }
+
         if (Throws)
         {
             throw new InvalidOperationException("the device failed");
@@ -104,7 +135,7 @@ public sealed class FakeEvidenceSource : IScreenEvidenceSource, ICameraEvidenceS
 
         if (!Available)
         {
-            return ValueTask.FromResult<CapturedEvidence?>(null);
+            return null;
         }
 
         Captures++;
@@ -114,8 +145,7 @@ public sealed class FakeEvidenceSource : IScreenEvidenceSource, ICameraEvidenceS
 
         File.WriteAllBytes(path, ProducesEmptyFile ? [] : System.Text.Encoding.UTF8.GetBytes($"{Name} {_count}"));
 
-        return ValueTask.FromResult<CapturedEvidence?>(
-            new CapturedEvidence(fileName, ContentType, durationMs, $"{Name} sample"));
+        return new CapturedEvidence(fileName, ContentType, durationMs, $"{Name} sample");
     }
 }
 

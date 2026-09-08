@@ -17,6 +17,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
@@ -28,6 +29,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import dev.nexus.control.security.SecurityAlertPreference
 import dev.nexus.control.security.SecurityAlertService
 import dev.nexus.control.remote.RemoteScreen
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -48,9 +50,10 @@ enum class Destination(val route: String, val title: String) {
  * The app shell.
  *
  * Two things happen here that belong nowhere else: the paired-versus-unpaired decision, and tying
- * the connection to the foreground lifecycle. The second is what implements "connect while the app
- * is being used" — there is no background service, so `ON_START` and `ON_STOP` are the whole
- * policy.
+ * the connection to the foreground lifecycle. The second used to be the whole policy — "connect
+ * while the app is being used" — because there was no background service. There is one now, it is
+ * opt-in, and it exists precisely to keep the connection alive when the app is not being looked at,
+ * so the rule is no longer unconditional. See [BackgroundPolicy] for what replaced it and why.
  */
 @Composable
 fun NexusApp(
@@ -62,8 +65,21 @@ fun NexusApp(
     val pairing by viewModel.pairing.collectAsStateWithLifecycle()
     val navController = rememberNavController()
 
+    val context = LocalContext.current
+
     LifecycleEventEffect(Lifecycle.Event.ON_START) {
-        if (state.isPaired) viewModel.connect()
+        // `viewModel.isPairedNow`, never `state.isPaired`: the latter is still false this early,
+        // which is what left the app showing "Disconnected" after being reopened.
+        val paired = viewModel.isPairedNow
+
+        if (paired) viewModel.connect()
+
+        // Android stops services for reasons that have nothing to do with the owner's intent, and
+        // the alert switch reads a stored preference rather than a running service. Reconciling the
+        // two on open is what stops the switch claiming cover it is not providing.
+        if (BackgroundPolicy.shouldStartAlertServiceOnStart(paired, SecurityAlertPreference.isEnabled(context))) {
+            SecurityAlertService.start(context)
+        }
     }
 
     // A tap on a security alert lands on the incident, or on the live screen. Only meaningful once
@@ -85,7 +101,11 @@ fun NexusApp(
     }
 
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
-        viewModel.disconnect()
+        // Unconditional until v0.7.1, which is what made the security alert impossible: the
+        // foreground service held a socket this had already closed.
+        if (BackgroundPolicy.shouldDisconnectOnStop(SecurityAlertPreference.isEnabled(context))) {
+            viewModel.disconnect()
+        }
     }
 
     // Pairing succeeded: the credential is stored and the session is coming up. Leave the pairing

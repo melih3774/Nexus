@@ -1,4 +1,4 @@
-# Nexus v0.5
+# Nexus v0.7.1
 
 A user-level Windows process that exposes a **small, explicit set of capabilities** over a structured request/response/event protocol — locally over loopback, and remotely to one paired phone over Tailscale.
 
@@ -330,16 +330,20 @@ keyboard.
 
 ```
 ┌─────────────────────────┐
-│                         │
-│      PC SCREEN          │   tap        → left click
-│                         │   long press → right click
-│                         │   drag       → drag
-├─────────────────────────┤   two fingers→ scroll
-│ Direct | Touchpad   [•] │   tap a bar  → hide the controls
+│                         │   move            → move the pointer
+│      PC SCREEN          │   tap             → left click
+│                         │   hold, then move → drag
+│                         │   hold, then lift → right click
+├─────────────────────────┤   two fingers     → scroll
+│ Direct | Touchpad   [•] │   tap a bar       → hide the controls
 │ Left Double Right Mid   │
 │ Keyboard          Stats │
 └─────────────────────────┘
 ```
+
+**Moving the pointer never presses anything.** Holding still for a moment is what asks for a button,
+and what you do next decides which: move and it is a drag, lift and it is a right click. Everything
+else has a button on the toolbar.
 
 **Watching is not controlling.** Opening the screen starts the stream; the `Control` switch is what
 lets the phone move the pointer and type. Leaving the screen, backgrounding the app, or losing the
@@ -474,6 +478,44 @@ dotnet run --project src/PcCore.Host -- --selftest-security
 Installs the real hooks, injects real input and proves it is attributed to Nexus rather than to a
 person, captures from the real camera and microphone, verifies the digests, and runs both
 resolutions. Add `--prompt-hello` to exercise the real Windows Hello prompt.
+
+## Fixes in v0.7.1
+
+Four defects that only a real phone on a real tailnet could show, and one that a real finger could.
+
+**Pointer movement held the left button down.** Any single-finger movement past the touch slop
+started a drag, in both Direct and Touchpad, so the pointer could not be moved without dragging
+something. PC Core was never involved — `input.pointer` does not touch a button — the phone was
+sending `input.button DOWN` on purpose. Moving and pressing are now separate: see the gesture table
+above. The decision moved out of the Compose gesture loop into `PointerGestureRecognizer`, where it
+is plain Kotlin and tested.
+
+**One unpinned enum broke three security features at once.** `IncidentTrigger` was the only enum in
+a session summary without its wire name pinned by attribute, so it inherited the codec's
+`snake_case` policy and went out as `pointer_activity` where the phone expected `POINTER_ACTIVITY`.
+Because every summary carries a trigger, the phone could not decode `security.sessions.get`,
+`security.sessions.list`, or the `security.session_started` event — which showed up as *"Something
+went wrong talking to the PC"*, an empty incident history, and a security notification that never
+arrived. PC Core logged all three as successes, because from its side they were.
+
+`shared/protocol/protocol-vectors.json` now pins the whole incident shape and every member of every
+security enum, generated from the real records and asserted by both languages. The tests that
+existed compared `IncidentTrigger.PointerActivity` to itself, which is why none of them noticed.
+
+**Incident history written before the fix still loads.** Pinning the enum made
+`System.Text.Json` reject the old spelling, which would have quarantined the existing
+`sessions.json` and orphaned the evidence it indexes. State files are now read through
+`PersistedEnumConverter`: exact on the way out, indifferent to case and underscores on the way in.
+Losing the record of a security incident to fix the display of security incidents is not a trade
+worth making.
+
+**Arm could close a live incident.** The Security screen showed one full-width button that read
+`Arm` in `OWNER_PRESENT` and `Disarm` in both `ARMED` and `SECURITY_SESSION` — same place, same
+size, different meaning. Pressed by reflex during an incident it sent `security.disarm`, which
+returns to `OWNER_PRESENT` with no biometric prompt and no record that anyone decided anything. An
+open incident is now answered only through `This was me` / `Not me`. `security.arm` was already
+refused from `SECURITY_SESSION` by PC Core; the defect was that the phone offered an unlabelled
+alternative to answering.
 
 ## Protocol vectors
 
