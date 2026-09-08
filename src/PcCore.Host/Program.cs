@@ -607,10 +607,9 @@ public static class Program
         }
         else
         {
-            logger.LogWarning(
-                "Native input: {State}. {Diagnostic}",
-                status.State.ToString().ToUpperInvariant(),
-                status.Diagnostic);
+            // The summary rather than the enum name: "NOTINSTALLED" is what ToUpperInvariant makes
+            // of NotInstalled, and it is neither the wire spelling nor English.
+            logger.LogWarning("{Summary}. {Diagnostic}", status.Summary, status.Diagnostic);
         }
 
         if (status.PhysicalDigitizer)
