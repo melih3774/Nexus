@@ -1,4 +1,4 @@
-# Nexus v0.7.1
+# Nexus v0.8
 
 A user-level Windows process that exposes a **small, explicit set of capabilities** over a structured request/response/event protocol — locally over loopback, and remotely to one paired phone over Tailscale.
 
@@ -9,6 +9,9 @@ A user-level Windows process that exposes a **small, explicit set of capabilitie
 - **v0.3 — Personal Device Pairing, Persistence, and Startup:** security state persists across restarts, a persistent PC identity, pairing with exactly one Primary Phone over a 256-bit shared secret, HMAC-SHA-256 authentication, and per-user Windows auto-start.
 - **v0.4 — Authenticated Tailscale Remote Transport:** the Primary Phone can connect over your Tailscale network, authenticate with that credential, and drive a restricted capability set. The listener binds **only** to a detected Tailscale address, never LAN or wildcard.
 - **v0.5 — First Native Android Client:** the phone app. Pair by scanning a QR, store the credential in the Android Keystore, connect over Tailscale, and control the PC — screen, files, system, security — with live state updates.
+- **v0.6 — Live Screen and Remote Input:** Desktop Duplication streaming, pointer and keyboard injection, an on-screen indicator while it is happening.
+- **v0.7 — Security Detection, Evidence, Notifications, Owner Verification:** arming the PC, noticing a person at it, recording evidence, and answering the alert from the phone.
+- **v0.8 — Native Windows Input:** input reaches ordinary Administrator windows, Direct mode sends real Windows touch, and the security detector can still tell Nexus's own input from a person's.
 
 Still deliberately absent: no AI, no live screen streaming, no remote input, no activity detection, no recording, no internet exposure. See [SPEC.md](SPEC.md) (§38–48 cover v0.5) and [PLAN.md](PLAN.md).
 
@@ -98,6 +101,8 @@ The token is also written to `%LOCALAPPDATA%\PcCore\session.token`.
 | `security.arm` | — | `OWNER_PRESENT -> ARMED`; `{ changed, state, previous_state, since_utc }` |
 | `security.disarm` | — | back to `OWNER_PRESENT` from `ARMED` or `SECURITY_SESSION` |
 | `device.get_primary` | — | `{ paired, device_id?, display_name?, paired_at_utc? }` — never the secret |
+| `input.touch` | `{ action, x, y, display_index?, contact_id? }` | put a touch contact down, move it, or lift it |
+| `input.status` | — | which input path is carrying input, and whether it is healthy |
 | `pairing.begin` | `{ replace_existing? }` | `{ session_id, expires_at_utc, pc_instance_id, payload }` |
 | `pairing.cancel` | — | `{ cancelled }` |
 | `device.unpair_primary` | — | `{ unpaired }`; deletes the stored credential |
@@ -389,9 +394,9 @@ Defaults are 1280x720, JPEG quality 65, 15 fps, in `appsettings.json` under `PcC
 
 ### What Windows will not allow
 
-Input from a standard-user process cannot reach a window running as administrator, the UAC prompt,
-or the lock screen. Nexus keeps that boundary rather than running elevated or installing a helper to
-get around it. When it happens the phone says so — the command was valid, it just was not accepted.
+Without native input (below), a standard-user process cannot send input to a window running as
+administrator. With it, ordinary elevated application windows become reachable — the UAC prompt and
+the lock screen never do, and that is deliberate. See **Native input** and **The Secure Desktop**.
 
 ### Checking it works without a phone
 
@@ -517,6 +522,119 @@ open incident is now answered only through `This was me` / `Not me`. `security.a
 refused from `SECURITY_SESSION` by PC Core; the defect was that the phone offered an unlabelled
 alternative to answering.
 
+## Native input (v0.8)
+
+Windows refuses input sent from a lower integrity level to a higher one. That is why, before v0.8,
+clicking an Administrator window from the phone did nothing: PC Core is a standard-user process and
+Windows was doing exactly what it should. The three ways around that are to run PC Core elevated, to
+weaken Windows, or to move only the injection into a process that is allowed to do it. v0.8 does the
+third.
+
+```
+Android Nexus
+      |
+authenticated PC Core            standard user, as before
+      |                          local named pipe, owner-only, both ends verified
+Nexus Input Broker               one small elevated process, ten operations
+      |
+SendInput / InjectTouchInput
+      |
+Windows input stack
+```
+
+**There is no mode to turn on.** If the broker is installed and healthy it carries the input; if it
+is not, PC Core injects for itself exactly as it always did. The phone sends the same messages
+either way and Direct/Touchpad still means what it always meant.
+
+### Setting it up
+
+Once, from an **elevated** terminal:
+
+```bash
+PcCore.Host.exe --install-native-input
+```
+
+That registers one visible logon task, `\Nexus\Nexus Input Broker`, which starts the broker in your
+session at sign-in with the highest privileges available to you. After that, nothing: the broker
+starts with Windows, PC Core finds it, and there is nothing to enable per session.
+
+```bash
+PcCore.Host.exe --native-input-status      # what is registered, and whether it is current
+PcCore.Host.exe --repair-native-input      # re-register after moving or rebuilding
+PcCore.Host.exe --uninstall-native-input   # remove it; Nexus goes back to standard input
+```
+
+The phone shows one line — *Native input: ready*, or why not. A broker that started **without**
+administrator rights reports `DEGRADED` rather than claiming a reach it does not have.
+
+### What the broker will do, in full
+
+`hello`, `desktop`, `move_abs`, `move_rel`, `button`, `scroll`, `key`, `text`, `touch`,
+`release_all`. There is no operation that reads a file, starts a process, takes a window handle or
+passes arbitrary arguments to Win32, and adding one means editing `BrokerProtocol.cs`.
+
+The pipe is local, per-user, and admits only the owner's SID — but so would any program the owner
+happens to be running, so both ends also check the other's executable. The broker accepts a
+connection only from the `PcCore.Host.exe` beside it, and PC Core sends only to the
+`PcCore.InputBroker.exe` beside *it*. The second check is not decoration: a program that squatted
+the pipe name first would otherwise receive everything the owner typed from their phone.
+
+Every disconnect — clean, crashed or killed — releases every held button, key and touch contact.
+
+**The honest trade-off.** Anything that lets an unelevated process cause input in an elevated window
+is, by construction, a way for user-level code to drive administrator UI. Nexus narrows that to one
+executable, ten bounded operations and a pipe only the owner can open, and the same is true of every
+remote-control tool that can do this at all. If you would rather not have it, do not install it:
+everything else works, and elevated windows stay out of reach as they did before.
+
+### Direct mode is touch now
+
+Direct mode sends touch contacts through `input.touch`, and PC Core turns them into real Windows
+touch with `InjectTouchInput`. A tap is a tap, a drag drags, and applications that understand touch
+get touch rather than a mouse being dragged around. Moving a finger without a drag still moves the
+pointer — touch has no equivalent of moving without touching, and the cursor is the only way to see
+where you are on the streamed image before committing. Long press stays an immediate right click.
+
+If the PC cannot inject touch, `input.touch` becomes a pointer and a button on the PC side. The
+phone never has to know.
+
+### The Secure Desktop
+
+When Windows shows a UAC consent prompt, the lock screen or Ctrl+Alt+Del, it switches to a separate
+desktop that the interactive session cannot reach. Nexus **stops there**, and the check lives inside
+the injector — below the protocol, so no ordering mistake in the broker can skip it. Nothing here
+disables UAC, changes UAC policy, touches `consent.exe`, or automates a credential. The phone shows
+*Local administrator confirmation required on the PC*, and normal operation resumes by itself once
+you answer the prompt.
+
+### Why not a driver
+
+The obvious "most native" answer is a virtual HID device through the Virtual HID Framework, and it
+was the starting point for this work. It does not survive contact with this machine:
+
+- VHF source drivers are **kernel-mode only**, and the WDK is not installed here.
+- Since Windows 10 1607, a new kernel driver must be signed through the Microsoft Hardware Dev
+  Center, which requires an EV code-signing certificate and a Partner Center account.
+- Memory Integrity (HVCI) is **enabled** on this machine, so test-signing is not an option either —
+  and turning it off to load Nexus would be weakening the machine to install a security tool.
+- No reputable, maintained, currently-signed general-purpose virtual HID mouse/keyboard/touch driver
+  exists to borrow instead.
+
+What a HID device would have bought — reaching elevated windows, and real touch — is already
+delivered by the broker and by `InjectTouchInput`, both of which are documented, supported Windows
+APIs that need no driver and no weakening of anything. See `docs/native-input.md` for the full
+signing analysis and what a production driver would actually require.
+
+### Checking it works without a phone
+
+```bash
+PcCore.Host.exe --selftest-native-input
+```
+
+Creates a window, types into it, reads the text back, injects touch, arms a sandboxed security state
+and proves that Nexus's own input does not raise a session. Add `--foreground` to test whatever
+window you have focused, which is how you check an Administrator window.
+
 ## Protocol vectors
 
 `shared/protocol/protocol-vectors.json` is generated from PC Core's own implementations and asserted
@@ -565,14 +683,16 @@ src/
   PcCore.Protocol/            contracts; the only assembly that touches System.Text.Json
   PcCore.Capabilities/        dispatcher, registry, path security, security state,
                               identity/pairing/auth, state storage, all twelve actions
+  PcCore.NativeInput/         every Windows input call, shared by PC Core and the broker; no dependencies
+  PcCore.InputBroker/         the elevated injector; one project reference, ten operations
   PcCore.Windows/             the only assembly with P/Invoke, System.Drawing, DPAPI, or the registry
   PcCore.Transport.Loopback/  Kestrel, /rpc, /ws, token + loopback guards (127.0.0.1 only)
   PcCore.Transport.Remote/    Tailscale-bound WebSocket, device authentication, sessions
   PcCore.Host/                composition root, config, logging, device endpoints, QR, test page
 tests/
-  PcCore.Tests/               357 tests
+  PcCore.Tests/               585 tests
 android/
-  Nexus/                      the Android app: protocol/, data/, net/, ui/ (55 unit + 20 device tests)
+  Nexus/                      the Android app: protocol/, data/, net/, ui/ (156 unit + device tests)
 shared/
   protocol/                   cross-language test vectors, generated by the PC test suite
 ```

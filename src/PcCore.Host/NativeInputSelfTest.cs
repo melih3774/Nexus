@@ -81,7 +81,28 @@ internal static class NativeInputSelfTest
             return 2;
         }
 
-        // --- 2. The service, wired exactly as the host wires it ------------------------------------
+        // --- 2. The elevated-application test, when asked for -------------------------------------
+        //
+        // Separate, and driven by the owner, because it is the one thing here that cannot be faked:
+        // proving that input reaches an elevated window needs an elevated window, and creating one
+        // is a decision taken at the owner's own UAC prompt, not by Nexus.
+        if (args.Contains("--foreground"))
+        {
+            return await TestForegroundWindowAsync(loggerFactory, router, status).ConfigureAwait(false);
+        }
+
+        // --- 2b. The abrupt-disconnect test ---------------------------------------------------------
+        //
+        // Deliberately ends the process with a button, a modifier and a touch contact still down,
+        // and without calling anything that cleans up. Nothing in Nexus gets a chance to be polite:
+        // whatever releases them has to be the disconnect itself. That is the case a crash, a lost
+        // network and a force-quit all reduce to, and the only way to test it is to actually do it.
+        if (args.Contains("--abandon-held-input"))
+        {
+            return AbandonHeldInput(loggerFactory, router, displaysFor(loggerFactory));
+        }
+
+        // --- 3. The service, wired exactly as the host wires it ------------------------------------
         var displays = new DxgiDesktopStream(loggerFactory);
         var attribution = new NexusInputAttribution(
             new AttributionOptions(), loggerFactory.CreateLogger<NexusInputAttribution>());
@@ -137,6 +158,137 @@ internal static class NativeInputSelfTest
 
         return failed == 0 ? 0 : 1;
     }
+
+    /// <summary>Opens a display catalog. Separated only so the abandon path can have one early.</summary>
+    private static IDisplayCatalog displaysFor(ILoggerFactory loggerFactory) => new DxgiDesktopStream(loggerFactory);
+
+    /// <summary>
+    /// Presses things and then dies, so that the cleanup path is the only thing left to fix it.
+    /// </summary>
+    private static int AbandonHeldInput(
+        ILoggerFactory loggerFactory,
+        NativeInputRouter router,
+        IDisplayCatalog displays)
+    {
+        var attribution = new NexusInputAttribution(
+            new AttributionOptions(), loggerFactory.CreateLogger<NexusInputAttribution>());
+
+        var input = new InputService(
+            router, displays, attribution, new InputOptions(), loggerFactory.CreateLogger<InputService>());
+
+        input.Begin(Owner);
+
+        var display = displays.GetDisplays().FirstOrDefault();
+
+        if (display is null)
+        {
+            Console.WriteLine("  no display; nothing to abandon");
+            return 1;
+        }
+
+        input.Button(Owner, PointerButton.Left, ButtonAction.Down);
+        input.Key(Owner, NexusKey.Shift, KeyAction.Down);
+        input.Touch(Owner, display.Index, 0, TouchAction.Down, 0.5, 0.5);
+
+        Console.WriteLine("  Left button, Shift and one touch contact are now held.");
+        Console.WriteLine("  Ending the process without releasing any of them.");
+
+        // Not Environment.Exit, which would run finalizers and dispose the channel politely.
+        // Environment.FailFast is the closest thing to being killed that a process can do to itself.
+        Console.Out.Flush();
+        Environment.FailFast(null);
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Drives whatever the owner puts in front, and says what happened.
+    /// <para>
+    /// The elevated-application test, in one command. The owner opens an Administrator window —
+    /// an elevated PowerShell, an Administrator Command Prompt — focuses it, and this reports the
+    /// window's integrity level and whether pointer and keyboard input actually reached it. With
+    /// the Nexus Input Broker installed and elevated, a HIGH-integrity window should accept input;
+    /// without it, Windows refuses and this says so rather than pretending.
+    /// </para>
+    /// </summary>
+    private static async Task<int> TestForegroundWindowAsync(
+        ILoggerFactory loggerFactory,
+        NativeInputRouter router,
+        NativeInputStatus status)
+    {
+        Console.WriteLine("  Focus the window you want to test. Reading it in 8 seconds...");
+        Console.WriteLine();
+
+        for (var second = 8; second > 0; second--)
+        {
+            Console.Write($"\r  {second}... ");
+            await Task.Delay(1000).ConfigureAwait(false);
+        }
+
+        Console.WriteLine();
+        Console.WriteLine();
+
+        var window = ForegroundWindowProbe.Describe();
+        Console.WriteLine($"  Foreground : {ForegroundWindowProbe.Summarise(window)}");
+
+        var displays = new DxgiDesktopStream(loggerFactory);
+        var attribution = new NexusInputAttribution(
+            new AttributionOptions(), loggerFactory.CreateLogger<NexusInputAttribution>());
+
+        var input = new InputService(
+            router, displays, attribution, new InputOptions(), loggerFactory.CreateLogger<InputService>());
+
+        input.Begin(Owner);
+
+        try
+        {
+            // A pointer move and a harmless key. Deliberately not a click: clicking something in an
+            // Administrator window that the owner did not choose is not a test, it is an accident.
+            // Shift is chosen because pressing and releasing it changes nothing anywhere.
+            var moved = input.MoveRelative(Owner, 6, 4);
+            await Task.Delay(60).ConfigureAwait(false);
+            input.MoveRelative(Owner, -6, -4);
+
+            var keyed = input.Key(Owner, NexusKey.Shift, KeyAction.Press);
+            await Task.Delay(60).ConfigureAwait(false);
+
+            Console.WriteLine($"  Pointer    : {Describe(moved)}");
+            Console.WriteLine($"  Keyboard   : {Describe(keyed)}");
+            Console.WriteLine();
+
+            var reached = moved.Succeeded && keyed.Succeeded;
+
+            if (window.Elevated && reached)
+            {
+                Console.WriteLine("  PASS  input reached an elevated window.");
+                return 0;
+            }
+
+            if (window.Elevated)
+            {
+                Console.WriteLine(
+                    "  FAIL  the window is elevated and input did not reach it. "
+                    + $"Native input is {status.State}; run --install-native-input from an elevated terminal.");
+
+                return 1;
+            }
+
+            Console.WriteLine(
+                reached
+                    ? "  The focused window is not elevated, so this proves nothing about elevated windows. "
+                      + "Focus an Administrator window and run this again."
+                    : "  Input did not reach even an unelevated window, which is a different problem.");
+
+            return reached ? 0 : 1;
+        }
+        finally
+        {
+            input.End(Owner);
+        }
+    }
+
+    private static string Describe(InputResult result) =>
+        result.Diagnostic is null ? result.Delivery.ToString() : $"{result.Delivery} — {result.Diagnostic}";
 
     /// <summary>The pointer actually moved, and went back where it started.</summary>
     private static async Task<(string, bool, string)> TestPointerAsync(IInputService input, DisplayInfo display)
