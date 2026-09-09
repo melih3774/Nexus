@@ -1,0 +1,128 @@
+;
+; NexusHid.inf - the Nexus HID source driver package.
+;
+; A root-enumerated UMDF2 driver. There is no hardware: Root\NexusHid is a device Windows creates
+; because this INF says it exists, which is exactly what a virtual HID source needs and is why no
+; bus, no USB VID allocation and no physical anything is involved.
+;
+; The driver binary is NexusHidDriver.DLL, not a .sys. That is the whole reason this design is
+; reachable: a UMDF2 driver runs in WUDFHost.exe in user mode, so Hypervisor-enforced Code Integrity
+; - which governs kernel-mode code - does not gate it, and neither does Secure Boot. What still
+; applies is driver *package* trust, which is a signature question and not a kernel question. See
+; docs/virtual-hid.md sections 1 and 18.
+;
+; ---------------------------------------------------------------------------------------------
+; ATTRIBUTION
+;
+; The section layout below - the split between the Windows 10 (19041) and Windows 11 (22000)
+; decorated sections, and specifically the Include/Needs wiring that pulls in the inbox VHF service
+; (hidvhf.inf, vhfservice) and the UMDF reflector upper filter (wudfrd.inf, WUDFRD_UpperFilter) - is
+; adapted from WinUHidDriver.inf in cgutman/WinUHid, which is MIT licensed:
+;
+;   WinUHid - Virtual HID Device Emulation Framework for Windows
+;   Copyright (c) 2025 Cameron Gutman
+;   Licensed under the MIT License. See docs/third-party-notices.md for the full text.
+;
+; That wiring is not Nexus-specific and is the part of a VHF INF that is genuinely hard to derive:
+; Windows 11 needs the reflector declared as an upper filter and Windows 10 does not, and getting
+; that wrong yields a device that installs and never starts. Everything identifying - the device
+; name, hardware id, service name, provider, GUIDs and the driver itself - is Nexus's own.
+; ---------------------------------------------------------------------------------------------
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = System
+ClassGuid   = {4d36e97d-e325-11ce-bfc1-08002be10318}
+Provider    = %ManufacturerName%
+CatalogFile = NexusHid.cat
+DriverVer   = ; set by stampinf during the build
+PnpLockdown = 1
+
+[Manufacturer]
+%ManufacturerName% = Nexus, NT$ARCH$.10.0...19041, NT$ARCH$.10.0...22000
+
+[Nexus.NT$ARCH$.10.0...19041]
+%DeviceName% = NexusHid_Win10, Root\NexusHid
+
+[Nexus.NT$ARCH$.10.0...22000]
+%DeviceName% = NexusHid_Win11, Root\NexusHid
+
+[SourceDisksFiles]
+NexusHidDriver.dll = 1
+
+[SourceDisksNames]
+1 = %DiskName%
+
+[DestinationDirs]
+UMDriverCopy = 13 ; the driver store
+
+; =========================== Windows 11 and later =============================
+;
+; Windows 11 requires the UMDF reflector to be declared as an upper filter. Windows 10 installs it
+; through the UmdfService directive alone. This is the difference that makes two sections
+; necessary rather than one.
+
+[NexusHid_Win11.NT]
+CopyFiles = UMDriverCopy
+Include   = wudfrd.inf, hidvhf.inf
+Needs     = WUDFRD_UpperFilter.NT, vhfservice.NT
+
+[NexusHid_Win11.NT.HW]
+Include   = wudfrd.inf, hidvhf.inf
+Needs     = WUDFRD_UpperFilter.NT.HW, vhfservice.NT.HW
+AddReg    = NexusHid_AddReg
+
+[NexusHid_Win11.NT.Services]
+Include   = wudfrd.inf, hidvhf.inf
+Needs     = WUDFRD_UpperFilter.NT.Services, vhfservice.NT.Services
+
+[NexusHid_Win11.NT.Filters]
+Include   = wudfrd.inf
+Needs     = WUDFRD_UpperFilter.NT.Filters
+
+[NexusHid_Win11.NT.Wdf]
+UmdfService      = NexusHidDriver, NexusHid_Install
+UmdfServiceOrder = NexusHidDriver
+
+; =============================== Windows 10 ===================================
+
+[NexusHid_Win10.NT]
+CopyFiles = UMDriverCopy
+Include   = hidvhf.inf
+Needs     = vhfservice.NT
+
+[NexusHid_Win10.NT.HW]
+Include   = hidvhf.inf
+Needs     = vhfservice.NT.HW
+AddReg    = NexusHid_AddReg
+
+[NexusHid_Win10.NT.Services]
+Include   = hidvhf.inf
+Needs     = vhfservice.NT.Services
+
+[NexusHid_Win10.NT.Wdf]
+UmdfService      = NexusHidDriver, NexusHid_Install
+UmdfServiceOrder = NexusHidDriver
+
+; ================================ Shared ======================================
+
+[NexusHid_Install]
+UmdfLibraryVersion = 2.33.0
+ServiceBinary      = %13%\NexusHidDriver.dll
+UmdfExtensions     = HidVhf
+
+[UMDriverCopy]
+NexusHidDriver.dll
+
+;
+; VHF has to be a lower filter beneath the source driver, per Microsoft's VHF documentation. This
+; is the AddReg the documentation specifies, and without it the device enumerates and no HID
+; collection ever appears.
+;
+[NexusHid_AddReg]
+HKR,,"LowerFilters",0x00010000,"vhf"
+
+[Strings]
+ManufacturerName = "Nexus"
+DiskName         = "Nexus HID Installation Disk"
+DeviceName       = "Nexus HID Control"
