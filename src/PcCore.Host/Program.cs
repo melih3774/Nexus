@@ -328,6 +328,44 @@ public static class Program
         services.AddSingleton<IRawInputSourceLedger>(p => p.GetRequiredService<RawInputSourceLedger>());
         services.AddSingleton<RawInputListener>();
         services.AddSingleton<RawInputAttributionService>();
+
+        // The virtual-HID path. NexusHidBackend publishes nothing on a machine with no driver, so
+        // on this one the controller exists, reports every capability unpublished, and the router
+        // falls straight through to injection. The wiring is live either way, which is the point:
+        // the day the driver is installed, nothing here has to change.
+        services.AddSingleton<NexusHidBackend>();
+        services.AddSingleton<IVirtualHidBackend>(p => p.GetRequiredService<NexusHidBackend>());
+        services.AddSingleton<VirtualHidController>();
+
+        // Conditions are gathered once per call from cached component state, never by probing the
+        // driver. Probing on the hot path is how routing starts to flap.
+        services.AddSingleton<Func<VirtualHidConditions>>(p => () =>
+        {
+            var backend = p.GetRequiredService<NexusHidBackend>();
+            var attribution = p.GetRequiredService<RawInputAttributionService>();
+            var policy = p.GetRequiredService<CentralInputPolicy>();
+            var availability = backend.Availability;
+            var health = attribution.Health;
+
+            return new VirtualHidConditions
+            {
+                DriverConnected = availability.State is VirtualHidState.Ready or VirtualHidState.Partial,
+                ProtocolCompatible = availability.State is VirtualHidState.Ready or VirtualHidState.Partial,
+                IdentitiesResolved = availability.Devices.Count > 0,
+                AttributionHealthy = health.IsReady,
+                AttributionSubscribed = health.SubscriptionActive,
+                DesktopAllowsInput = policy.CurrentDesktop == "DEFAULT",
+                AvailableKinds = availability.Devices
+                    .Select(d => d.Kind switch
+                    {
+                        VirtualHidDeviceKind.Mouse => InputKind.Mouse,
+                        VirtualHidDeviceKind.Keyboard => InputKind.Keyboard,
+                        _ => InputKind.Touch,
+                    })
+                    .ToHashSet(),
+                NeutralizationUncertain = policy.NeutralizationUncertain,
+            };
+        });
         services.AddSingleton<DesktopStreamService>();
         services.AddSingleton<IInputService, InputService>();
         services.AddSingleton<RemoteIndicatorService>();

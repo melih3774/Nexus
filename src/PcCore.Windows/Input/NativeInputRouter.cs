@@ -2,6 +2,7 @@ using System.Runtime.Versioning;
 using Microsoft.Extensions.Logging;
 using PcCore.Capabilities.Input;
 using PcCore.NativeInput;
+using PcCore.NativeInput.Hid;
 
 namespace PcCore.Windows.Input;
 
@@ -43,6 +44,14 @@ public sealed class NativeInputRouter : IInputController, IDisposable
 
     private readonly RemoteInputOwnership? _ownership;
 
+    /// <summary>
+    /// The virtual-HID submission path, and the conditions that decide whether it may be used.
+    /// Both null until a backend exists on this machine, which is the state today.
+    /// </summary>
+    private readonly VirtualHidController? _hid;
+
+    private readonly Func<VirtualHidConditions>? _conditions;
+
     private bool _usingBroker;
 
     public NativeInputRouter(
@@ -51,7 +60,9 @@ public sealed class NativeInputRouter : IInputController, IDisposable
         NativeInputInstaller installer,
         ILogger<NativeInputRouter> logger,
         CentralInputPolicy? policy = null,
-        RemoteInputOwnership? ownership = null)
+        RemoteInputOwnership? ownership = null,
+        VirtualHidController? hid = null,
+        Func<VirtualHidConditions>? conditions = null)
     {
         _broker = broker;
         _local = local;
@@ -59,6 +70,27 @@ public sealed class NativeInputRouter : IInputController, IDisposable
         _logger = logger;
         _policy = policy;
         _ownership = ownership;
+        _hid = hid;
+        _conditions = conditions;
+    }
+
+    /// <summary>
+    /// Whether virtual HID may carry this kind of input right now.
+    /// <para>
+    /// Asked per kind, because a backend publishing a mouse and a keyboard and no digitizer is a
+    /// realistic install and should carry the two it has. Cached conditions are supplied by the
+    /// caller rather than probed here: this runs on the hot path, and rediscovering a driver for
+    /// every pointer packet is how routing starts to flap.
+    /// </para>
+    /// </summary>
+    private bool HidEligible(InputKind kind)
+    {
+        if (_hid is null || _conditions is null)
+        {
+            return false;
+        }
+
+        return VirtualHidEligibility.Evaluate(_conditions(), kind).Eligible;
     }
 
     /// <summary>
@@ -95,6 +127,7 @@ public sealed class NativeInputRouter : IInputController, IDisposable
             {
                 return new NativeInputStatus
                 {
+                    VirtualHidDiagnostic = DescribeVirtualHid(),
                     Path = InputPath.NativeBroker,
                     State = info.Elevated ? NativeInputState.Ready : NativeInputState.Degraded,
                     ReachesElevatedWindows = info.Elevated,
@@ -118,6 +151,7 @@ public sealed class NativeInputRouter : IInputController, IDisposable
 
             return local with
             {
+                VirtualHidDiagnostic = DescribeVirtualHid(),
                 State = installation.Registered ? NativeInputState.Unavailable : NativeInputState.NotInstalled,
                 Diagnostic = installation.Registered
                     ? _broker.Diagnostic
@@ -130,21 +164,31 @@ public sealed class NativeInputRouter : IInputController, IDisposable
 
     public InputResult MovePointerAbsolute(int x, int y) =>
         Route(
+            InputKind.Mouse,
+            // Always unsupported on a relative HID mouse, so this falls straight through. Wired
+            // anyway so the shape is uniform and the reason is reported rather than assumed.
+            VirtualHidController.MoveAbsolute,
             new BrokerRequest { Op = BrokerProtocol.Ops.MoveAbsolute, X = x, Y = y },
             () => _local.MovePointerAbsolute(x, y));
 
     public InputResult MovePointerRelative(int dx, int dy) =>
         Route(
+            InputKind.Mouse,
+            _hid is null ? null : () => _hid.MoveRelative(dx, dy),
             new BrokerRequest { Op = BrokerProtocol.Ops.MoveRelative, Dx = dx, Dy = dy },
             () => _local.MovePointerRelative(dx, dy));
 
     public InputResult Button(PointerButton button, bool down) =>
         Route(
+            InputKind.Mouse,
+            _hid is null ? null : () => _hid.Button((int)button, down),
             new BrokerRequest { Op = BrokerProtocol.Ops.Button, Button = (int)button, Down = down },
             () => _local.Button(button, down));
 
     public InputResult Scroll(int horizontalNotches, int verticalNotches) =>
         Route(
+            InputKind.Mouse,
+            _hid is null ? null : () => _hid.Scroll(horizontalNotches, verticalNotches),
             new BrokerRequest
             {
                 Op = BrokerProtocol.Ops.Scroll,
@@ -158,6 +202,9 @@ public sealed class NativeInputRouter : IInputController, IDisposable
         var (virtualKey, extended) = WindowsKeyMap.Map(key);
 
         return Route(
+            InputKind.Keyboard,
+            // NexusKeyLike mirrors NexusKey position for position, asserted by HidKeyMapMirrorsNexusKey.
+            _hid is null ? null : () => _hid.Key((NexusKeyLike)(int)key, down),
             new BrokerRequest
             {
                 Op = BrokerProtocol.Ops.Key,
@@ -168,14 +215,40 @@ public sealed class NativeInputRouter : IInputController, IDisposable
             () => _local.Key(key, down));
     }
 
+    /// <summary>
+    /// Arbitrary text, which never goes through the HID keyboard.
+    /// <para>
+    /// A boot keyboard sends key usages and there is no usage for an arbitrary character, so text
+    /// stays on character injection whatever the mouse and keyboard are doing. Passing null for the
+    /// HID attempt is the honest encoding of that: not "it failed", but "this path does not exist".
+    /// Turkish text works for exactly this reason.
+    /// </para>
+    /// </summary>
     public InputResult Text(string text) =>
         Route(
+            InputKind.Keyboard,
+            hid: null,
             new BrokerRequest { Op = BrokerProtocol.Ops.Text, Text = text },
             () => _local.Text(text));
 
     public InputResult Touch(int contactId, TouchAction action, int x, int y)
     {
+        var desktop = _local.VirtualDesktop;
+
         var result = Route(
+            InputKind.Touch,
+            _hid is null || desktop.Width <= 0 || desktop.Height <= 0
+                ? null
+                : () => _hid.Touch(
+                    action switch
+                    {
+                        TouchAction.Down => HidTouchPhase.Down,
+                        TouchAction.Move => HidTouchPhase.Move,
+                        TouchAction.Up => HidTouchPhase.Up,
+                        _ => HidTouchPhase.Cancel,
+                    },
+                    (double)(x - desktop.Left) / desktop.Width,
+                    (double)(y - desktop.Top) / desktop.Height),
             new BrokerRequest
             {
                 Op = BrokerProtocol.Ops.Touch,
@@ -216,7 +289,11 @@ public sealed class NativeInputRouter : IInputController, IDisposable
         return released + (response?.Released ?? 0);
     }
 
-    private InputResult Route(BrokerRequest request, Func<InputResult> local)
+    private InputResult Route(
+        InputKind kind,
+        Func<NativeInjectionResult>? hid,
+        BrokerRequest request,
+        Func<InputResult> local)
     {
         // The central gate, before any backend. Nothing below this line runs while the Secure
         // Desktop is up, whichever path would have carried it.
@@ -227,6 +304,22 @@ public sealed class NativeInputRouter : IInputController, IDisposable
             if (decision != InputPolicyDecision.Allow)
             {
                 return CentralInputPolicy.ToResult(decision);
+            }
+        }
+
+        // Tier one: the Nexus HID device, when it exists and every eligibility condition holds.
+        //
+        // Unsupported is not a failure here - it is a capability answer, and the honest response is
+        // to try the next tier. A HID mouse genuinely cannot position absolutely, and a backend with
+        // no digitizer genuinely cannot do touch.
+        if (hid is not null && HidEligible(kind))
+        {
+            var attempt = hid();
+
+            if (attempt.Delivery != NativeDelivery.Unsupported)
+            {
+                NoteHid(kind);
+                return WindowsInputController.Translate(attempt);
             }
         }
 
@@ -280,6 +373,56 @@ public sealed class NativeInputRouter : IInputController, IDisposable
             _logger.LogWarning(ex, "Neutralizing {Instance} failed; held state is not confirmed released.", instance);
             return false;
         }
+    }
+
+    /// <summary>
+    /// Per-kind virtual-HID state, in one line, computed from the same conditions the router routes
+    /// on rather than from anything that could disagree with them.
+    /// <para>
+    /// Reports what is <em>eligible</em>, never what exists on disk. A driver package sitting in the
+    /// repository is not a capability, and saying so would be the exact dishonesty this whole status
+    /// surface was rebuilt to avoid.
+    /// </para>
+    /// </summary>
+    private string DescribeVirtualHid()
+    {
+        if (_hid is null || _conditions is null)
+        {
+            return "Virtual HID: NOT_INSTALLED (no backend wired)";
+        }
+
+        var conditions = _conditions();
+
+        var mouse = VirtualHidEligibility.Evaluate(conditions, InputKind.Mouse);
+        var keyboard = VirtualHidEligibility.Evaluate(conditions, InputKind.Keyboard);
+        var touch = VirtualHidEligibility.Evaluate(conditions, InputKind.Touch);
+
+        if (!mouse.Eligible && !keyboard.Eligible && !touch.Eligible)
+        {
+            return $"Virtual HID: unavailable — {mouse.Describe()}";
+        }
+
+        return $"Virtual HID — mouse: {Describe(mouse)}, keyboard: {Describe(keyboard)}, touch: {Describe(touch)}; "
+            + "text always uses character injection";
+
+        static string Describe(VirtualHidVerdict verdict) =>
+            verdict.Eligible ? "READY" : verdict.Describe();
+    }
+
+    private readonly HashSet<InputKind> _hidKinds = [];
+
+    /// <summary>Logs a kind moving onto the HID path, once per kind rather than per report.</summary>
+    private void NoteHid(InputKind kind)
+    {
+        lock (_gate)
+        {
+            if (!_hidKinds.Add(kind))
+            {
+                return;
+            }
+        }
+
+        _logger.LogInformation("{Kind} input is now going through the Nexus HID device.", kind);
     }
 
     /// <summary>Logs the path changing, once, rather than the path in use, constantly.</summary>
