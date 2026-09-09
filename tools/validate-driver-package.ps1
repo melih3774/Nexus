@@ -19,14 +19,25 @@
     Release (default) or Debug.
 
 .PARAMETER StageRoot
-    Where to stage the package. Defaults to a temp directory, never the repository.
+    Where to stage the package. Defaults to the canonical location, artifacts\NexusHidPackage.
+
+    THE CANONICAL PACKAGE
+
+    A catalog is only meaningful next to the exact INF and DLL it hashes. Staging to a temp
+    directory meant the installer looked elsewhere and reported "catalog not generated" while a
+    perfectly good one existed - and the tempting fix, copying the .cat next to the unstamped INF,
+    would have produced a catalog that does not match its own package. So there is one canonical
+    output directory and both scripts use it.
+
+    artifacts\ is git-ignored: a stamped INF differs from the committed one by a date, and a signed
+    catalog is machine-specific. Neither belongs in the repository.
 #>
 [CmdletBinding()]
 param(
     [ValidateSet('Release', 'Debug')]
     [string] $Configuration = 'Release',
 
-    [string] $StageRoot = (Join-Path ([System.IO.Path]::GetTempPath()) 'NexusHidPackage')
+    [string] $StageRoot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -73,8 +84,11 @@ $dll = Join-Path $driverDir "x64\$Configuration\NexusHidDriver.dll"
 if (-not (Test-Path $dll)) { throw "expected output missing: $dll" }
 
 Write-Output '== Staging =='
-# Staged outside the repository: a stamped INF differs from the committed one by a date, and that
-# difference must never end up in a commit.
+# The canonical package directory. Git-ignored, so a stamped INF and a signed catalog never reach a
+# commit, but stable enough that the installer finds it without being told.
+if (-not $StageRoot) {
+    $StageRoot = Join-Path $repoRoot 'artifacts\NexusHidPackage'
+}
 if (Test-Path $StageRoot) { Remove-Item -Recurse -Force $StageRoot }
 New-Item -ItemType Directory -Force $StageRoot | Out-Null
 
@@ -103,5 +117,7 @@ Write-Output ''
 Write-Output '== Result =='
 Get-ChildItem $StageRoot | ForEach-Object { Write-Output ("   {0,-24} {1,8} bytes" -f $_.Name, $_.Length) }
 Write-Output ''
+Write-Output "Canonical package: $StageRoot"
 Write-Output 'Package is valid and UNSIGNED. Signing and installation are a separate, deliberate'
-Write-Output 'owner-driven pass - see docs/virtual-hid.md section 11. Nothing was installed.'
+Write-Output 'owner-driven pass - run tools\nexus-hid-install.ps1 -Action Install for the plan.'
+Write-Output 'Nothing was installed.'

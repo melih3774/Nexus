@@ -118,8 +118,6 @@ public sealed class RawInputListener : IDisposable
 
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<nint, RawInputListener> Windows = new();
 
-    private static int _classRegistered;
-
     /// <summary>
     /// Completed by the pump thread once registration has either succeeded or failed.
     /// <para>
@@ -277,15 +275,19 @@ public sealed class RawInputListener : IDisposable
             LpszClassName = className,
         };
 
-        if (Interlocked.CompareExchange(ref _classRegistered, 1, 0) == 0 && RegisterClassExW(ref wndClass) == 0)
+        // Always attempt registration and tolerate "already registered". A guard that registers only
+        // once looks tidier and is a race: a second listener can pass the guard and reach
+        // CreateWindowExW while the first is still inside RegisterClassExW, and creating a window on
+        // a class that does not exist yet fails. Letting the second registration fail with 1410 is
+        // race-free, because either way the class exists by the time the call returns.
+        if (RegisterClassExW(ref wndClass) == 0)
         {
             var error = Marshal.GetLastWin32Error();
 
-            // 1410 is "class already registered", which happens on a restart within one process and
-            // is not a failure.
+            // 1410 is "class already registered", which happens whenever a second listener starts
+            // and is not a failure.
             if (error != 1410)
             {
-                Interlocked.Exchange(ref _classRegistered, 0);
                 _startupDiagnostic = $"window class registration failed ({error})";
                 _logger.LogWarning("Raw Input attribution unavailable: {Reason}.", _startupDiagnostic);
                 _ready.Set();
