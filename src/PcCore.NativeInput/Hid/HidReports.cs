@@ -182,15 +182,18 @@ public readonly record struct HidDigitizerReport(
             flags |= 0x02;
         }
 
-        destination[0] = flags;
-        destination[1] = ContactId;
-        BinaryPrimitives.WriteUInt16LittleEndian(destination[2..], X);
-        BinaryPrimitives.WriteUInt16LittleEndian(destination[4..], Y);
+        // The digitizer is the one device that uses report ids, so the id leads the buffer. Mouse
+        // and keyboard reports have no such byte.
+        destination[0] = HidReportDescriptors.DigitizerInputReportId;
+        destination[1] = flags;
+        destination[2] = ContactId;
+        BinaryPrimitives.WriteUInt16LittleEndian(destination[3..], X);
+        BinaryPrimitives.WriteUInt16LittleEndian(destination[5..], Y);
 
         // Contact Count. One while a finger is present, zero once it has lifted: Windows uses the
         // count to know a frame is finished, and a lift that still claims one contact hangs.
-        destination[6] = TipSwitch || InRange ? (byte)1 : (byte)0;
+        destination[7] = TipSwitch || InRange ? (byte)1 : (byte)0;
 
-        BinaryPrimitives.WriteUInt16LittleEndian(destination[7..], ScanTime);
+        BinaryPrimitives.WriteUInt16LittleEndian(destination[8..], ScanTime);
     }
 }

@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Nexus HID source driver.
+
+  A UMDF2 driver, which is why ConfigurationType is DynamicLibrary: the output is
+  NexusHidDriver.dll loaded into WUDFHost.exe, not a .sys loaded into the kernel. That single fact
+  is what keeps this package outside Code Integrity signing, HVCI and Secure Boot enforcement. See
+  docs/virtual-hid.md sections 1 and 9.
+
+  WHY THIS USES THE v143 TOOLSET AND NOT WindowsApplicationForDrivers10.0
+
+  The WDK's MSBuild integration - the driver platform toolset, and with it automatic INF stamping
+  and the InfVerif build task - is delivered as a Visual Studio extension, and this machine has
+  Visual Studio Build Tools rather than full Visual Studio. The toolset is therefore not
+  registered, and a project asking for it fails with MSB8020 before it compiles a line.
+
+  Installing full Visual Studio to obtain one toolset would be a large component added for a build
+  property. Instead this project compiles and links against the WDK's own UMDF headers and import
+  libraries with the ordinary v143 toolset, which proves exactly what needs proving here: that the
+  driver source is syntactically valid and links against the real VhfUm and UMDF stub libraries.
+
+  What that does NOT do is run the WDK packaging pipeline. StampInf, Inf2Cat and InfVerif are
+  invoked directly instead - see tools/validate-driver-package.ps1 - so the INF is still stamped and
+  verified, just not by MSBuild. If full Visual Studio is ever installed, switching PlatformToolset
+  back to WindowsApplicationForDrivers10.0 and dropping the explicit paths below restores the
+  standard build with no source change.
+-->
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{7A3E9C41-2B5D-4F86-9E01-C4D7A8B25F13}</ProjectGuid>
+    <RootNamespace>NexusHidDriver</RootNamespace>
+    <TargetName>NexusHidDriver</TargetName>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+
+  <!-- Where the WDK put the pieces this driver needs. Pinned to the SDK version in use. -->
+  <PropertyGroup Label="WdkPaths">
+    <WdkRoot>$(ProgramFiles) (x86)\Windows Kits\10</WdkRoot>
+    <WdkRoot Condition="!Exists('$(WdkRoot)')">C:\Program Files (x86)\Windows Kits\10</WdkRoot>
+    <WdkVersion>10.0.26100.0</WdkVersion>
+    <UmdfVersion>2.33</UmdfVersion>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+
+  <PropertyGroup Condition="'$(Configuration)'=='Release'">
+    <UseDebugLibraries>false</UseDebugLibraries>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'">
+    <UseDebugLibraries>true</UseDebugLibraries>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <!--
+        Warnings are errors. A driver is the last place to carry one forward, and this one is small
+        enough that there is no excuse for any.
+      -->
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <!--
+        C4324 fires inside the WDK's own wdfrequest.h, which pads a struct for alignment on
+        purpose. Suppressed rather than lowering the warning level, so our own code keeps /W4.
+      -->
+      <DisableSpecificWarnings>4324</DisableSpecificWarnings>
+      <PreprocessorDefinitions>UMDF_USING_NTSTATUS;UMDF_VERSION_MAJOR=2;UMDF_VERSION_MINOR=33;_UNICODE;UNICODE;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(WdkRoot)\Include\wdf\umdf\$(UmdfVersion);$(WdkRoot)\Include\$(WdkVersion)\shared;$(WdkRoot)\Include\$(WdkVersion)\um;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <Link>
+      <AdditionalLibraryDirectories>$(WdkRoot)\Lib\wdf\umdf\x64\$(UmdfVersion);$(WdkRoot)\Lib\$(WdkVersion)\um\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <!--
+        VhfUm.lib is the user-mode half of the Virtual HID Framework. Its existence on disk is the
+        plainest possible answer to whether VHF supports a user-mode source driver.
+      -->
+      <!--
+        ntdll.lib supplies DbgPrintEx, which WdfDriverStubUm.lib references from its own entry
+        worker. The WDK driver toolset links it implicitly; building with v143 means naming it.
+      -->
+      <AdditionalDependencies>WdfDriverStubUm.lib;VhfUm.lib;ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <SubSystem>Windows</SubSystem>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <ItemGroup>
+    <ClCompile Include="Driver.c" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ClInclude Include="NexusHidProtocol.h" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="NexusHid.inf" />
+  </ItemGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+
+</Project>

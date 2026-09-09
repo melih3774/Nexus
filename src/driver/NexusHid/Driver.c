@@ -6,9 +6,13 @@
  * component in this package, which is why installing it does not require Code Integrity signing
  * and does not interact with HVCI. See docs/virtual-hid.md sections 1 and 18.
  *
- * NOT YET COMPILED. The WDK is not installed on the development machine, so this file has never
- * been through a compiler. It is written to be correct and is validated as far as text allows
- * (NexusHidPackageTests), but "it builds" is not among the things currently proven about it.
+ * COMPILED AND LINKED, NOT YET RUN. This builds clean against the real WDK UMDF 2.33 headers and
+ * links against the real VhfUm.lib. Writing it from documentation alone got two things wrong that
+ * only the compiler could find: WdfIoTargetWdmGetTargetFileHandle returns the handle rather than
+ * taking an out-parameter, and the handle has to come from a target opened
+ * WdfIoTargetOpenLocalTargetByFile rather than from the device's default I/O target. What remains
+ * unproven is everything that needs the driver installed: that it loads, that VHF accepts these
+ * descriptors, and that Windows enumerates the devices.
  *
  * THE SECURITY POSTURE OF THIS FILE
  *
@@ -22,6 +26,7 @@
 
 #include <windows.h>
 #include <wdf.h>
+#include <hidclass.h>   /* HID_XFER_PACKET. vhf.h includes nothing and depends on this. */
 #include <vhf.h>
 #include <initguid.h>
 
@@ -50,6 +55,14 @@ typedef struct _NEXUS_HID_DEVICE {
 typedef struct _NEXUS_CONTROL_CONTEXT {
     WDFDEVICE        Device;
     WDFWAITLOCK      Lock;
+
+    /*
+     * The local I/O target whose file handle VHF is given. Opened once and kept: VHF holds the
+     * handle for the lifetime of every device created against it, so a target opened per create
+     * call and closed afterwards would pull the handle out from under a live device.
+     */
+    WDFIOTARGET      IoTarget;
+
     NEXUS_HID_DEVICE Devices[NEXUS_HID_MAX_DEVICES];
 } NEXUS_CONTROL_CONTEXT;
 
@@ -58,7 +71,7 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(NEXUS_CONTROL_CONTEXT, ControlGetContext)
 EVT_WDF_DRIVER_DEVICE_ADD          NexusHidEvtDeviceAdd;
 EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL NexusHidEvtIoDeviceControl;
 EVT_WDF_DEVICE_CONTEXT_CLEANUP     NexusHidEvtDeviceCleanup;
-EVT_WDF_FILEOBJECT_CLEANUP         NexusHidEvtFileCleanup;
+EVT_WDF_FILE_CLEANUP               NexusHidEvtFileCleanup;
 
 static VOID NexusHidNeutralizeAll(_In_ NEXUS_CONTROL_CONTEXT* Control);
 
@@ -149,6 +162,7 @@ NexusHidInputReportLength(
     UINT32 reportSize = 0;
     UINT32 reportCount = 0;
     UINT16 index = 0;
+    BOOLEAN hasReportId = FALSE;
 
     while (index < Length) {
         UINT8 prefix = Descriptor[index++];
@@ -173,6 +187,7 @@ NexusHidInputReportLength(
         switch (prefix & 0xFC) {
         case 0x74:  /* REPORT_SIZE  */ reportSize = value; break;
         case 0x94:  /* REPORT_COUNT */ reportCount = value; break;
+        case 0x84:  /* REPORT_ID    */ hasReportId = TRUE; break;
         case 0x80:  /* INPUT        */ bits += reportSize * reportCount; break;
         default: break;
         }
@@ -182,7 +197,11 @@ NexusHidInputReportLength(
         }
     }
 
-    return (UINT16)((bits + 7) / 8);
+    /*
+     * A descriptor that declares report ids puts the id in the first byte of every report, and the
+     * buffer has to allow for it. The digitizer uses ids; the mouse and keyboard do not.
+     */
+    return (UINT16)(((bits + 7) / 8) + (hasReportId ? 1 : 0));
 }
 
 static NTSTATUS
@@ -227,11 +246,36 @@ NexusHidCreateDevice(
      * The user-mode VHF path. A UMDF driver passes a file handle where a KMDF driver passes a
      * device object - see VHF_CONFIG, whose FileHandle member is documented as "Required for
      * user-mode drivers".
+     *
+     * Two things here were wrong when this file was written from documentation alone, and the
+     * compiler found both. WdfIoTargetWdmGetTargetFileHandle RETURNS the handle and takes a single
+     * argument; it is not an NTSTATUS call with an out-parameter. And the handle must come from a
+     * target opened with WdfIoTargetOpenLocalTargetByFile, not from the device's default I/O
+     * target, which has no file object behind it.
      */
-    status = WdfIoTargetWdmGetTargetFileHandle(
-        WdfDeviceGetIoTarget(Control->Device),
-        &fileHandle);
-    if (!NT_SUCCESS(status)) {
+    if (Control->IoTarget == NULL) {
+        WDFIOTARGET ioTarget;
+        WDF_IO_TARGET_OPEN_PARAMS openParams;
+
+        status = WdfIoTargetCreate(Control->Device, WDF_NO_OBJECT_ATTRIBUTES, &ioTarget);
+        if (!NT_SUCCESS(status)) {
+            goto Failed;
+        }
+
+        WDF_IO_TARGET_OPEN_PARAMS_INIT_OPEN_BY_FILE(&openParams, NULL);
+
+        status = WdfIoTargetOpen(ioTarget, &openParams);
+        if (!NT_SUCCESS(status)) {
+            WdfObjectDelete(ioTarget);
+            goto Failed;
+        }
+
+        Control->IoTarget = ioTarget;
+    }
+
+    fileHandle = WdfIoTargetWdmGetTargetFileHandle(Control->IoTarget);
+    if (fileHandle == NULL) {
+        status = STATUS_DEVICE_NOT_READY;
         goto Failed;
     }
 

@@ -1,0 +1,8 @@
+x64/
+obj/
+*.dll
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.cat

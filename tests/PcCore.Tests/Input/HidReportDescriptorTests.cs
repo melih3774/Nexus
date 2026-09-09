@@ -9,10 +9,10 @@ namespace PcCore.Tests.Input;
 /// <para>
 /// <b>Why a parser in a test rather than a hand-checked comment.</b> The report length is arithmetic
 /// over the descriptor — sum of REPORT_SIZE times REPORT_COUNT across every INPUT item — and it is
-/// arithmetic nobody does correctly by eye. The first draft of the digitizer descriptor was
-/// annotated as a 7-byte report and is in fact 9; the comment was wrong and the constant was wrong
-/// with it. Recomputing from the bytes is the only version of this check that can fail when it
-/// should.
+/// arithmetic nobody does correctly by eye. The digitizer proves it twice over: the first draft was
+/// annotated and coded as a 7-byte report and was really 9, and adding the report id Windows
+/// requires made it 10. Both times the comment and the constant were wrong together, and both times
+/// only recomputing from the bytes caught it.
 /// </para>
 /// </summary>
 public sealed class HidReportDescriptorTests
@@ -34,7 +34,7 @@ public sealed class HidReportDescriptorTests
     }
 
     [Fact]
-    public void DigitizerReportIsNineBytes()
+    public void DigitizerReportIsTenBytes()
     {
         var sizes = HidDescriptorWalker.ReportSizes(HidReportDescriptors.Digitizer);
 
@@ -42,7 +42,7 @@ public sealed class HidReportDescriptorTests
     }
 
     [Fact]
-    public void DigitizerDeclaresAOneByteContactCountMaximumFeatureReport()
+    public void DigitizerDeclaresATwoByteContactCountMaximumFeatureReport()
     {
         var sizes = HidDescriptorWalker.ReportSizes(HidReportDescriptors.Digitizer);
 
@@ -120,11 +120,13 @@ internal static class HidDescriptorWalker
     private const byte EndCollection = 0xC0;
     private const byte ReportSize = 0x74;
     private const byte ReportCount = 0x94;
+    private const byte ReportId = 0x84;
 
     internal static Sizes ReportSizes(ReadOnlySpan<byte> descriptor)
     {
         int reportSize = 0, reportCount = 0;
         int inputBits = 0, outputBits = 0, featureBits = 0;
+        var hasReportId = false;
 
         foreach (var item in Items(descriptor))
         {
@@ -135,6 +137,9 @@ internal static class HidDescriptorWalker
                     break;
                 case ReportCount:
                     reportCount = (int)item.Value;
+                    break;
+                case ReportId:
+                    hasReportId = true;
                     break;
                 case Input:
                     inputBits += reportSize * reportCount;
@@ -148,7 +153,13 @@ internal static class HidDescriptorWalker
             }
         }
 
-        return new Sizes(Bytes(inputBits), Bytes(outputBits), Bytes(featureBits));
+        // A descriptor declaring report ids spends the first byte of every report on the id.
+        var idByte = hasReportId ? 1 : 0;
+
+        return new Sizes(
+            Bytes(inputBits) + idByte,
+            outputBits == 0 ? 0 : Bytes(outputBits) + idByte,
+            featureBits == 0 ? 0 : Bytes(featureBits) + idByte);
 
         static int Bytes(int bits) => (bits + 7) / 8;
     }

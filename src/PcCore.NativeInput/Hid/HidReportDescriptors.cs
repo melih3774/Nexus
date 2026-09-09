@@ -190,6 +190,7 @@ public static class HidReportDescriptors
         0x05, 0x0D,       // USAGE_PAGE (Digitizers)
         0x09, 0x04,       // USAGE (Touch Screen)
         0xA1, 0x01,       // COLLECTION (Application)
+        0x85, 0x01,       //   REPORT_ID (1)
 
         0x09, 0x22,       //   USAGE (Finger)
         0xA1, 0x02,       //   COLLECTION (Logical)
@@ -213,18 +214,32 @@ public static class HidReportDescriptors
         0x25, 0x7F,       //     LOGICAL_MAXIMUM (127)
         0x81, 0x02,       //     INPUT (Data,Var,Abs)
 
+        // X and Y carry the full set of global items Windows demands: logical range, physical
+        // range, unit and unit exponent. Declaring only the logical range — which is what the
+        // first draft did — makes the collection non-functional as a touch screen, because the
+        // host has no way to relate reported values to a surface.
         0x05, 0x01,       //     USAGE_PAGE (Generic Desktop)
+        0x15, 0x00,       //     LOGICAL_MINIMUM (0)
         0x26, 0xFF, 0x7F, //     LOGICAL_MAXIMUM (32767)
+        0x55, 0x0E,       //     UNIT_EXPONENT (-2)
+        0x65, 0x13,       //     UNIT (Inch, EngLinear)
+        0x35, 0x00,       //     PHYSICAL_MINIMUM (0)
+        0x46, 0xB5, 0x04, //     PHYSICAL_MAXIMUM (1205)  - 12.05 inches
         0x75, 0x10,       //     REPORT_SIZE (16)
         0x95, 0x01,       //     REPORT_COUNT (1)
         0x09, 0x30,       //     USAGE (X)
         0x81, 0x02,       //     INPUT (Data,Var,Abs)
+        0x46, 0x8A, 0x03, //     PHYSICAL_MAXIMUM (906)   - 9.06 inches
         0x09, 0x31,       //     USAGE (Y)
         0x81, 0x02,       //     INPUT (Data,Var,Abs)
 
         0xC0,             //   END_COLLECTION
 
         0x05, 0x0D,       //   USAGE_PAGE (Digitizers)
+        0x35, 0x00,       //   PHYSICAL_MINIMUM (0)
+        0x45, 0x00,       //   PHYSICAL_MAXIMUM (0)
+        0x65, 0x00,       //   UNIT (None)
+        0x55, 0x00,       //   UNIT_EXPONENT (0)
         0x09, 0x54,       //   USAGE (Contact Count)
         0x25, 0x7F,       //   LOGICAL_MAXIMUM (127)
         0x75, 0x08,       //   REPORT_SIZE (8)
@@ -242,6 +257,10 @@ public static class HidReportDescriptors
         0x65, 0x00,       //   UNIT (None)
         0x55, 0x00,       //   UNIT_EXPONENT (0)
 
+        // The Contact Count Maximum feature report. It sits in the top-level collection and not in
+        // the Finger collection, which Microsoft states explicitly, and it carries its own report
+        // id so the host can request it without ambiguity against the input report.
+        0x85, 0x02,       //   REPORT_ID (2)
         0x09, 0x55,       //   USAGE (Contact Count Maximum)
         0x25, 0x7F,       //   LOGICAL_MAXIMUM (127)
         0x75, 0x08,       //   REPORT_SIZE (8)
@@ -251,6 +270,12 @@ public static class HidReportDescriptors
         0xC0,             // END_COLLECTION
     ];
 
+    /// <summary>The digitizer's input report id. Mouse and keyboard use no report ids at all.</summary>
+    public const byte DigitizerInputReportId = 1;
+
+    /// <summary>The report id of the Contact Count Maximum feature report.</summary>
+    public const byte DigitizerFeatureReportId = 2;
+
     /// <summary>Bytes in one mouse input report.</summary>
     public const int MouseReportLength = 7;
 
@@ -258,14 +283,14 @@ public static class HidReportDescriptors
     public const int KeyboardReportLength = 8;
 
     /// <summary>
-    /// Bytes in one digitizer input report: tip and range flags, contact id, X, Y, contact count,
-    /// scan time. <c>HidDescriptorInputReportLength</c> in the tests recomputes this from the
-    /// descriptor itself rather than trusting the arithmetic here.
+    /// Bytes in one digitizer input report: report id, tip and range flags, contact id, X, Y,
+    /// contact count, scan time. The tests recompute this from the descriptor itself rather than
+    /// trusting the arithmetic here — which has now been wrong twice, at 7 and again at 9.
     /// </summary>
-    public const int DigitizerReportLength = 9;
+    public const int DigitizerReportLength = 10;
 
-    /// <summary>Bytes in the digitizer's Contact Count Maximum feature report.</summary>
-    public const int DigitizerFeatureReportLength = 1;
+    /// <summary>Bytes in the Contact Count Maximum feature report: its report id, then the value.</summary>
+    public const int DigitizerFeatureReportLength = 2;
 
     /// <summary>How many contacts the digitizer descriptor promises, answered in the feature report.</summary>
     public const byte MaxContacts = 1;
