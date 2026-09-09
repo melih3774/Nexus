@@ -88,6 +88,12 @@ public sealed class SecurityActivityMonitor : IDisposable
 {
     private readonly ISecurityActivityDetector _detector;
     private readonly INexusInputAttribution _attribution;
+
+    /// <summary>
+    /// What Raw Input saw, consulted to attribute device-originated input to a Nexus HID device.
+    /// Null until a virtual-HID backend exists on this machine, and harmless when null.
+    /// </summary>
+    private readonly IRawInputSourceLedger? _rawInput;
     private readonly ISecurityStateService _state;
     private readonly IEventStream _events;
     private readonly DetectionOptions _options;
@@ -122,10 +128,12 @@ public sealed class SecurityActivityMonitor : IDisposable
         IEventStream events,
         DetectionOptions options,
         ILogger<SecurityActivityMonitor> logger,
-        TimeProvider? time = null)
+        TimeProvider? time = null,
+        IRawInputSourceLedger? rawInput = null)
     {
         _detector = detector;
         _attribution = attribution;
+        _rawInput = rawInput;
         _state = state;
         _events = events;
         _options = options;
@@ -241,6 +249,30 @@ public sealed class SecurityActivityMonitor : IDisposable
         //    incident's timeline — which is the same reason the signature check has always been
         //    first.
         if (_attribution.TryClaim(activity.Kind, _time.GetUtcNow()))
+        {
+            Interlocked.Increment(ref _ignoredNexusInput);
+            return;
+        }
+
+        // 3b. The device-identity rule, for input that reached the desktop through a device rather
+        //     than through SendInput.
+        //
+        //     A virtual HID report is indistinguishable from hardware by the time it reaches this
+        //     hook, which is the entire point of the virtual-HID work and exactly why neither rule
+        //     above can see it: there is no dwExtraInfo to carry a tag, and Nexus is not declaring
+        //     the event because Windows, not Nexus, produced it from a device.
+        //
+        //     What is distinguishable is which device it came from, and Raw Input reports that.
+        //     RawInputSourceLedger holds the observations; this consults them. Note the shape: the
+        //     hook is still the only event source feeding this method, so a physical action produces
+        //     exactly one event here whether or not Raw Input also saw it. That is deliberate and it
+        //     is the correction to an earlier design that would have made Raw Input a second source
+        //     and doubled every physical action.
+        //
+        //     Fails closed by construction: an empty or unhealthy ledger attributes nothing, so a
+        //     listener that stopped turns Nexus HID input back into a person rather than turning a
+        //     person into Nexus.
+        if (_rawInput is not null && _rawInput.TryAttributeToNexus(activity.Kind, _time.GetUtcNow()))
         {
             Interlocked.Increment(ref _ignoredNexusInput);
             return;

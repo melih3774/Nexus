@@ -43,12 +43,19 @@ public readonly record struct RawInputObservation(
 /// the thing that survives.
 /// </para>
 /// <para>
-/// <b>The two mechanisms do not overlap, which is what avoids double-counting.</b> Raw Input reports
-/// events that came from a device. <c>SendInput</c> does not go through a device, so it produces no
-/// <c>WM_INPUT</c> at all — measured, not assumed, by <c>RawInputSeesPhysicalDevicesOnly</c>. So the
-/// division is clean: injected input is identified by the tag as it always was, and device input is
-/// identified by its device. Nothing needs correlating by timestamp, and no single physical action
-/// can be counted twice, because only one of the two paths ever sees it.
+/// <b>This listener is an oracle, not an event source — and that correction matters.</b> It was
+/// first written believing the hook and Raw Input never observe the same event. That is true only
+/// for <c>SendInput</c>, which goes through no device and raises no <c>WM_INPUT</c>. It is false for
+/// everything else: a physical click raises a hook event <em>and</em> a <c>WM_INPUT</c>, and so will
+/// a Nexus HID report, because a virtual HID device is a real device. Feeding this into the security
+/// monitor as a second source would therefore have doubled every physical action.
+/// </para>
+/// <para>
+/// So the hook stays the only event stream into <c>SecurityActivityMonitor</c>, preserving every
+/// existing coalescing, noise and incident rule, and what this listener feeds is
+/// <c>RawInputSourceLedger</c> — a bounded record of "a device Nexus published just produced input
+/// of this kind" that the monitor consults. One observation excuses one hook event, within a
+/// window, and an empty or unhealthy ledger excuses nothing.
 /// </para>
 /// <para>
 /// <b>A message-only window, on its own thread.</b> Raw Input is delivered as a window message, and
