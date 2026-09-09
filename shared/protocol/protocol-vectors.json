@@ -163,6 +163,15 @@
     "secure_desktop_active": false,
     "broker_version": "0.8.0",
     "diagnostic": null,
+    "backends": {
+      "mouse": "ELEVATED_INJECTION",
+      "keyboard": "ELEVATED_INJECTION",
+      "touch": "ELEVATED_INJECTION",
+      "text_uses_character_injection": true,
+      "uniform": true
+    },
+    "backend_summary": "Mouse: Elevated injection \u00B7 Keyboard: Elevated injection \u00B7 Touch: Elevated injection \u2014 No virtual HID backend is installed.",
+    "virtual_hid_diagnostic": null,
     "summary": "Native input: ready"
   },
   "input_touch_actions": [

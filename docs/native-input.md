@@ -56,6 +56,17 @@ could share one copy.
 
 ## 3. Virtual HID Framework: researched, and blocked
 
+> **Superseded — read [`virtual-hid.md` §1](virtual-hid.md) first.** The conclusion of this section
+> is wrong. It rests on the quote below, which is still published on Microsoft's conceptual page and
+> is contradicted by their own DDI reference for `VHF_CONFIG`: that structure has a `FileHandle`
+> member documented as "Required for user-mode drivers", and VHF supports a **UMDF2 user-mode** HID
+> source driver. A user-mode driver is not gated by HVCI or Secure Boot, so the three blockers this
+> section records apply to a KMDF kernel driver and not to the design Nexus would actually build.
+> The remaining barrier is driver-package signing, which is a price rather than an impossibility.
+>
+> The measurements below are still accurate and still worth keeping; it is the inference from them
+> that was too strong.
+
 Per [Microsoft's VHF documentation][vhf]:
 
 > In this release, VHF supports a HID source driver only in kernel mode.
