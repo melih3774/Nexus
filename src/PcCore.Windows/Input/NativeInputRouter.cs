@@ -30,19 +30,58 @@ public sealed class NativeInputRouter : IInputController, IDisposable
     private readonly ILogger<NativeInputRouter> _logger;
     private readonly Lock _gate = new();
 
+    /// <summary>
+    /// The desktop gate and held-state ownership, applied before any backend.
+    /// <para>
+    /// Optional so that every existing construction of this class keeps working unchanged; the host
+    /// supplies it, and when it is absent the router behaves exactly as it did before. That is not a
+    /// loophole in the policy — a router built without it is one nothing routes remote input
+    /// through — but it does keep this change from rewriting a dozen test harnesses.
+    /// </para>
+    /// </summary>
+    private readonly CentralInputPolicy? _policy;
+
+    private readonly RemoteInputOwnership? _ownership;
+
     private bool _usingBroker;
 
     public NativeInputRouter(
         BrokerInputChannel broker,
         WindowsInputController local,
         NativeInputInstaller installer,
-        ILogger<NativeInputRouter> logger)
+        ILogger<NativeInputRouter> logger,
+        CentralInputPolicy? policy = null,
+        RemoteInputOwnership? ownership = null)
     {
         _broker = broker;
         _local = local;
         _installer = installer;
         _logger = logger;
+        _policy = policy;
+        _ownership = ownership;
     }
+
+    /// <summary>
+    /// Which backend instance is carrying input right now.
+    /// <para>
+    /// The generation advances whenever the path changes, so held state recorded against one
+    /// instance can never be confused with state belonging to the path that replaced it.
+    /// </para>
+    /// </summary>
+    public BackendInstance CurrentInstance
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return new BackendInstance(
+                    _usingBroker ? InputBackend.ElevatedInjection : InputBackend.LocalInjection,
+                    _generation);
+            }
+        }
+    }
+
+    private int _generation = 1;
 
     public (int Left, int Top, int Width, int Height) VirtualDesktop => _local.VirtualDesktop;
 
@@ -179,6 +218,18 @@ public sealed class NativeInputRouter : IInputController, IDisposable
 
     private InputResult Route(BrokerRequest request, Func<InputResult> local)
     {
+        // The central gate, before any backend. Nothing below this line runs while the Secure
+        // Desktop is up, whichever path would have carried it.
+        if (_policy is not null)
+        {
+            var decision = _policy.Evaluate(NeutralizeCurrent);
+
+            if (decision != InputPolicyDecision.Allow)
+            {
+                return CentralInputPolicy.ToResult(decision);
+            }
+        }
+
         var response = _broker.Send(request);
 
         if (response is null)
@@ -194,9 +245,48 @@ public sealed class NativeInputRouter : IInputController, IDisposable
         return WindowsInputController.Translate(new NativeInjectionResult(delivery, response.Diagnostic));
     }
 
+    /// <summary>
+    /// Releases everything the named instance holds, through that instance and no other.
+    /// <para>
+    /// Both injection paths ultimately reach the desktop through <c>SendInput</c>, so either can
+    /// release what the other pressed — which is why <see cref="ReleaseAllHeld"/> has always simply
+    /// released both. That stops being true for a HID backend, whose held state lives in a device
+    /// rather than in a message, and this method exists so the distinction has somewhere to live
+    /// before that backend arrives.
+    /// </para>
+    /// </summary>
+    private bool NeutralizeCurrent(BackendInstance instance)
+    {
+        try
+        {
+            switch (instance.Backend)
+            {
+                case InputBackend.ElevatedInjection:
+                    return _broker.Send(new BrokerRequest { Op = BrokerProtocol.Ops.ReleaseAll }) is not null;
+
+                case InputBackend.LocalInjection:
+                    _local.ReleaseAllHeld();
+                    return true;
+
+                default:
+                    // A HID backend releases through its own device or not at all. Nothing here can
+                    // do it on that backend's behalf, and claiming otherwise is the failure this
+                    // whole ownership model exists to prevent.
+                    return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Neutralizing {Instance} failed; held state is not confirmed released.", instance);
+            return false;
+        }
+    }
+
     /// <summary>Logs the path changing, once, rather than the path in use, constantly.</summary>
     private void Note(bool usingBroker)
     {
+        BackendInstance previous;
+
         lock (_gate)
         {
             if (_usingBroker == usingBroker)
@@ -204,7 +294,31 @@ public sealed class NativeInputRouter : IInputController, IDisposable
                 return;
             }
 
+            previous = new BackendInstance(
+                _usingBroker ? InputBackend.ElevatedInjection : InputBackend.LocalInjection,
+                _generation);
+
             _usingBroker = usingBroker;
+
+            // A new generation for the path being switched to. Anything still recorded against the
+            // old one belongs to a backend that is no longer carrying input.
+            _generation++;
+        }
+
+        // Neutralise before the switch takes effect, never after. Releasing through the backend that
+        // pressed something is the invariant; doing it in the other order is how a key ends up held
+        // by a path nothing talks to any more.
+        if (_ownership is not null && !_ownership.Held.IsNeutral)
+        {
+            var outcome = _ownership.NeutralizeForSwitch(NeutralizeCurrent);
+
+            if (outcome == RouteSwitchResult.Uncertain)
+            {
+                _logger.LogWarning(
+                    "Input path changed while {Instance} held state that could not be confirmed released; "
+                    + "further input is paused until that backend returns and accepts a neutral state.",
+                    previous);
+            }
         }
 
         if (usingBroker)

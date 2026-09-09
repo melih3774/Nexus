@@ -317,6 +317,12 @@ public static class Program
         // rather than through SendInput. The ledger is what the security monitor consults; the
         // service is what actually feeds it. Both are registered here for the same reason the
         // declaration ledger above is: two halves of the system have to be talking about one object.
+        // The central input policy and the held-state ownership it protects. Registered as
+        // singletons so the router, the diagnostics and the shutdown path all reason about one
+        // set of held state rather than three copies of the question.
+        services.AddSingleton<RemoteInputOwnership>();
+        services.AddSingleton<CentralInputPolicy>();
+
         services.AddSingleton<NexusHidDeviceRegistry>();
         services.AddSingleton<RawInputSourceLedger>();
         services.AddSingleton<IRawInputSourceLedger>(p => p.GetRequiredService<RawInputSourceLedger>());
