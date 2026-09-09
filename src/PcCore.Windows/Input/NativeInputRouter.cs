@@ -283,8 +283,38 @@ public sealed class NativeInputRouter : IInputController, IDisposable
     /// </summary>
     public int ReleaseAllHeld()
     {
+        // The HID path first, and through its own device. This method is where phone disconnect,
+        // authenticated session loss and explicit release all arrive, so it is the one place that
+        // has to get the ordering right: a HID device holding a modifier is not released by either
+        // injection path below it.
+        var hidReleased = false;
+
+        if (_hid is not null)
+        {
+            hidReleased = _hid.Neutralize();
+
+            if (!hidReleased)
+            {
+                _logger.LogWarning(
+                    "The Nexus HID backend did not confirm release; held device state is not known to be clear.");
+            }
+        }
+
         var released = _local.ReleaseAllHeld();
         var response = _broker.Send(new BrokerRequest { Op = BrokerProtocol.Ops.ReleaseAll });
+
+        // Ownership is only forgotten when every path that could be holding something confirmed it
+        // let go. Forgetting on an unconfirmed release is precisely the lie the ownership model
+        // exists to refuse.
+        if (_ownership is not null && (_hid is null || hidReleased))
+        {
+            _ownership.Forget();
+        }
+
+        lock (_gate)
+        {
+            _hidKinds.Clear();
+        }
 
         return released + (response?.Released ?? 0);
     }
@@ -320,6 +350,28 @@ public sealed class NativeInputRouter : IInputController, IDisposable
             {
                 NoteHid(kind);
                 return WindowsInputController.Translate(attempt);
+            }
+        }
+        else if (_hid is not null && WasUsingHid())
+        {
+            // HID was carrying input and has just stopped being eligible - attribution went
+            // unhealthy, the driver vanished, the desktop changed, or a capability disappeared.
+            // Whatever it was holding is released through the HID device before anything else
+            // carries input, because nothing below can release it afterwards.
+            var released = _hid.Neutralize();
+
+            lock (_gate)
+            {
+                _hidKinds.Clear();
+            }
+
+            _logger.LogWarning(
+                "Virtual HID stopped being eligible; held HID state {Outcome} and input has fallen back.",
+                released ? "was neutralized" : "could NOT be confirmed released");
+
+            if (!released)
+            {
+                _ownership?.NeutralizeForSwitch(_ => false);
             }
         }
 
@@ -411,6 +463,15 @@ public sealed class NativeInputRouter : IInputController, IDisposable
 
     private readonly HashSet<InputKind> _hidKinds = [];
 
+    /// <summary>True when any kind was last carried by the HID path.</summary>
+    private bool WasUsingHid()
+    {
+        lock (_gate)
+        {
+            return _hidKinds.Count > 0;
+        }
+    }
+
     /// <summary>Logs a kind moving onto the HID path, once per kind rather than per report.</summary>
     private void NoteHid(InputKind kind)
     {
@@ -476,5 +537,24 @@ public sealed class NativeInputRouter : IInputController, IDisposable
         }
     }
 
-    public void Dispose() => _broker.Dispose();
+    /// <summary>
+    /// Shutdown. Releases through every path, HID first, so PC Core exiting cannot leave a device
+    /// holding a key.
+    /// </summary>
+    public void Dispose()
+    {
+        // Release before tearing anything down. A process that exits while a HID device holds a
+        // modifier leaves Windows believing a key is down, with nothing left running that could
+        // clear it.
+        try
+        {
+            ReleaseAllHeld();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Releasing held input during shutdown failed.");
+        }
+
+        _broker.Dispose();
+    }
 }

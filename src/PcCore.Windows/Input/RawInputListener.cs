@@ -96,8 +96,29 @@ public sealed class RawInputListener : IDisposable
 
     private Thread? _thread;
     private nint _window;
-    private WndProc? _wndProc;   // held so the delegate is not collected while Windows holds it
     private volatile bool _running;
+
+    /// <summary>
+    /// The window procedure, static and kept alive for the life of the process.
+    /// <para>
+    /// <b>This was a real crash, and an instructive one.</b> The first version held the delegate in
+    /// an instance field, which looks correct: the instance keeps it alive while Windows holds the
+    /// pointer. But a window <em>class</em> is process-global and registered once, and its procedure
+    /// pointer is baked in at registration. A second listener therefore got "class already
+    /// registered" and created a window whose procedure still pointed at the first listener's
+    /// delegate — which was collected as soon as that listener was disposed. The next message
+    /// crashed the process with "a callback was made on a garbage collected delegate".
+    /// </para>
+    /// <para>
+    /// So the procedure is static, lives as long as the class does, and dispatches to whichever
+    /// instance owns the window the message arrived on.
+    /// </para>
+    /// </summary>
+    private static readonly WndProc SharedProcedure = StaticWindowProcedure;
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<nint, RawInputListener> Windows = new();
+
+    private static int _classRegistered;
 
     /// <summary>
     /// Completed by the pump thread once registration has either succeeded or failed.
@@ -246,17 +267,17 @@ public sealed class RawInputListener : IDisposable
     {
         const string className = "NexusRawInputSink";
 
-        _wndProc = WindowProcedure;
+        var instance = GetModuleHandleW(null);
 
         var wndClass = new WndClassEx
         {
             CbSize = (uint)Marshal.SizeOf<WndClassEx>(),
-            LpfnWndProc = Marshal.GetFunctionPointerForDelegate(_wndProc),
-            HInstance = GetModuleHandleW(null),
+            LpfnWndProc = Marshal.GetFunctionPointerForDelegate(SharedProcedure),
+            HInstance = instance,
             LpszClassName = className,
         };
 
-        if (RegisterClassExW(ref wndClass) == 0)
+        if (Interlocked.CompareExchange(ref _classRegistered, 1, 0) == 0 && RegisterClassExW(ref wndClass) == 0)
         {
             var error = Marshal.GetLastWin32Error();
 
@@ -264,6 +285,7 @@ public sealed class RawInputListener : IDisposable
             // is not a failure.
             if (error != 1410)
             {
+                Interlocked.Exchange(ref _classRegistered, 0);
                 _startupDiagnostic = $"window class registration failed ({error})";
                 _logger.LogWarning("Raw Input attribution unavailable: {Reason}.", _startupDiagnostic);
                 _ready.Set();
@@ -273,7 +295,12 @@ public sealed class RawInputListener : IDisposable
         }
 
         _window = CreateWindowExW(0, className, className, 0, 0, 0, 0, 0,
-            HwndMessage, IntPtr.Zero, wndClass.HInstance, IntPtr.Zero);
+            HwndMessage, IntPtr.Zero, instance, IntPtr.Zero);
+
+        if (_window != IntPtr.Zero)
+        {
+            Windows[_window] = this;
+        }
 
         if (_window == IntPtr.Zero)
         {
@@ -331,6 +358,12 @@ public sealed class RawInputListener : IDisposable
         }
     }
 
+    /// <summary>Routes a message to the listener that owns its window, or defaults it.</summary>
+    private static nint StaticWindowProcedure(nint hwnd, uint message, nint wParam, nint lParam) =>
+        Windows.TryGetValue(hwnd, out var listener)
+            ? listener.WindowProcedure(hwnd, message, wParam, lParam)
+            : DefWindowProcW(hwnd, message, wParam, lParam);
+
     private nint WindowProcedure(nint hwnd, uint message, nint wParam, nint lParam)
     {
         switch (message)
@@ -348,6 +381,7 @@ public sealed class RawInputListener : IDisposable
                 return 0;
 
             case WmDestroy:
+                Windows.TryRemove(hwnd, out _);
                 PostQuitMessage(0);
                 return 0;
         }
