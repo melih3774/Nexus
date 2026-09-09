@@ -19,6 +19,7 @@ using PcCore.Capabilities.System;
 using PcCore.Transport.Loopback;
 using PcCore.Transport.Remote;
 using PcCore.Windows;
+using PcCore.NativeInput.Hid;
 using PcCore.Windows.Input;
 
 [assembly: SupportedOSPlatform("windows10.0.17763.0")]
@@ -311,6 +312,16 @@ public static class Program
         services.AddSingleton(attributionOptions);
         services.AddSingleton<NexusInputAttribution>();
         services.AddSingleton<INexusInputAttribution>(p => p.GetRequiredService<NexusInputAttribution>());
+
+        // The second attribution mechanism, for input that reaches the desktop through a device
+        // rather than through SendInput. The ledger is what the security monitor consults; the
+        // service is what actually feeds it. Both are registered here for the same reason the
+        // declaration ledger above is: two halves of the system have to be talking about one object.
+        services.AddSingleton<NexusHidDeviceRegistry>();
+        services.AddSingleton<RawInputSourceLedger>();
+        services.AddSingleton<IRawInputSourceLedger>(p => p.GetRequiredService<RawInputSourceLedger>());
+        services.AddSingleton<RawInputListener>();
+        services.AddSingleton<RawInputAttributionService>();
         services.AddSingleton<DesktopStreamService>();
         services.AddSingleton<IInputService, InputService>();
         services.AddSingleton<RemoteIndicatorService>();
@@ -399,11 +410,19 @@ public static class Program
     {
         var incidents = services.GetRequiredService<SecurityIncidentService>();
         var monitor = services.GetRequiredService<SecurityActivityMonitor>();
+        var attribution = services.GetRequiredService<RawInputAttributionService>();
         var configuration = services.GetRequiredService<SecurityConfigurationStore>().Current;
 
         // Recovery first: a restart during an incident continues that incident rather than opening
         // a second one for the same event.
         incidents.Recover();
+
+        // Attribution before detection. The monitor consults the ledger on its very first event, so
+        // starting the other order leaves a window where device-originated Nexus input would be
+        // attributed to a person. The window is small and the consequence is a false incident, which
+        // is the safe direction - but it is avoidable, so it is avoided.
+        attribution.Start();
+
         monitor.Start();
 
         logger.LogInformation(

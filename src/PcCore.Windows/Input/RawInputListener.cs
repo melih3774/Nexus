@@ -99,6 +99,24 @@ public sealed class RawInputListener : IDisposable
     private WndProc? _wndProc;   // held so the delegate is not collected while Windows holds it
     private volatile bool _running;
 
+    /// <summary>
+    /// Completed by the pump thread once registration has either succeeded or failed.
+    /// <para>
+    /// <b>This exists because of a flaky test, and the flake was real.</b> The first version had
+    /// <see cref="Start"/> spawn the thread and return immediately, leaving callers to poll
+    /// <see cref="IsRunning"/> with a sleep. That is a race, not a slow start: whether the pump had
+    /// reached <c>RegisterRawInputDevices</c> before the caller looked depended on the scheduler. A
+    /// suite that passes on one run and fails on the next is the symptom; guessing at a longer sleep
+    /// would have hidden it rather than fixed it.
+    /// </para>
+    /// </summary>
+    private readonly ManualResetEventSlim _ready = new(false);
+
+    /// <summary>Completed by the pump thread as it leaves the message loop.</summary>
+    private readonly ManualResetEventSlim _stopped = new(false);
+
+    private volatile string? _startupDiagnostic;
+
     public RawInputListener(
         ILogger<RawInputListener> logger,
         NexusHidDeviceRegistry registry,
@@ -210,7 +228,19 @@ public sealed class RawInputListener : IDisposable
             _thread.SetApartmentState(ApartmentState.STA);
             _thread.Start();
         }
+
+        // Block until the pump has actually registered, or has failed to. Callers - and tests - then
+        // observe a settled state rather than a moving one. The timeout is a backstop against a
+        // thread that never reaches either outcome; it is not the normal path.
+        if (!_ready.Wait(TimeSpan.FromSeconds(10)))
+        {
+            _startupDiagnostic = "the Raw Input listener did not finish starting within ten seconds";
+            _logger.LogWarning("Raw Input attribution unavailable: {Reason}", _startupDiagnostic);
+        }
     }
+
+    /// <summary>Why the listener is not running, when it is not. Null while healthy.</summary>
+    public string? Diagnostic => _startupDiagnostic;
 
     private void Pump()
     {
@@ -234,7 +264,10 @@ public sealed class RawInputListener : IDisposable
             // is not a failure.
             if (error != 1410)
             {
-                _logger.LogWarning("Raw Input attribution unavailable: window class registration failed ({Error}).", error);
+                _startupDiagnostic = $"window class registration failed ({error})";
+                _logger.LogWarning("Raw Input attribution unavailable: {Reason}.", _startupDiagnostic);
+                _ready.Set();
+                _stopped.Set();
                 return;
             }
         }
@@ -244,9 +277,10 @@ public sealed class RawInputListener : IDisposable
 
         if (_window == IntPtr.Zero)
         {
-            _logger.LogWarning(
-                "Raw Input attribution unavailable: message-only window creation failed ({Error}).",
-                Marshal.GetLastWin32Error());
+            _startupDiagnostic = $"message-only window creation failed ({Marshal.GetLastWin32Error()})";
+            _logger.LogWarning("Raw Input attribution unavailable: {Reason}.", _startupDiagnostic);
+            _ready.Set();
+            _stopped.Set();
             return;
         }
 
@@ -263,26 +297,38 @@ public sealed class RawInputListener : IDisposable
 
         if (!RegisterRawInputDevices(devices, (uint)devices.Length, (uint)Marshal.SizeOf<RawInputDevice>()))
         {
-            _logger.LogWarning(
-                "Raw Input attribution unavailable: registration failed ({Error}).",
-                Marshal.GetLastWin32Error());
+            _startupDiagnostic = $"raw input registration failed ({Marshal.GetLastWin32Error()})";
+            _logger.LogWarning("Raw Input attribution unavailable: {Reason}.", _startupDiagnostic);
             DestroyWindow(_window);
             _window = IntPtr.Zero;
+            _ready.Set();
+            _stopped.Set();
             return;
         }
 
         _running = true;
+        _startupDiagnostic = null;
+
+        // Registration has succeeded. Only now is the listener genuinely usable, and only now may a
+        // caller proceed.
+        _ready.Set();
         _logger.LogInformation(
             "Raw Input attribution running: watching {Count} device(s) for source identity.",
             KnownDeviceCount);
 
-        while (GetMessageW(out var message, IntPtr.Zero, 0, 0) > 0)
+        try
         {
-            TranslateMessage(ref message);
-            DispatchMessageW(ref message);
+            while (GetMessageW(out var message, IntPtr.Zero, 0, 0) > 0)
+            {
+                TranslateMessage(ref message);
+                DispatchMessageW(ref message);
+            }
         }
-
-        _running = false;
+        finally
+        {
+            _running = false;
+            _stopped.Set();
+        }
     }
 
     private nint WindowProcedure(nint hwnd, uint message, nint wParam, nint lParam)
@@ -451,8 +497,31 @@ public sealed class RawInputListener : IDisposable
             : null;
     }
 
+    /// <summary>
+    /// Stops the pump and waits for it to actually be gone.
+    /// <para>
+    /// Waits on the pump's own completion signal rather than only joining the thread, so a caller
+    /// that returns from here knows the message loop has exited and no further observations can
+    /// arrive. Safe to call twice, and safe when Start was never called.
+    /// </para>
+    /// </summary>
     public void Dispose()
     {
+        Thread? thread;
+
+        lock (_gate)
+        {
+            thread = _thread;
+            _thread = null;
+        }
+
+        if (thread is null)
+        {
+            _ready.Dispose();
+            _stopped.Dispose();
+            return;
+        }
+
         var window = _window;
 
         if (window != IntPtr.Zero)
@@ -460,10 +529,14 @@ public sealed class RawInputListener : IDisposable
             PostMessageW(window, WmClose, IntPtr.Zero, IntPtr.Zero);
         }
 
-        _thread?.Join(TimeSpan.FromSeconds(2));
-        _thread = null;
+        _stopped.Wait(TimeSpan.FromSeconds(5));
+        thread.Join(TimeSpan.FromSeconds(2));
+
         _window = IntPtr.Zero;
         _running = false;
+
+        _ready.Dispose();
+        _stopped.Dispose();
     }
 
     // ------------------------------------------------------------------ interop
