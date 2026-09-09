@@ -1,11 +1,14 @@
-# Virtual HID: what was researched, what was built, and what is blocked on a purchase
+# Virtual HID: what was researched, what was built, and what is deferred to one install pass
 
 This is the record behind the v0.9 virtual-HID work. It supersedes the conclusion of
-[`native-input.md` §3](native-input.md), which is now wrong in one important way — see §1.
+[`native-input.md` §3](native-input.md), which is wrong in one important way — see §1 — and
+corrects itself once, in §9, where §3 turned out to be answering the wrong question.
 
-Nothing in this pass installed a driver, registered a task, changed Secure Boot, HVCI, UAC or
-driver-signing state, or bought a licence. Everything below is either research, code that compiles
-and is tested, or a documented decision.
+Sections 1–8 are the research and foundation pass. Sections 9–12 are the Nexus-owned backend that
+followed from it.
+
+Nothing in either pass installed a driver, registered a task, changed Secure Boot, HVCI, UAC,
+certificate stores or driver-signing state, or bought a licence.
 
 ---
 
@@ -110,14 +113,16 @@ Current requirements, not remembered ones:
 | **Azure Trusted Signing** (now Azure Artifact Signing) | $9.99/month basic, 5,000 signatures | **Does not substitute** for EV in the Hardware Dev Center driver-submission path |
 | **Test signing** | Local development only; requires machine-level changes | Not acceptable here |
 
-So the realistic barrier for a **custom Nexus UMDF2 VHF driver** is an **EV certificate at roughly
-$290–$409/year plus a Partner Center hardware account**, after which attestation signing is free and
-typically completes within hours.
+> **Corrected — this table describes public distribution, not personal installation.** The first
+> draft of this section treated an EV certificate as a precondition for a custom Nexus driver at
+> all. It is not. Everything above applies to **distributing** a driver package to other people's
+> machines through Microsoft. Installing a driver the owner built, on the owner's own PC, is a
+> different question with a different answer — see §9.
 
-Note the asymmetry: LizardByte's lifetime licence is **$49.99 once**; a self-signed Nexus driver is
-**~$300+/year, every year**. The custom driver buys device naming, a touch digitizer, and no
-third-party entitlement dependency. Whether that is worth roughly six times the cost per year is the
-owner's call, and it is the central open decision of this pass.
+So the realistic barrier for **publicly distributing** a Nexus UMDF2 VHF driver is an **EV
+certificate at roughly $290–$409/year plus a Partner Center hardware account**, after which
+attestation signing is free and typically completes within hours. Nexus is a personal-use,
+single-owner, single-PC project and does not currently need that.
 
 ## 4. What was built
 
@@ -268,3 +273,121 @@ start using Nexus.
 
 [vhf-concept]: https://learn.microsoft.com/en-us/windows-hardware/drivers/hid/virtual-hid-framework--vhf-
 [vhf-config]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/vhf/ns-vhf-_vhf_config
+
+---
+
+# v0.9 pass: the Nexus-owned backend
+
+The product decision is a Nexus-owned UMDF2 + VHF driver. libvirtualhid is not adopted (§2 stands).
+Nothing below was installed, built as a driver, signed, or trusted.
+
+## 9. Personal installation vs public distribution
+
+This is the correction §3 needed, and it changes the cost of the whole project.
+
+Microsoft's guidance on UMDF signing is explicit:
+
+> UMDF drivers do not require Code Integrity Signing since they aren't kernel-mode code. However,
+> your driver package still needs to be signed so that it can't be tampered with & can be traced
+> back to the author.
+>
+> If your package includes any non-Microsoft kernel-mode drivers in addition to the user-mode driver
+> then the Code Integrity Signing rules apply to that too.
+
+The Nexus package contains exactly one binary: `NexusHidDriver.dll`, a UMDF2 user-mode driver. The
+kernel-mode components in the stack — `vhf.sys` and `WUDFRd.sys` — are Microsoft's own inbox drivers
+and are already signed by Microsoft. Nexus ships no kernel-mode code, so the second paragraph does
+not apply.
+
+That splits the question in two:
+
+| | What it needs | Applies to Nexus? |
+|---|---|---|
+| **A. Personal install** on the owner's own PC | A signed *package* whose certificate the machine trusts: a self-signed catalog with the certificate in LocalMachine `Root` and `TrustedPublisher` | **Yes — this is what the owner needs** |
+| **B. Public distribution** to other machines | Partner Center hardware account + EV certificate, then free attestation signing | Not needed |
+
+**What is proven and what is not.** Proven from documentation: UMDF2 is user-mode; HVCI governs
+kernel-mode code integrity; the Nexus package has no kernel-mode component; package trust is
+established through the certificate stores. Strongly suggested by practice: WinUHid ships a
+`RootDevCA` component and a `.cer` for exactly this flow, aimed at ordinary consumer machines.
+
+**Not proven, and not assumed:** that this exact package installs and starts on *this* machine with
+Secure Boot ON, HVCI ON and TESTSIGNING OFF. Some published material about self-signed driver
+installation conflates kernel and user-mode rules, and the only way past that ambiguity is to try
+it. It is listed as the first item of the future installation pass (§11) and is deliberately not
+answered here.
+
+## 10. What was built
+
+| File | What it is |
+|---|---|
+| `src/driver/NexusHid/NexusHidProtocol.h` | The control ABI. Six operations, fixed-size structs, `C_ASSERT` on every size |
+| `src/driver/NexusHid/NexusHid.inf` | Root-enumerated UMDF2 package; VHF as lower filter; Win10 and Win11 sections |
+| `src/driver/NexusHid/Driver.c` | The source driver: VHF create/start/submit/delete, IOCTL validation, neutralisation |
+| `src/PcCore.NativeInput/Hid/NexusHidProtocol.cs` | The managed mirror of the ABI |
+| `src/PcCore.NativeInput/Hid/InputSourceAttribution.cs` | Raw Input device-identity attribution |
+
+**The control protocol is six operations and no seventh**: version, create, submit, status,
+neutralize, delete. There is no passthrough opcode, no caller-supplied pointer, no unbounded length,
+and no way to name a file, a process or an address. Every request is refused unless it carries
+exactly the struct size its opcode expects, names a known device, and — for a report — matches the
+length the device's own descriptor implies.
+
+That last check matters more than it looks. The driver walks the descriptor the caller supplied and
+computes the report length itself rather than trusting a field, because a caller that could declare
+a 7-byte mouse and then submit 64 bytes into it would be writing past what the device agreed to. A
+report of the wrong length is refused rather than padded: padding produces input, and producing
+input nobody asked for is the one failure a virtual input device must never have.
+
+**Neutralisation is a release, never a generation.** `IOCTL_NEXUS_HID_NEUTRALIZE` and the file-handle
+cleanup path both send an all-zero report to every published device, which is buttons up, keys up,
+tip switch clear and in range clear across all three descriptors — a property the descriptors were
+written to have. The control handle closing is how the driver learns PC Core is gone, whether it
+exited, crashed or was killed. There is deliberately no timer that decides on its own to press or
+move anything; that would be a driver producing input nobody requested.
+
+**Not compiled.** The WDK is absent (§12), so `Driver.c` has never been through a compiler. It is
+written to be correct and validated as far as text allows. "It builds" is not among the things
+currently proven about it.
+
+## 11. The future installation pass — prepared, not executed
+
+Nothing here has been run. No certificate exists, no store was touched, no package was installed.
+
+1. **Install the WDK** for 10.0.26100 (owner approval required; see §12 for exactly what is missing).
+2. **Build** `NexusHidDriver.dll` and stamp the INF.
+3. **Generate a Nexus-owned code-signing certificate**, self-signed, kept local.
+4. **Create and sign the catalog** — `NexusHid.cat`, signed with that certificate.
+5. **Trust it, deliberately and visibly** — import the certificate into LocalMachine `Root` and
+   `TrustedPublisher`. This is the one step that changes machine trust state; the setup flow must
+   name the certificate, show its thumbprint, and require explicit confirmation. It must never
+   happen silently as a side effect of an install.
+6. **Install the package** with `pnputil /add-driver NexusHid.inf /install`.
+7. **Verify the security posture did not move** — Secure Boot still ON, HVCI/Memory Integrity still
+   ON, TESTSIGNING still OFF. If any of the three changed, the install is wrong and must be reverted;
+   the entire premise is that Nexus does not weaken the machine.
+8. **Verify enumeration before trusting anything** — Device Manager and Raw Input must list
+   `Nexus Mouse`, `Nexus Keyboard`, `Nexus Touch`. `input.status` reporting `VIRTUAL_HID` without
+   enumerated devices is a failed install, not a working one.
+9. **Prove the security invariant** — ARMED plus Nexus HID input must stay ARMED; ARMED plus
+   physical mouse or keyboard must open a session. Virtual HID does not ship if this is unreliable.
+
+Uninstall is `pnputil /delete-driver NexusHid.inf /uninstall` plus removing the certificate from both
+stores — and the certificate removal has to be part of uninstall, or the machine keeps trusting a key
+after the thing it was for is gone.
+
+## 12. What is missing to build the driver
+
+The Windows SDK 10.0.26100.0 is installed and `shared/vhf.h` is present — including, checked
+directly on this machine, the `#ifdef _KERNEL_MODE` / `HANDLE FileHandle` branch that §1 is about.
+`signtool.exe`, `makecat.exe` and `certmgr.exe` are present under `bin/10.0.26100.0/x64`.
+
+**The WDK is not installed.** Specifically missing:
+
+- UMDF2 headers and libraries — `wdf.h`, `wdfdriver.h`, the UMDF import libraries. Nothing under the
+  kit provides them, so `Driver.c` cannot compile.
+- The VHF import library for user mode.
+- `stampinf.exe`, `inf2cat.exe`, `infverif.exe` — so the INF cannot be stamped or verified locally,
+  and `NexusHidPackageTests` checks it as text instead.
+
+It was not installed, per instruction. It is the first step of the pass in §11.
