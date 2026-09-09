@@ -46,6 +46,17 @@ typedef struct _NEXUS_HID_DEVICE {
     NEXUS_HID_DEVICE_STATE  State;
     NTSTATUS                Status;
     UINT16                  ExpectedReportLength;
+
+    /*
+     * The input report id, or 0 when the descriptor declares none.
+     *
+     * Load-bearing for neutralisation. The digitizer declares REPORT_ID 1 because Windows requires
+     * one on a touch screen; the mouse and keyboard declare none. An all-zero neutral report is
+     * therefore correct for two of the three devices and WRONG for the third, where byte zero is
+     * the report id and zero is not a valid one.
+     */
+    UINT8                   ReportId;
+
     UINT16                  DescriptorLength;
     UINT8                   Descriptor[NEXUS_HID_MAX_DESCRIPTOR_LENGTH];
     WCHAR                   InstanceId[200];
@@ -155,7 +166,8 @@ NexusHidEvtDeviceAdd(
 static UINT16
 NexusHidInputReportLength(
     _In_reads_bytes_(Length) const UINT8* Descriptor,
-    _In_ UINT16 Length
+    _In_ UINT16 Length,
+    _Out_ UINT8* ReportId
     )
 {
     UINT32 bits = 0;
@@ -163,6 +175,8 @@ NexusHidInputReportLength(
     UINT32 reportCount = 0;
     UINT16 index = 0;
     BOOLEAN hasReportId = FALSE;
+
+    *ReportId = 0;
 
     while (index < Length) {
         UINT8 prefix = Descriptor[index++];
@@ -187,7 +201,18 @@ NexusHidInputReportLength(
         switch (prefix & 0xFC) {
         case 0x74:  /* REPORT_SIZE  */ reportSize = value; break;
         case 0x94:  /* REPORT_COUNT */ reportCount = value; break;
-        case 0x84:  /* REPORT_ID    */ hasReportId = TRUE; break;
+        case 0x84:  /* REPORT_ID    */
+            hasReportId = TRUE;
+
+            /*
+             * The first declared id is the input report's, because the descriptors put the input
+             * collection before the feature report. Later ids belong to feature reports and must not
+             * overwrite it.
+             */
+            if (*ReportId == 0) {
+                *ReportId = (UINT8)value;
+            }
+            break;
         case 0x80:  /* INPUT        */ bits += reportSize * reportCount; break;
         default: break;
         }
@@ -215,6 +240,7 @@ NexusHidCreateDevice(
     VHF_CONFIG config;
     NTSTATUS status;
     UINT16 reportLength;
+    UINT8 reportId;
     HANDLE fileHandle;
 
     RtlZeroMemory(Reply, sizeof(*Reply));
@@ -226,7 +252,7 @@ NexusHidCreateDevice(
         return STATUS_INVALID_DEVICE_REQUEST;
     }
 
-    reportLength = NexusHidInputReportLength(Request->Descriptor, Request->DescriptorLength);
+    reportLength = NexusHidInputReportLength(Request->Descriptor, Request->DescriptorLength, &reportId);
     if (reportLength == 0 || reportLength > NEXUS_HID_MAX_REPORT_LENGTH) {
         return STATUS_INVALID_DEVICE_REQUEST;
     }
@@ -241,6 +267,7 @@ NexusHidCreateDevice(
     RtlCopyMemory(slot->Descriptor, Request->Descriptor, Request->DescriptorLength);
     slot->DescriptorLength = Request->DescriptorLength;
     slot->ExpectedReportLength = reportLength;
+    slot->ReportId = reportId;
 
     /*
      * The user-mode VHF path. A UMDF driver passes a file handle where a KMDF driver passes a
@@ -355,10 +382,14 @@ NexusHidSubmitReport(
  * Every published device is told to release everything. Called on control-channel loss, on file
  * handle close, and on device cleanup.
  *
- * The neutral report is derived from the report length rather than from a per-device table: a
- * report of all zeroes is buttons up, keys up, tip switch clear and in-range clear for all three
- * descriptors. That is a property of how the descriptors were written, and it is why they were
- * written that way.
+ * Zero means released for every field that matters - buttons, modifiers, key slots, tip switch,
+ * in range and contact count - so the body of a neutral report is simply zeroes.
+ *
+ * The exception is the report id, and it was a real defect. The digitizer declares REPORT_ID 1
+ * because Windows requires one on a touch screen, so byte zero of its report is the id and zero is
+ * not a valid id. An all-zero digitizer report is not a neutral touch report, it is a malformed
+ * one - which is the worst possible failure for the path whose entire job is releasing a stuck
+ * contact. Devices that declare no id keep a zero first byte, because for them that byte is data.
  */
 static VOID
 NexusHidNeutralizeAll(
@@ -377,10 +408,15 @@ NexusHidNeutralizeAll(
         }
 
         RtlZeroMemory(neutral, sizeof(neutral));
+
+        if (slot->ReportId != 0) {
+            neutral[0] = slot->ReportId;
+        }
+
         RtlZeroMemory(&packet, sizeof(packet));
         packet.reportBuffer = neutral;
         packet.reportBufferLen = slot->ExpectedReportLength;
-        packet.reportId = 0;
+        packet.reportId = slot->ReportId;
 
         (VOID)VhfReadReportSubmit(slot->VhfHandle, &packet);
     }
@@ -407,6 +443,7 @@ NexusHidDeleteDevice(
 
     slot->State = NexusHidDeviceAbsent;
     slot->ExpectedReportLength = 0;
+    slot->ReportId = 0;
     slot->DescriptorLength = 0;
 }
 

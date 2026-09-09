@@ -349,7 +349,11 @@ public static class Program
 
             return new VirtualHidConditions
             {
-                DriverConnected = availability.State is VirtualHidState.Ready or VirtualHidState.Partial,
+                // The lifecycle, not the handle. A backend that has connected but not completed the
+                // neutral handshake is deliberately not eligible, and one inside a post-loss backoff
+                // stays ineligible until the backoff expires - which is what stops an intermittently
+                // failing driver from moving input back and forth.
+                DriverConnected = backend.IsReady,
                 ProtocolCompatible = availability.State is VirtualHidState.Ready or VirtualHidState.Partial,
                 IdentitiesResolved = availability.Devices.Count > 0,
                 AttributionHealthy = health.IsReady,

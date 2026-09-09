@@ -42,6 +42,12 @@ public sealed class NexusHidBackend : IVirtualHidBackend
     private readonly NexusHidDeviceRegistry _registry;
     private readonly TimeProvider _time;
 
+    /// <summary>
+    /// The connection life of this backend: failure budget, loss backoff, and the neutral handshake
+    /// that stands between a freshly connected instance and its first real report.
+    /// </summary>
+    private readonly VirtualHidLifecycle _lifecycle = new();
+
     private SafeFileHandle? _control;
     private VirtualHidAvailability _availability;
     private DateTimeOffset _nextProbe = DateTimeOffset.MinValue;
@@ -65,25 +71,126 @@ public sealed class NexusHidBackend : IVirtualHidBackend
         }
     }
 
+    /// <summary>The lifecycle state machine, for eligibility and diagnostics.</summary>
+    public VirtualHidLifecycle Lifecycle => _lifecycle;
+
+    /// <summary>
+    /// True only when the backend is connected, validated, identified and has completed the neutral
+    /// handshake. Eligibility hangs on this rather than on holding a handle.
+    /// </summary>
+    public bool IsReady => _lifecycle.IsEligible;
+
     public VirtualHidAvailability Probe()
     {
+        VirtualHidAvailability availability;
+        DateTimeOffset now;
+
         lock (_gate)
         {
-            var now = _time.GetUtcNow();
+            now = _time.GetUtcNow();
 
-            if (_control is { IsInvalid: false } && _availability.State == VirtualHidState.Ready)
+            if (_control is { IsInvalid: false } && _lifecycle.IsEligible)
             {
                 return _availability;
             }
 
-            if (now < _nextProbe)
+            if (now < _nextProbe || !_lifecycle.MayAttemptConnect(now))
+            {
+                // Either the ordinary probe interval has not elapsed, or the lifecycle is serving a
+                // backoff after a loss. Retrying a dead driver on a tight loop is its own kind of
+                // flapping: connect, handshake, fail, fall back, repeat.
+                return _availability;
+            }
+
+            if (!_lifecycle.BeginConnect(now))
             {
                 return _availability;
             }
 
             _nextProbe = now + RetryInterval;
-            return ConnectLocked();
+            availability = ConnectLocked();
+
+            if (availability.State is not (VirtualHidState.Ready or VirtualHidState.Partial))
+            {
+                _lifecycle.Lose(now, availability.Diagnostic ?? "the backend did not connect");
+                return availability;
+            }
+
+            // Connected and identified, and deliberately not yet usable.
+            _lifecycle.Connected();
         }
+
+        // The handshake, outside the lock. A freshly connected device is not known to be neutral -
+        // a driver restart or an install over a running instance can leave one reporting something
+        // held that nothing on this side knows about. Starting from a known position rather than an
+        // assumed one is the whole point.
+        var accepted = _lifecycle.CompleteHandshake(now, SendNeutralHandshake);
+
+        if (!accepted)
+        {
+            lock (_gate)
+            {
+                Disconnect();
+                _availability = new VirtualHidAvailability
+                {
+                    State = VirtualHidState.Refused,
+                    Devices = [],
+                    Diagnostic = "the Nexus HID backend did not accept a neutral report; it will not be used.",
+                };
+
+                return _availability;
+            }
+        }
+
+        return availability;
+    }
+
+    /// <summary>
+    /// Sends the neutral report to every published device. The handshake, and also what
+    /// <see cref="Neutralize"/> does — the same operation, at two different moments.
+    /// </summary>
+    private bool SendNeutralHandshake()
+    {
+        var ok = true;
+        var devices = Availability;
+
+        if (devices.Publishes(VirtualHidDeviceKind.Mouse))
+        {
+            ok &= SubmitRaw(VirtualHidDeviceKind.Mouse, HidMouseReport.Neutral);
+        }
+
+        if (devices.Publishes(VirtualHidDeviceKind.Keyboard))
+        {
+            ok &= SubmitRaw(VirtualHidDeviceKind.Keyboard, HidKeyboardReport.Neutral);
+        }
+
+        if (devices.Publishes(VirtualHidDeviceKind.Digitizer))
+        {
+            ok &= SubmitRaw(VirtualHidDeviceKind.Digitizer, HidDigitizerReport.Neutral);
+        }
+
+        return ok;
+    }
+
+    private bool SubmitRaw(VirtualHidDeviceKind kind, in HidMouseReport report)
+    {
+        Span<byte> buffer = stackalloc byte[HidReportDescriptors.MouseReportLength];
+        report.Write(buffer);
+        return SubmitBytes(kind, buffer);
+    }
+
+    private bool SubmitRaw(VirtualHidDeviceKind kind, in HidKeyboardReport report)
+    {
+        Span<byte> buffer = stackalloc byte[HidReportDescriptors.KeyboardReportLength];
+        report.Write(buffer);
+        return SubmitBytes(kind, buffer);
+    }
+
+    private bool SubmitRaw(VirtualHidDeviceKind kind, in HidDigitizerReport report)
+    {
+        Span<byte> buffer = stackalloc byte[HidReportDescriptors.DigitizerReportLength];
+        report.Write(buffer);
+        return SubmitBytes(kind, buffer);
     }
 
     private VirtualHidAvailability ConnectLocked()
@@ -274,7 +381,36 @@ public sealed class NexusHidBackend : IVirtualHidBackend
         return Submit(VirtualHidDeviceKind.Digitizer, buffer);
     }
 
-    private unsafe bool Submit(VirtualHidDeviceKind kind, ReadOnlySpan<byte> report)
+    /// <summary>
+    /// Submits and records the outcome against the lifecycle, so a refused report spends the failure
+    /// budget rather than immediately moving input to another backend.
+    /// </summary>
+    private bool Submit(VirtualHidDeviceKind kind, ReadOnlySpan<byte> report)
+    {
+        var now = _time.GetUtcNow();
+
+        if (SubmitBytes(kind, report))
+        {
+            _lifecycle.RecordSuccess(now);
+            return true;
+        }
+
+        // One refused report is not a dead driver. Only a run of them is, and RecordFailure is what
+        // holds that line.
+        var state = _lifecycle.RecordFailure(now, "the Nexus HID driver refused a report");
+
+        if (state == VirtualHidLifecycleState.Lost)
+        {
+            lock (_gate)
+            {
+                OnTransportLostLocked();
+            }
+        }
+
+        return false;
+    }
+
+    private unsafe bool SubmitBytes(VirtualHidDeviceKind kind, ReadOnlySpan<byte> report)
     {
         if (report.Length > NexusHidProtocol.MaxReportLength)
         {
@@ -299,15 +435,10 @@ public sealed class NexusHidBackend : IVirtualHidBackend
                 Buffer.MemoryCopy(source, request.Report, NexusHidProtocol.MaxReportLength, report.Length);
             }
 
-            if (ControlNoReplyLocked(NexusHidProtocol.IoctlSubmitReport, ref request))
-            {
-                return true;
-            }
-
-            // A failed submit is how a driver that has gone away announces itself on the hot path.
-            // Drop the connection and let the next probe find out; the router falls back meanwhile.
-            OnTransportLostLocked();
-            return false;
+            // Whether a refusal means the driver is gone is the lifecycle's decision, not this
+            // method's: one refused report is not a loss, and deciding here would reintroduce the
+            // flapping the failure budget exists to prevent.
+            return ControlNoReplyLocked(NexusHidProtocol.IoctlSubmitReport, ref request);
         }
     }
 
@@ -328,6 +459,7 @@ public sealed class NexusHidBackend : IVirtualHidBackend
     private void OnTransportLostLocked()
     {
         Disconnect();
+        _lifecycle.Lose(_time.GetUtcNow(), "the Nexus HID driver stopped answering");
 
         _availability = new VirtualHidAvailability
         {
