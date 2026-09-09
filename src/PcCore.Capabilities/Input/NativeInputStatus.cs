@@ -240,8 +240,34 @@ public sealed record NativeInputStatus
     /// </summary>
     public string? VirtualHidDiagnostic { get; init; }
 
-    /// <summary>A one-line summary, which is all the phone shows.</summary>
-    public string Summary => (Path, State) switch
+    /// <summary>
+    /// A one-line summary, which is all the phone shows.
+    /// <para>
+    /// <b>Virtual HID answers first, because it is the better answer.</b> <see cref="State"/> and
+    /// <see cref="Path"/> describe the elevated broker and stay on the wire unchanged for the
+    /// shipped Android client — but on a machine carrying input through real Nexus HID devices,
+    /// "Native input: not installed" is true about the broker and useless about the machine. The
+    /// broker is not installed and is also not needed.
+    /// </para>
+    /// </summary>
+    public string Summary
+    {
+        get
+        {
+            var backends = Backends;
+
+            if (backends.Mouse == InputBackend.VirtualHid && backends.Keyboard == InputBackend.VirtualHid)
+            {
+                return backends.Touch == InputBackend.VirtualHid
+                    ? "Virtual HID: mouse, keyboard and touch"
+                    : "Virtual HID: mouse and keyboard";
+            }
+
+            return BrokerSummary;
+        }
+    }
+
+    private string BrokerSummary => (Path, State) switch
     {
         (InputPath.NativeBroker, NativeInputState.Ready) => "Native input: ready",
         (InputPath.NativeBroker, NativeInputState.Degraded) => "Native input: not elevated",
