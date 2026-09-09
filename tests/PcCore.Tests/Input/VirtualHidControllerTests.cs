@@ -64,6 +64,11 @@ internal sealed class RecordingHidBackend : IVirtualHidBackend
     {
     }
 
+    public void Shutdown() => ShutdownCount++;
+
+    /// <summary>How many times the backend was told to release and disconnect.</summary>
+    public int ShutdownCount { get; private set; }
+
     public void Dispose()
     {
     }

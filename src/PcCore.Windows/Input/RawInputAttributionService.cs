@@ -176,7 +176,10 @@ public sealed class RawInputAttributionService : IDisposable
 
         var kind = observation.Kind switch
         {
-            RawInputKind.Mouse => ActivityKind.PointerActivity,
+            // A digitizer is pointer-like, not keyboard-like. Unreachable today because the listener
+            // subscribes to mouse and keyboard only, but defaulting a contact to "someone typed"
+            // would be the wrong guess the day that changes.
+            RawInputKind.Mouse or RawInputKind.Hid => ActivityKind.PointerActivity,
             _ => ActivityKind.KeyboardActivity,
         };
 

@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Driver.c - the Nexus HID source driver.
  *
  * A UMDF2 driver that publishes up to three virtual HID devices through the Windows Virtual HID
@@ -6,13 +6,27 @@
  * component in this package, which is why installing it does not require Code Integrity signing
  * and does not interact with HVCI. See docs/virtual-hid.md sections 1 and 18.
  *
- * COMPILED AND LINKED, NOT YET RUN. This builds clean against the real WDK UMDF 2.33 headers and
- * links against the real VhfUm.lib. Writing it from documentation alone got two things wrong that
- * only the compiler could find: WdfIoTargetWdmGetTargetFileHandle returns the handle rather than
- * taking an out-parameter, and the handle has to come from a target opened
- * WdfIoTargetOpenLocalTargetByFile rather than from the device's default I/O target. What remains
- * unproven is everything that needs the driver installed: that it loads, that VHF accepts these
- * descriptors, and that Windows enumerates the devices.
+ * INSTALLED AND PROVEN. VhfCreate and VhfStart succeed for all three devices and Windows
+ * enumerates them: keyboard.inf binds the keyboard, msmouse.inf the mouse and input.inf the touch
+ * screen. Writing this file from documentation alone got two things wrong that only the compiler
+ * could find - WdfIoTargetWdmGetTargetFileHandle returns the handle rather than taking an
+ * out-parameter, and the handle has to come from a target opened WdfIoTargetOpenLocalTargetByFile
+ * rather than from the device's default I/O target - and the first real install found three more
+ * that only a running driver could show:
+ *
+ *   1. Nothing ever wrote the slot's identity fields, so every create returned an empty identity
+ *      and PC Core refused three devices the driver had successfully published. Assigning identity
+ *      here through VHF_CONFIG.InstanceID and HardwareIDs then stopped enumeration entirely - both
+ *      are undocumented - so the driver now names nothing and the client establishes identity from
+ *      the device tree, which Windows does document.
+ *   2. Handle cleanup neutralised but never deleted, and the slot state lives in the per-device
+ *      context that outlives every client handle. The devices from a dead client stayed Ready
+ *      forever and every later client was refused STATUS_INVALID_DEVICE_REQUEST by the
+ *      already-exists guard. Slots are now owned by the file object that created them and are
+ *      released when it closes.
+ *   3. SubmitReport hardcoded reportId 0 on the reasoning that the descriptors declare no report
+ *      ids. That stopped being true when the digitizer gained REPORT_ID 1, which Windows requires
+ *      on a touch screen.
  *
  * THE SECURITY POSTURE OF THIS FILE
  *
@@ -32,7 +46,7 @@
 
 #include "NexusHidProtocol.h"
 
-#define NEXUS_HID_DRIVER_VERSION 0x00090000  /* 0.9.0.0, stamped to match the package */
+#define NEXUS_HID_DRIVER_VERSION 0x00090200  /* 0.9.2.0, stamped to match the package */
 
 /*
  * One published device. Three of these live in the control device's context.
@@ -59,8 +73,21 @@ typedef struct _NEXUS_HID_DEVICE {
 
     UINT16                  DescriptorLength;
     UINT8                   Descriptor[NEXUS_HID_MAX_DESCRIPTOR_LENGTH];
-    WCHAR                   InstanceId[200];
-    UINT16                  InstanceIdLength;
+
+    /*
+     * Which control handle created this device, and therefore which one may submit to it and whose
+     * closing destroys it.
+     *
+     * WHY OWNERSHIP IS PER FILE OBJECT AND NOT PER DEVICE
+     *
+     * The control context belongs to the WDFDEVICE and outlives every client. Without an owner
+     * recorded here, a slot created by one PC Core process stayed Ready after that process died,
+     * and the next one was refused by the already-exists guard - permanently, until the machine
+     * rebooted. It also meant any second handle, including one opened purely to read status, could
+     * neutralise or delete devices it had nothing to do with. An owner answers both: cleanup
+     * releases exactly what that handle made, and nothing else can touch it.
+     */
+    WDFFILEOBJECT           Owner;
 } NEXUS_HID_DEVICE;
 
 typedef struct _NEXUS_CONTROL_CONTEXT {
@@ -84,7 +111,12 @@ EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL NexusHidEvtIoDeviceControl;
 EVT_WDF_DEVICE_CONTEXT_CLEANUP     NexusHidEvtDeviceCleanup;
 EVT_WDF_FILE_CLEANUP               NexusHidEvtFileCleanup;
 
-static VOID NexusHidNeutralizeAll(_In_ NEXUS_CONTROL_CONTEXT* Control);
+/*
+ * Owner == NULL means "every slot, whoever owns it", which is only ever correct on device cleanup:
+ * the device itself is going away, so there is no owner left to respect.
+ */
+static VOID NexusHidNeutralizeOwned(_In_ NEXUS_CONTROL_CONTEXT* Control, _In_opt_ WDFFILEOBJECT Owner);
+static VOID NexusHidReleaseOwned(_In_ NEXUS_CONTROL_CONTEXT* Control, _In_opt_ WDFFILEOBJECT Owner);
 
 /* ------------------------------------------------------------------ entry */
 
@@ -153,6 +185,35 @@ NexusHidEvtDeviceAdd(
 
     return WdfDeviceCreateDeviceInterface(device, &GUID_DEVINTERFACE_NEXUS_HID_CONTROL, NULL);
 }
+
+/* -------------------------------------------------------------- identity */
+
+/*
+ * WHAT NEXUS CAN AND CANNOT TELL WINDOWS ABOUT ITS DEVICES.
+ *
+ * ContainerID is the whole list, and that is not an oversight - it is the only identity member of
+ * VHF_CONFIG that Microsoft documents. The structure also carries InstanceID, InstanceIDLength,
+ * HardwareIDs and HardwareIDsLength, and the reference page for VHF_CONFIG lists all four with
+ * empty descriptions: no format, no units, no constraints, while every other member is described.
+ *
+ * They were used here, briefly, to give each device a deterministic hardware id containing Nexus's
+ * vendor and product ids so a caller could find it inside a Raw Input device name. The result was
+ * that VhfCreate and VhfStart both returned STATUS_SUCCESS and VHF never reported a device node at
+ * all: no new devnode over five create cycles, and no entry in setupapi.dev.log, because Windows
+ * was never asked to install anything. Undocumented fields, silent failure.
+ *
+ * So the driver names nothing. Identity is established on the client side from something Windows
+ * does document - the device tree. Every device Nexus publishes descends from this control device,
+ * and nothing else does, so ancestry answers "is this ours?" without the driver having to assert
+ * anything a caller could also assert. See NexusHidPnpAncestry.
+ *
+ * ContainerID stays because it is documented, optional, and does something worth having: it tells
+ * Windows the three devices are three functions of one piece of hardware rather than three unrelated
+ * ones. {4E585330-...} begins with the ASCII bytes of "NXS0", the same tag the injection path uses
+ * in dwExtraInfo.
+ */
+static const GUID NexusHidContainerId =
+    { 0x4e585330, 0x1a2b, 0x4c3d, { 0x9e, 0x5f, 0x60, 0x71, 0x82, 0x93, 0xa4, 0xb5 } };
 
 /* ------------------------------------------------------- device lifecycle */
 
@@ -232,6 +293,7 @@ NexusHidInputReportLength(
 static NTSTATUS
 NexusHidCreateDevice(
     _In_ NEXUS_CONTROL_CONTEXT* Control,
+    _In_ WDFFILEOBJECT Owner,
     _In_ const NEXUS_HID_CREATE_REQUEST* Request,
     _Out_ NEXUS_HID_CREATE_REPLY* Reply
     )
@@ -259,9 +321,18 @@ NexusHidCreateDevice(
 
     slot = &Control->Devices[Request->DeviceKind];
 
-    /* Creating a device that already exists is a caller bug, not an upgrade path. */
+    /*
+     * A Ready slot belongs to somebody. If that is this caller, asking twice is a caller bug - the
+     * device is already there. If it is another handle, this is still not an upgrade path: taking
+     * the slot would delete a device another process is driving, possibly mid-gesture.
+     *
+     * Neither case survives a process exit any more, which is the point. This guard used to be
+     * unreachable-by-design and reachable-in-fact: slots outlived the client that made them, so the
+     * first PC Core run left three Ready slots behind and every later run was refused here, for the
+     * life of the boot.
+     */
     if (slot->State == NexusHidDeviceReady) {
-        return STATUS_INVALID_DEVICE_REQUEST;
+        return slot->Owner == Owner ? STATUS_INVALID_DEVICE_REQUEST : STATUS_DEVICE_BUSY;
     }
 
     RtlCopyMemory(slot->Descriptor, Request->Descriptor, Request->DescriptorLength);
@@ -312,6 +383,12 @@ NexusHidCreateDevice(
     config.ProductID     = Request->ProductId;
     config.VersionNumber = Request->VersionNumber;
 
+    /*
+     * The one identity field VHF documents. InstanceID and HardwareIDs are deliberately left unset -
+     * see the note above NexusHidContainerId for what happened when they were not.
+     */
+    config.ContainerID = NexusHidContainerId;
+
     status = VhfCreate(&config, &slot->VhfHandle);
     if (!NT_SUCCESS(status)) {
         goto Failed;
@@ -326,17 +403,21 @@ NexusHidCreateDevice(
 
     slot->State = NexusHidDeviceReady;
     slot->Status = STATUS_SUCCESS;
+    slot->Owner = Owner;
 
     Reply->State = NexusHidDeviceReady;
     Reply->Status = STATUS_SUCCESS;
-    Reply->DeviceInstanceIdLength = slot->InstanceIdLength;
-    RtlCopyMemory(Reply->DeviceInstanceId, slot->InstanceId, sizeof(Reply->DeviceInstanceId));
+    Reply->ContainerId = NexusHidContainerId;
 
     return STATUS_SUCCESS;
 
 Failed:
     slot->State = NexusHidDeviceFailed;
     slot->Status = status;
+
+    /* A failed create owns nothing. Leaving the owner set would make cleanup try to delete it. */
+    slot->Owner = NULL;
+
     Reply->State = NexusHidDeviceFailed;
     Reply->Status = status;
     return STATUS_SUCCESS;   /* the IOCTL succeeded; the device did not. The reply says which. */
@@ -345,6 +426,7 @@ Failed:
 static NTSTATUS
 NexusHidSubmitReport(
     _In_ NEXUS_CONTROL_CONTEXT* Control,
+    _In_ WDFFILEOBJECT Owner,
     _In_ const NEXUS_HID_SUBMIT_REQUEST* Request
     )
 {
@@ -362,6 +444,16 @@ NexusHidSubmitReport(
     }
 
     /*
+     * Only the handle that created a device may drive it. Opening the control device is not
+     * permission to move the pointer: without this, any process that could open it could submit
+     * reports into devices PC Core published, and those reports arrive through the real HID stack
+     * as hardware. Ownership is what makes "PC Core published this" mean "PC Core drives this".
+     */
+    if (slot->Owner != Owner) {
+        return STATUS_ACCESS_DENIED;
+    }
+
+    /*
      * Exact length, not "at most". A short report padded to the descriptor's size produces input
      * the caller did not ask for, and producing unrequested input is the one failure a virtual
      * input device must never have.
@@ -373,7 +465,16 @@ NexusHidSubmitReport(
     RtlZeroMemory(&packet, sizeof(packet));
     packet.reportBuffer = (PUCHAR)Request->Report;
     packet.reportBufferLen = Request->ReportLength;
-    packet.reportId = 0;    /* the descriptors are report-ID free: one device, one collection */
+    /*
+     * The device's own report id, not zero.
+     *
+     * This said zero, with a comment explaining that the descriptors declare no report ids. That was
+     * true when it was written and stopped being true when the digitizer gained REPORT_ID 1, which
+     * Windows requires on a touch screen. Neutralisation was fixed at the time; this path was not,
+     * so every real touch report would have gone out claiming to be report 0 - which the digitizer
+     * does not declare. Two places had to agree and only one was changed.
+     */
+    packet.reportId = slot->ReportId;
 
     return VhfReadReportSubmit(slot->VhfHandle, &packet);
 }
@@ -392,8 +493,9 @@ NexusHidSubmitReport(
  * contact. Devices that declare no id keep a zero first byte, because for them that byte is data.
  */
 static VOID
-NexusHidNeutralizeAll(
-    _In_ NEXUS_CONTROL_CONTEXT* Control
+NexusHidNeutralizeOwned(
+    _In_ NEXUS_CONTROL_CONTEXT* Control,
+    _In_opt_ WDFFILEOBJECT Owner
     )
 {
     UINT32 kind;
@@ -404,6 +506,11 @@ NexusHidNeutralizeAll(
         HID_XFER_PACKET packet;
 
         if (slot->State != NexusHidDeviceReady || slot->ExpectedReportLength == 0) {
+            continue;
+        }
+
+        /* Someone else's device. Releasing it would be releasing input they are holding. */
+        if (Owner != NULL && slot->Owner != Owner) {
             continue;
         }
 
@@ -441,10 +548,43 @@ NexusHidDeleteDevice(
         slot->VhfHandle = NULL;
     }
 
+    /*
+     * Everything, not just the handle. A slot that kept its identity or its owner would be a slot
+     * the next create could not cleanly reuse, and reuse is the whole point of deleting it.
+     */
     slot->State = NexusHidDeviceAbsent;
+    slot->Status = STATUS_SUCCESS;
     slot->ExpectedReportLength = 0;
     slot->ReportId = 0;
     slot->DescriptorLength = 0;
+    slot->Owner = NULL;
+}
+
+/*
+ * Release everything one owner published: neutralise first, then delete.
+ *
+ * The order is the whole reason this is one function. Neutralising after VhfDelete would be
+ * submitting a report to a handle that no longer exists; deleting without neutralising first would
+ * tear down a device with a button still down, and Windows would keep that button down until
+ * something else happened to change it. Release means "let go, then leave".
+ */
+static VOID
+NexusHidReleaseOwned(
+    _In_ NEXUS_CONTROL_CONTEXT* Control,
+    _In_opt_ WDFFILEOBJECT Owner
+    )
+{
+    UINT32 kind;
+
+    NexusHidNeutralizeOwned(Control, Owner);
+
+    for (kind = 0; kind < NEXUS_HID_MAX_DEVICES; kind++) {
+        if (Owner != NULL && Control->Devices[kind].Owner != Owner) {
+            continue;
+        }
+
+        NexusHidDeleteDevice(Control, kind);
+    }
 }
 
 /* ------------------------------------------------------------------ IOCTL */
@@ -463,6 +603,24 @@ NexusHidEvtIoDeviceControl(
     size_t written = 0;
     PVOID input = NULL;
     PVOID output = NULL;
+
+    /*
+     * Which handle is asking. Everything that creates, drives or destroys a device is answered
+     * against this; the two read-only opcodes ignore it.
+     */
+    WDFFILEOBJECT owner = WdfRequestGetFileObject(Request);
+
+    /*
+     * No file object means no owner, and an unowned request must not be able to reach the owning
+     * paths - NULL is the sentinel that means "every slot" inside them. Version and status stay
+     * readable, because they change nothing.
+     */
+    if (owner == NULL &&
+        IoControlCode != IOCTL_NEXUS_HID_GET_VERSION &&
+        IoControlCode != IOCTL_NEXUS_HID_GET_STATUS) {
+        WdfRequestComplete(Request, STATUS_INVALID_DEVICE_REQUEST);
+        return;
+    }
 
     WdfWaitLockAcquire(control->Lock, NULL);
 
@@ -498,6 +656,7 @@ NexusHidEvtIoDeviceControl(
 
         status = NexusHidCreateDevice(
             control,
+            owner,
             (const NEXUS_HID_CREATE_REQUEST*)input,
             (NEXUS_HID_CREATE_REPLY*)output);
 
@@ -515,7 +674,7 @@ NexusHidEvtIoDeviceControl(
             break;
         }
 
-        status = NexusHidSubmitReport(control, (const NEXUS_HID_SUBMIT_REQUEST*)input);
+        status = NexusHidSubmitReport(control, owner, (const NEXUS_HID_SUBMIT_REQUEST*)input);
         break;
     }
 
@@ -540,11 +699,13 @@ NexusHidEvtIoDeviceControl(
             reply->Devices[kind].DeviceKind = kind;
             reply->Devices[kind].State = control->Devices[kind].State;
             reply->Devices[kind].Status = control->Devices[kind].Status;
-            reply->Devices[kind].DeviceInstanceIdLength = control->Devices[kind].InstanceIdLength;
-            RtlCopyMemory(
-                reply->Devices[kind].DeviceInstanceId,
-                control->Devices[kind].InstanceId,
-                sizeof(reply->Devices[kind].DeviceInstanceId));
+
+            /*
+             * The container id, which is the only identity the driver assigns. The instance id
+             * stays zero because VHF gives a source driver no supported way to learn what Windows
+             * called the device it created - the client resolves that from the device tree.
+             */
+            reply->Devices[kind].ContainerId = NexusHidContainerId;
         }
 
         written = sizeof(*reply);
@@ -567,7 +728,9 @@ NexusHidEvtIoDeviceControl(
             break;
         }
 
-        NexusHidNeutralizeAll(control);
+        /* This caller's devices, not every device. Neutralising is releasing held input, and
+         * releasing input another owner is holding is producing input they did not ask for. */
+        NexusHidNeutralizeOwned(control, owner);
         status = STATUS_SUCCESS;
         break;
     }
@@ -584,6 +747,16 @@ NexusHidEvtIoDeviceControl(
 
         request = (const NEXUS_HID_DELETE_REQUEST*)input;
         if (request->DeviceKind >= NEXUS_HID_MAX_DEVICES) {
+            break;
+        }
+
+        /*
+         * Only the owner may delete. Otherwise a second handle - a diagnostic tool, a stray
+         * process - could remove a device PC Core is driving and leave it submitting into nothing.
+         */
+        if (control->Devices[request->DeviceKind].State != NexusHidDeviceAbsent &&
+            control->Devices[request->DeviceKind].Owner != owner) {
+            status = STATUS_ACCESS_DENIED;
             break;
         }
 
@@ -604,11 +777,21 @@ NexusHidEvtIoDeviceControl(
 /* ---------------------------------------------------------------- cleanup */
 
 /*
- * The control handle closing is how the driver learns PC Core is gone - whether it exited, crashed,
- * or was killed. Everything published is neutralised immediately.
+ * The control handle closing is how the driver learns its owner is gone - whether it exited,
+ * crashed, or was killed. Everything that handle published is released: neutralised, then deleted.
  *
- * This is a watchdog in the only safe sense: it releases state, it never generates state. A timer
- * that decided on its own to press or move something would be a driver producing input nobody
+ * DELETED, NOT JUST NEUTRALISED. This used to only neutralise, and the devices stayed. Because the
+ * slot state lives in the control device's context - which belongs to the WDFDEVICE and outlives
+ * every client handle - the three devices from a dead PC Core stayed Ready for the rest of the
+ * boot, and every later PC Core was refused by the already-exists guard in NexusHidCreateDevice. A
+ * driver that cannot let go of a dead client's devices can only ever serve one client per boot.
+ *
+ * Only this owner's devices. Another handle's devices are another handle's business, and a
+ * diagnostic tool opening the control device to read status must not take three HID devices down
+ * with it when it exits.
+ *
+ * This remains a watchdog in the only safe sense: it releases state, it never generates state. A
+ * timer that decided on its own to press or move something would be a driver producing input nobody
  * asked for, which is precisely what this design exists to prevent.
  */
 VOID
@@ -619,7 +802,7 @@ NexusHidEvtFileCleanup(
     NEXUS_CONTROL_CONTEXT* control = ControlGetContext(WdfFileObjectGetDevice(FileObject));
 
     WdfWaitLockAcquire(control->Lock, NULL);
-    NexusHidNeutralizeAll(control);
+    NexusHidReleaseOwned(control, FileObject);
     WdfWaitLockRelease(control->Lock);
 }
 
@@ -629,11 +812,7 @@ NexusHidEvtDeviceCleanup(
     )
 {
     NEXUS_CONTROL_CONTEXT* control = ControlGetContext((WDFDEVICE)Object);
-    UINT32 kind;
 
-    NexusHidNeutralizeAll(control);
-
-    for (kind = 0; kind < NEXUS_HID_MAX_DEVICES; kind++) {
-        NexusHidDeleteDevice(control, kind);
-    }
+    /* The device itself is going away, so there is no owner left to respect. */
+    NexusHidReleaseOwned(control, NULL);
 }

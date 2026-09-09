@@ -180,7 +180,7 @@ public sealed class NeutralReportTests
         Assert.True(cleanup > 0, "the file-cleanup callback is missing");
 
         var body = source[cleanup..];
-        Assert.Contains("NexusHidNeutralizeAll(control);", body, StringComparison.Ordinal);
+        Assert.Contains("NexusHidReleaseOwned(control, FileObject);", body, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -191,7 +191,7 @@ public sealed class NeutralReportTests
         var cleanup = source.IndexOf("NexusHidEvtDeviceCleanup(", StringComparison.Ordinal);
         Assert.True(cleanup > 0, "the device-cleanup callback is missing");
 
-        Assert.Contains("NexusHidNeutralizeAll(control);", source[cleanup..], StringComparison.Ordinal);
+        Assert.Contains("NexusHidReleaseOwned(control, NULL);", source[cleanup..], StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -213,11 +213,11 @@ public sealed class NeutralReportTests
     public void TheDriverNeutralizesEveryPublishedDevice()
     {
         var source = DriverSource();
-        var start = source.IndexOf("NexusHidNeutralizeAll(\n", StringComparison.Ordinal);
+        var start = source.IndexOf("NexusHidNeutralizeOwned(\n", StringComparison.Ordinal);
 
         if (start < 0)
         {
-            start = source.IndexOf("NexusHidNeutralizeAll(", StringComparison.Ordinal);
+            start = source.IndexOf("NexusHidNeutralizeOwned(", StringComparison.Ordinal);
         }
 
         Assert.True(start > 0);

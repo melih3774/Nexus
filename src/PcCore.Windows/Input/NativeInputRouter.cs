@@ -128,6 +128,7 @@ public sealed class NativeInputRouter : IInputController, IDisposable
                 return new NativeInputStatus
                 {
                     VirtualHidDiagnostic = DescribeVirtualHid(),
+                    Backends = CurrentBackends(elevatedBrokerReady: true),
                     Path = InputPath.NativeBroker,
                     State = info.Elevated ? NativeInputState.Ready : NativeInputState.Degraded,
                     ReachesElevatedWindows = info.Elevated,
@@ -149,9 +150,20 @@ public sealed class NativeInputRouter : IInputController, IDisposable
             var installation = _installer.GetStatus();
             var local = _local.Status;
 
+            var backends = CurrentBackends(elevatedBrokerReady: false);
+
             return local with
             {
                 VirtualHidDiagnostic = DescribeVirtualHid(),
+                Backends = backends,
+
+                // Virtual HID reaches elevated windows without a broker, and that is the whole point
+                // of it: the input arrives from a device, so UIPI has nothing to filter. Reporting
+                // this from the broker alone said "elevated windows are out of reach" on a machine
+                // where they demonstrably were not.
+                ReachesElevatedWindows = local.ReachesElevatedWindows
+                    || (backends.Mouse == InputBackend.VirtualHid
+                        && backends.Keyboard == InputBackend.VirtualHid),
                 State = installation.Registered ? NativeInputState.Unavailable : NativeInputState.NotInstalled,
                 Diagnostic = installation.Registered
                     ? _broker.Diagnostic
@@ -436,6 +448,33 @@ public sealed class NativeInputRouter : IInputController, IDisposable
     /// surface was rebuilt to avoid.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// Which backend each kind would be routed to right now, from the same rules the input path
+    /// uses. Reported rather than derived from the broker's presence, which cannot express HID.
+    /// </summary>
+    private InputBackends CurrentBackends(bool elevatedBrokerReady)
+    {
+        if (_hid is null || _conditions is null)
+        {
+            return InputBackends.All(
+                elevatedBrokerReady ? InputBackend.ElevatedInjection : InputBackend.LocalInjection);
+        }
+
+        var conditions = _conditions();
+
+        return new InputBackends
+        {
+            Mouse = VirtualHidEligibility.Route(conditions, InputKind.Mouse, elevatedBrokerReady),
+            Keyboard = VirtualHidEligibility.Route(conditions, InputKind.Keyboard, elevatedBrokerReady),
+            Touch = VirtualHidEligibility.Route(conditions, InputKind.Touch, elevatedBrokerReady),
+
+            // Always true, and likely to stay true: a HID boot keyboard sends key usages and there
+            // is no key usage for an arbitrary character. Turkish text works because it is injected
+            // as characters.
+            TextUsesCharacterInjection = true,
+        };
+    }
+
     private string DescribeVirtualHid()
     {
         if (_hid is null || _conditions is null)
@@ -449,9 +488,14 @@ public sealed class NativeInputRouter : IInputController, IDisposable
         var keyboard = VirtualHidEligibility.Evaluate(conditions, InputKind.Keyboard);
         var touch = VirtualHidEligibility.Evaluate(conditions, InputKind.Touch);
 
+        // The phase, when there is one, says what the verdict cannot: whether the driver was asked
+        // at all. "Not connected" reads as "there is no driver" and stays true when there is one
+        // and nothing contacted it, which is exactly the state this used to report and hide.
+        var phase = conditions.BackendPhase is { Length: > 0 } p ? $" ({p})" : string.Empty;
+
         if (!mouse.Eligible && !keyboard.Eligible && !touch.Eligible)
         {
-            return $"Virtual HID: unavailable — {mouse.Describe()}";
+            return $"Virtual HID: unavailable — {mouse.Describe()}{phase}";
         }
 
         return $"Virtual HID — mouse: {Describe(mouse)}, keyboard: {Describe(keyboard)}, touch: {Describe(touch)}; "

@@ -93,8 +93,16 @@ public sealed record InputBackends
     /// <para>
     /// Always true today and likely to stay true: a HID boot keyboard sends key usages, and there is
     /// no key usage for an arbitrary character. Turkish text works because it is injected as
-    /// characters, and pretending otherwise would break it. Reported so the owner can see that one
-    /// path differs rather than discovering it.
+    /// characters, and pretending otherwise would break it — the same key usage produces a different
+    /// character on a different keyboard layout, so routing text through HID would silently corrupt
+    /// it. Reported so the owner can see that one path differs rather than discovering it.
+    /// </para>
+    /// <para>
+    /// <b>It has one visible consequence, measured on this machine.</b> Keys sent through the HID
+    /// keyboard reach an elevated application's window, because they arrive from a device and UIPI
+    /// has nothing to filter. Text sent as characters does not: it is a <c>SendInput</c> call from a
+    /// medium-integrity process, and Windows drops it at the window. So <c>input.key</c> works in an
+    /// elevated window and <c>input.text</c> does not.
     /// </para>
     /// </summary>
     public required bool TextUsesCharacterInjection { get; init; }
@@ -180,8 +188,25 @@ public sealed record NativeInputStatus
     /// on whichever injection path is live.
     /// </para>
     /// </summary>
-    public InputBackends Backends => InputBackends.All(
-        Path == InputPath.NativeBroker ? InputBackend.ElevatedInjection : InputBackend.LocalInjection);
+    public InputBackends Backends
+    {
+        get => _backends ?? InputBackends.All(
+            Path == InputPath.NativeBroker ? InputBackend.ElevatedInjection : InputBackend.LocalInjection);
+
+        init => _backends = value;
+    }
+
+    /// <summary>
+    /// What the router actually decided, when someone bothered to ask it.
+    /// <para>
+    /// <b>The fallback above used to be the only answer, and it could never say VIRTUAL_HID.</b> It
+    /// derives the backend from <see cref="Path"/>, which only distinguishes the broker from local
+    /// injection — so a machine with three published, resolved, handshaken Nexus HID devices still
+    /// reported local injection on all three kinds. The status was computed from the wrong source,
+    /// not from a wrong decision.
+    /// </para>
+    /// </summary>
+    private readonly InputBackends? _backends;
 
     /// <summary>
     /// The per-kind backend line, and why it is not virtual HID.

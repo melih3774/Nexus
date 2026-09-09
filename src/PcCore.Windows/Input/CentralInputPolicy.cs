@@ -64,6 +64,35 @@ public sealed class CentralInputPolicy
     /// <summary>The desktop as the policy last saw it. Diagnostics.</summary>
     public string CurrentDesktop { get; private set; } = "UNKNOWN";
 
+    /// <summary>
+    /// Looks at the input desktop now and returns what it is.
+    /// <para>
+    /// <b>Reading <see cref="CurrentDesktop"/> instead was a real defect.</b> That field is only
+    /// written inside <see cref="Evaluate"/>, which runs when input is actually attempted — so
+    /// before the first event it read "UNKNOWN", the eligibility rules concluded the desktop did not
+    /// permit remote input, and <c>input.status</c> reported local injection on a machine whose
+    /// virtual HID devices were published and ready. The state was correct and the question was
+    /// asked of the wrong thing.
+    /// </para>
+    /// <para>
+    /// One <c>OpenInputDesktop</c> per call. It is on the input path, and it is a handle open and a
+    /// close — cheap next to the injection it gates.
+    /// </para>
+    /// </summary>
+    public string PeekDesktop()
+    {
+        CurrentDesktop = Describe(_desktop().Kind);
+        return CurrentDesktop;
+    }
+
+    private static string Describe(InputDesktopKind kind) => kind switch
+    {
+        InputDesktopKind.Default => "DEFAULT",
+        InputDesktopKind.Secure => "SECURE",
+        InputDesktopKind.Other => "OTHER",
+        _ => "UNKNOWN",
+    };
+
     /// <summary>True when held remote state exists whose release was never confirmed.</summary>
     public bool NeutralizationUncertain => _ownership.IsUncertain;
 
@@ -82,13 +111,7 @@ public sealed class CentralInputPolicy
         ArgumentNullException.ThrowIfNull(neutralize);
 
         var desktop = _desktop();
-        CurrentDesktop = desktop.Kind switch
-        {
-            InputDesktopKind.Default => "DEFAULT",
-            InputDesktopKind.Secure => "SECURE",
-            InputDesktopKind.Other => "OTHER",
-            _ => "UNKNOWN",
-        };
+        CurrentDesktop = Describe(desktop.Kind);
 
         // Unknown is treated as not-Default. A desktop that cannot be identified is one Nexus has no
         // business injecting into, and failing open here would mean the one case where the check is

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Builds the Nexus HID driver, stages the package, and validates it. Installs nothing.
 
@@ -47,7 +47,7 @@ $driverDir = Join-Path $repoRoot 'src\driver\NexusHid'
 $project = Join-Path $driverDir 'NexusHidDriver.vcxproj'
 
 # The package version. Kept beside the product version rather than invented here.
-$driverVersion = '0.9.0.0'
+$driverVersion = '0.9.2.0'
 
 function Find-Tool {
     param([string] $Name, [string[]] $PreferredArch = @('x64', 'x86'))
@@ -121,3 +121,4 @@ Write-Output "Canonical package: $StageRoot"
 Write-Output 'Package is valid and UNSIGNED. Signing and installation are a separate, deliberate'
 Write-Output 'owner-driven pass - run tools\nexus-hid-install.ps1 -Action Install for the plan.'
 Write-Output 'Nothing was installed.'
+

@@ -311,8 +311,18 @@ public sealed class SecurityActivityMonitor : IDisposable
             return;
         }
 
+        // The counters are the difference between "a person touched this machine" and "Nexus's own
+        // input was not recognised", and those call for opposite responses from the owner. Both
+        // rules above are last-writer-wins against a clock, so when one misses, what it had to work
+        // with is the only thing that explains why.
         _logger.LogWarning(
-            "Local {Kind} detected while ARMED; raising a security session.", activity.Kind);
+            "Local {Kind} detected while ARMED; raising a security session. "
+            + "Attribution had nothing for it: {Claimed} claim(s) spent, {Expired} expired, "
+            + "{Observations} device observation(s) outstanding.",
+            activity.Kind,
+            _attribution.Claimed,
+            _attribution.Expired,
+            _rawInput?.Outstanding ?? -1);
 
         IncidentDetected?.Invoke(trigger.Value, activity);
     }

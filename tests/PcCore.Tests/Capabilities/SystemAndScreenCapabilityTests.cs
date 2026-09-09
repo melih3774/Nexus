@@ -50,7 +50,7 @@ public sealed class SystemCapabilityTests
         Assert.False(string.IsNullOrWhiteSpace(info.MachineName));
         Assert.False(string.IsNullOrWhiteSpace(info.OsDescription));
         Assert.False(string.IsNullOrWhiteSpace(info.RuntimeVersion));
-        Assert.Equal("0.8.0", info.PcCoreVersion);
+        Assert.Equal("0.9.0", info.PcCoreVersion);
         Assert.True(info.ProcessorCount > 0);
         Assert.True(info.UptimeSeconds > 0);
         Assert.True(info.TimestampUtc > DateTimeOffset.UnixEpoch);

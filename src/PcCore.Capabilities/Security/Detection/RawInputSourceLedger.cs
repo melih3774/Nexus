@@ -55,6 +55,9 @@ public interface IRawInputSourceLedger
 
     /// <summary>True while the ledger is receiving observations from a running listener.</summary>
     bool IsHealthy { get; }
+
+    /// <summary>How many observations are outstanding right now. Diagnostics only.</summary>
+    int Outstanding { get; }
 }
 
 /// <summary>The in-memory implementation. One per PC Core process.</summary>

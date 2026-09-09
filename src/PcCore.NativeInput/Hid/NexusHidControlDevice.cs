@@ -39,53 +39,68 @@ internal static class NexusHidControlDevice
     /// first is no worse than any other choice and better than failing.
     /// </para>
     /// </summary>
-    internal static string? Find()
+    internal static string? Find() => InterfacePaths(NexusHidProtocol.ControlInterface).FirstOrDefault();
+
+    /// <summary>
+    /// Every present device interface of one class, as full paths.
+    /// <para>
+    /// Used for the control device, and for the touch screen — which Raw Input reports under the
+    /// shared synthetic name <c>\?\VIRTUAL_DIGITIZER</c> rather than a device path of its own, so
+    /// its real interface has to be found here instead. See
+    /// <see cref="NexusHidBackend.ResolveIdentities"/>.
+    /// </para>
+    /// </summary>
+    internal static List<string> InterfacePaths(Guid interfaceClass)
     {
-        var interfaceGuid = NexusHidProtocol.ControlInterface;
+        var paths = new List<string>();
+        var interfaceGuid = interfaceClass;
 
         var set = SetupDiGetClassDevsW(ref interfaceGuid, IntPtr.Zero, IntPtr.Zero,
             DigcfPresent | DigcfDeviceInterface);
 
         if (set == IntPtr.Zero || set == new IntPtr(-1))
         {
-            return null;
+            return paths;
         }
 
         try
         {
-            var data = new SpDeviceInterfaceData { CbSize = Marshal.SizeOf<SpDeviceInterfaceData>() };
-
-            if (!SetupDiEnumDeviceInterfaces(set, IntPtr.Zero, ref interfaceGuid, 0, ref data))
+            for (uint index = 0; ; index++)
             {
-                return null;
-            }
+                var data = new SpDeviceInterfaceData { CbSize = Marshal.SizeOf<SpDeviceInterfaceData>() };
 
-            // The documented two-call idiom: ask for the size, then ask again with the buffer.
-            SetupDiGetDeviceInterfaceDetailW(set, ref data, IntPtr.Zero, 0, out var required, IntPtr.Zero);
-
-            if (Marshal.GetLastWin32Error() != ErrorInsufficientBuffer || required == 0)
-            {
-                return null;
-            }
-
-            var buffer = Marshal.AllocHGlobal((int)required);
-            try
-            {
-                // cbSize is the size of the fixed part of the struct, not of the buffer. On x64 that
-                // is 8: a DWORD followed by a single WCHAR, padded. Getting this wrong is the
-                // classic SetupAPI failure and it reports as ERROR_INVALID_PARAMETER.
-                Marshal.WriteInt32(buffer, IntPtr.Size == 8 ? 8 : 6);
-
-                if (!SetupDiGetDeviceInterfaceDetailW(set, ref data, buffer, required, out _, IntPtr.Zero))
+                if (!SetupDiEnumDeviceInterfaces(set, IntPtr.Zero, ref interfaceGuid, index, ref data))
                 {
-                    return null;
+                    // ERROR_NO_MORE_ITEMS, or anything else that means "stop asking".
+                    return paths;
                 }
 
-                return Marshal.PtrToStringUni(buffer + 4);
-            }
-            finally
-            {
-                Marshal.FreeHGlobal(buffer);
+                // The documented two-call idiom: ask for the size, then ask again with the buffer.
+                SetupDiGetDeviceInterfaceDetailW(set, ref data, IntPtr.Zero, 0, out var required, IntPtr.Zero);
+
+                if (Marshal.GetLastWin32Error() != ErrorInsufficientBuffer || required == 0)
+                {
+                    continue;
+                }
+
+                var buffer = Marshal.AllocHGlobal((int)required);
+                try
+                {
+                    // cbSize is the size of the fixed part of the struct, not of the buffer. On x64
+                    // that is 8: a DWORD followed by a single WCHAR, padded. Getting this wrong is
+                    // the classic SetupAPI failure and it reports as ERROR_INVALID_PARAMETER.
+                    Marshal.WriteInt32(buffer, IntPtr.Size == 8 ? 8 : 6);
+
+                    if (SetupDiGetDeviceInterfaceDetailW(set, ref data, buffer, required, out _, IntPtr.Zero)
+                        && Marshal.PtrToStringUni(buffer + 4) is { Length: > 0 } path)
+                    {
+                        paths.Add(path);
+                    }
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(buffer);
+                }
             }
         }
         finally

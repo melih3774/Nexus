@@ -25,7 +25,7 @@ public static class NexusHidProtocol
     /// to a driver reporting a different number, because version skew between a driver and its
     /// control client is a wrong-report bug rather than a degrade-gracefully opportunity.
     /// </summary>
-    public const uint Version = 1;
+    public const uint Version = 3;
 
     /// <summary>{6D1F4A2E-9C3B-4E7A-B5D8-1A2C3E4F5B60} — the control device interface.</summary>
     public static readonly Guid ControlInterface = new("6d1f4a2e-9c3b-4e7a-b5d8-1a2c3e4f5b60");
@@ -70,10 +70,10 @@ public static class NexusHidProtocol
     {
         public const int VersionReply = 8;
         public const int CreateRequest = 528;
-        public const int CreateReply = 410;
+        public const int CreateReply = 24;
         public const int SubmitRequest = 70;
-        public const int DeviceStatus = 414;
-        public const int StatusReply = 1254;
+        public const int DeviceStatus = 28;
+        public const int StatusReply = 96;
         public const int NeutralizeRequest = 4;
         public const int DeleteRequest = 4;
     }
@@ -120,12 +120,18 @@ public unsafe struct NexusHidCreateRequest
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 1)]
-public unsafe struct NexusHidCreateReply
+public struct NexusHidCreateReply
 {
     public uint State;
     public int Status;
-    public ushort DeviceInstanceIdLength;
-    public fixed char DeviceInstanceId[NexusHidProtocol.InstanceIdCapacity];
+
+    /// <summary>
+    /// The container the driver assigned, shared by all three devices. The only identity the driver
+    /// can honestly report: VHF gives a source driver no supported way to learn what Windows called
+    /// the device it created, so the device path is resolved from the device tree instead — see
+    /// <see cref="NexusHidPnpAncestry"/>.
+    /// </summary>
+    public Guid ContainerId;
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 1)]
@@ -137,13 +143,12 @@ public unsafe struct NexusHidSubmitRequest
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 1)]
-public unsafe struct NexusHidDeviceStatus
+public struct NexusHidDeviceStatus
 {
     public uint DeviceKind;
     public uint State;
     public int Status;
-    public ushort DeviceInstanceIdLength;
-    public fixed char DeviceInstanceId[NexusHidProtocol.InstanceIdCapacity];
+    public Guid ContainerId;
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 1)]

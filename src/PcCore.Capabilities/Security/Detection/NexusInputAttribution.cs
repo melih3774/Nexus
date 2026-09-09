@@ -33,6 +33,12 @@ public interface INexusInputAttribution
     void Expect(ActivityKind kind, int count);
 
     /// <summary>
+    /// Takes back <paramref name="count"/> declarations that turned out not to be needed, because
+    /// the input they were declared for was refused.
+    /// </summary>
+    void Withdraw(ActivityKind kind, int count);
+
+    /// <summary>
     /// Consumes one outstanding claim for this kind, if there is a live one.
     /// </summary>
     /// <returns>True when this observation is Nexus's own work.</returns>
@@ -133,6 +139,52 @@ public sealed class NexusInputAttribution : INexusInputAttribution
         }
     }
 
+    /// <summary>
+    /// Takes back declarations for input that never happened.
+    /// <para>
+    /// The pairing with <see cref="Expect"/> is what lets a declaration be made <em>before</em> the
+    /// input rather than after it. Declaring afterwards is a race Nexus loses on the virtual HID
+    /// path: the report reaches Windows inside the call, the low-level hook fires while the call is
+    /// still returning, and the claim is created after the detector has already decided. Declaring
+    /// first and withdrawing on failure keeps the invariant that mattered — no outstanding claim for
+    /// input that was refused — without depending on winning a race.
+    /// </para>
+    /// <para>
+    /// Withdrawal is best-effort by construction: a claim already spent cannot be taken back, and a
+    /// claim that expired first is gone anyway. Both leave the ledger holding less than it was told
+    /// about, which is the safe direction.
+    /// </para>
+    /// </summary>
+    public void Withdraw(ActivityKind kind, int count)
+    {
+        if (count <= 0)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            if (!_claims.TryGetValue(kind, out var claims))
+            {
+                return;
+            }
+
+            // Newest first: the withdrawal is for the declaration just made, and taking an older
+            // one would spend a claim that still has input coming for it.
+            while (count > 0 && claims.Last is { } last)
+            {
+                if (last.Value.Remaining > count)
+                {
+                    claims.Last!.Value = last.Value with { Remaining = last.Value.Remaining - count };
+                    return;
+                }
+
+                count -= last.Value.Remaining;
+                claims.RemoveLast();
+            }
+        }
+    }
+
     public bool TryClaim(ActivityKind kind, DateTimeOffset now)
     {
         lock (_gate)
@@ -206,6 +258,10 @@ public sealed class NexusInputAttribution : INexusInputAttribution
 public sealed class NullNexusInputAttribution : INexusInputAttribution
 {
     public void Expect(ActivityKind kind, int count)
+    {
+    }
+
+    public void Withdraw(ActivityKind kind, int count)
     {
     }
 

@@ -22,6 +22,14 @@
     <PackageReference Include="System.Drawing.Common" Version="10.0.0" />
     <!-- DPAPI: the built-in per-user secret protection used for the phone credential. -->
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" />
+    <!--
+      Abstractions only, for VirtualHidProbeService. The virtual HID backend needs something to own
+      when it is probed, and that something is a hosted service: it has to start with the host, tick
+      on its own clock and — the part that matters — release held input during shutdown rather than
+      whenever the container gets round to disposing a singleton. The service belongs beside the
+      input stack it drives, so the interface comes here rather than the service moving to the host.
+    -->
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.0" />
   </ItemGroup>
 
   <ItemGroup>

@@ -57,6 +57,19 @@ public sealed record VirtualHidConditions
     /// </summary>
     public bool NeutralizationUncertain { get; init; }
 
+    /// <summary>
+    /// Where the backend is in its connection life, in words. Diagnostic only — never read by
+    /// <see cref="VirtualHidEligibility"/>, which decides on the booleans above and nothing else.
+    /// <para>
+    /// <b>It carries the one fact none of the booleans can.</b> They all describe the backend; none
+    /// of them describes whether anything is <em>driving</em> it. When nothing was, every one of
+    /// them read false and the reported reason was "the Nexus HID driver is not connected" — the
+    /// same sentence a machine with no driver produces, on a machine where the driver was installed,
+    /// started and waiting. This says which.
+    /// </para>
+    /// </summary>
+    public string? BackendPhase { get; init; }
+
     public static VirtualHidConditions None => new()
     {
         DriverConnected = false,

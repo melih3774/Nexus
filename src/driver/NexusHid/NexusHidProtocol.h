@@ -41,7 +41,7 @@ DEFINE_GUID(GUID_DEVINTERFACE_NEXUS_HID_CONTROL,
  * it on connect and refuses to talk to a driver it does not match, because a version skew between
  * a driver and a control client is a wrong-report bug, not a graceful-degradation opportunity.
  */
-#define NEXUS_HID_PROTOCOL_VERSION 1
+#define NEXUS_HID_PROTOCOL_VERSION 3
 
 /* Nexus-owned identity. See docs/virtual-hid.md section 5 for why these values and not others. */
 #define NEXUS_HID_VENDOR_ID   0xF055
@@ -110,15 +110,31 @@ typedef struct _NEXUS_HID_CREATE_REQUEST {
 /*
  * IOCTL_NEXUS_HID_CREATE_DEVICE - output.
  *
- * DeviceInstanceId is what the security layer keys on. The driver reports it because it is the
- * only component that knows, at creation time, which PnP identity belongs to Nexus - see
- * docs/virtual-hid.md section 5. It is a fixed buffer of WCHARs and always NUL-terminated.
+ * WHY THIS CARRIES NO DEVICE PATH, AND WHY THAT IS CORRECT
+ *
+ * The obvious design has the driver report which PnP device it just created, because the driver is
+ * the component that caused it to exist. It cannot. VhfCreate returns a VHFHANDLE, not a devnode;
+ * the device is enumerated afterwards by PnP, and VHF exposes no supported way for a source driver
+ * to ask what Windows called it.
+ *
+ * The next design has the driver *choose* the identity through VHF_CONFIG.InstanceID and
+ * HardwareIDs, and report what it chose. Those members exist and are undocumented - the VHF_CONFIG
+ * reference lists all four identity members with empty descriptions - and setting them made VhfCreate
+ * and VhfStart both return success while VHF enumerated nothing at all.
+ *
+ * So identity is not asserted over this interface. The client establishes it from the device tree
+ * instead: everything Nexus publishes descends from the Nexus control device and nothing else does.
+ * That is stronger than anything the driver could have claimed here, because a claim in a reply is
+ * only as trustworthy as the thing making it, whereas ancestry is Windows' own record of what
+ * created what.
+ *
+ * ContainerID is reported because the driver does set it, it is documented, and it is worth having:
+ * it tells Windows the three devices are one piece of hardware with three functions.
  */
 typedef struct _NEXUS_HID_CREATE_REPLY {
     UINT32 State;                                       /* NEXUS_HID_DEVICE_STATE */
     INT32  Status;                                      /* NTSTATUS when State == Failed */
-    UINT16 DeviceInstanceIdLength;                      /* in WCHARs, excluding the terminator */
-    WCHAR  DeviceInstanceId[200];
+    GUID   ContainerId;
 } NEXUS_HID_CREATE_REPLY;
 
 /*
@@ -140,8 +156,7 @@ typedef struct _NEXUS_HID_DEVICE_STATUS {
     UINT32 DeviceKind;
     UINT32 State;
     INT32  Status;
-    UINT16 DeviceInstanceIdLength;
-    WCHAR  DeviceInstanceId[200];
+    GUID   ContainerId;
 } NEXUS_HID_DEVICE_STATUS;
 
 /*
@@ -186,10 +201,10 @@ typedef struct _NEXUS_HID_DELETE_REQUEST {
 #ifdef _MSC_VER
 C_ASSERT(sizeof(NEXUS_HID_VERSION_REPLY)      == 8);
 C_ASSERT(sizeof(NEXUS_HID_CREATE_REQUEST)     == 528);
-C_ASSERT(sizeof(NEXUS_HID_CREATE_REPLY)       == 410);
+C_ASSERT(sizeof(NEXUS_HID_CREATE_REPLY)       == 24);
 C_ASSERT(sizeof(NEXUS_HID_SUBMIT_REQUEST)     == 70);
-C_ASSERT(sizeof(NEXUS_HID_DEVICE_STATUS)      == 414);
-C_ASSERT(sizeof(NEXUS_HID_STATUS_REPLY)       == 1254);
+C_ASSERT(sizeof(NEXUS_HID_DEVICE_STATUS)      == 28);
+C_ASSERT(sizeof(NEXUS_HID_STATUS_REPLY)       == 96);
 C_ASSERT(sizeof(NEXUS_HID_NEUTRALIZE_REQUEST) == 4);
 C_ASSERT(sizeof(NEXUS_HID_DELETE_REQUEST)     == 4);
 #endif

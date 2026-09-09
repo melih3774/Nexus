@@ -5,10 +5,12 @@ This is the record behind the v0.9 virtual-HID work. It supersedes the conclusio
 corrects itself once, in §9, where §3 turned out to be answering the wrong question.
 
 Sections 1–8 are the research and foundation pass. Sections 9–12 are the Nexus-owned backend that
-followed from it.
+followed from it. **Section 13 is what happened when it was installed**, and it is the section to
+read first: several of the defects it records were invisible to every test until the driver ran.
 
-Nothing in either pass installed a driver, registered a task, changed Secure Boot, HVCI, UAC,
-certificate stores or driver-signing state, or bought a licence.
+Sections 1–12 installed nothing. Section 13 did: the driver is installed, signed with a self-signed
+certificate the owner created and trusted for this machine. Secure Boot, HVCI, UAC and driver-signing
+enforcement were not changed, and no licence was bought.
 
 ---
 
@@ -391,3 +393,122 @@ directly on this machine, the `#ifdef _KERNEL_MODE` / `HANDLE FileHandle` branch
   and `NexusHidPackageTests` checks it as text instead.
 
 It was not installed, per instruction. It is the first step of the pass in §11.
+
+---
+
+# 13. The install pass: what actually happened
+
+Everything in §§9–12 built, packaged and validated cleanly, and then the driver was installed. Four
+things were wrong. None of them could have been found without installing.
+
+## 13.1 Nothing called `Probe()`
+
+The backend, the lifecycle state machine, the eligibility rules, the router and the device registry
+were all written, wired and passing their own tests. `NexusHidBackend.Probe()` had six call sites,
+all of them in the test project. PC Core reported *"the Nexus HID driver is not connected"* on a
+machine where the driver was installed and started, and it was correct: it had never looked.
+
+Fixed by `VirtualHidProbeService`, a hosted service that probes once during startup and then on a
+5-second tick, skips a connected backend entirely — re-probing tears devices down and republishes
+them — and releases the devices explicitly during shutdown rather than leaving it to the driver
+noticing a closed handle.
+
+The diagnostic that hid this now distinguishes *nobody asked*, *asked and found nothing*, and *found
+it and lost it*. They call for different things from the owner, and the old wording collapsed all
+three into "not connected".
+
+## 13.2 The driver never wrote the identity it reported
+
+`slot->InstanceId` was declared, copied into the create reply, and assigned nowhere. Every create
+returned `Ready` with an empty identity, and PC Core refused three devices Windows had happily
+enumerated. `VhfCreate` and `VhfStart` had worked on the first attempt, for all three devices,
+including the digitizer.
+
+## 13.3 Handle cleanup neutralised but never deleted
+
+The slot state lives in the control device's context, which belongs to the `WDFDEVICE` and outlives
+every client handle. `EvtFileCleanup` only neutralised, so the devices from a dead PC Core stayed
+`Ready` for the rest of the boot and every later PC Core was refused `STATUS_INVALID_DEVICE_REQUEST`
+by the already-exists guard. **A driver that cannot let go of a dead client's devices serves one
+client per boot.**
+
+Slots are now owned by the file object that created them. Cleanup releases exactly that owner's
+devices — neutralise, then `VhfDelete` — and ownership also gates submit, delete and neutralise, so
+a second handle cannot drive or destroy devices it did not create.
+
+## 13.4 `VHF_CONFIG.InstanceID` and `HardwareIDs` are undocumented, and using them breaks enumeration
+
+The obvious fix for §13.2 was to have the driver *choose* each device's identity through those
+members and report what it chose. The result: `VhfCreate` and `VhfStart` both returned
+`STATUS_SUCCESS`, and VHF enumerated **no device at all** — no devnode over five create cycles, and
+no entry in `setupapi.dev.log`, because Windows was never asked to install anything.
+
+The VHF_CONFIG reference lists `InstanceID`, `InstanceIDLength`, `HardwareIDs` and
+`HardwareIDsLength` with **empty descriptions**, while describing every other member. They are not
+documented, and they do not work. The driver now sets only `ContainerID`, which is documented and
+which tells Windows the three devices are one piece of hardware.
+
+## 13.5 Identity, resolved the right way
+
+Identity is not asserted by the driver at all. It is established from the device tree:
+
+- every device Nexus publishes descends from `ROOT\DEVGEN\NEXUSHID`, and nothing else can;
+- ancestry is walked with `CM_Locate_DevNode` / `CM_Get_Parent`, from the PnP instance behind each
+  Raw Input device path;
+- kind comes from Raw Input's own classification — mouse, keyboard, generic HID;
+- anything unresolvable or ambiguous stays physical and untrusted.
+
+This is stronger than the hardware-id match it replaced. A vendor id, a hardware id or a friendly
+name are all things a device *claims*, and anything able to install a driver can claim them; the
+device tree is Windows' own record of what created what.
+
+**The touch screen is the exception, and it is a Windows behaviour worth knowing.** Raw Input reports
+a digitizer as `\\?\VIRTUAL_DIGITIZER` — one synthetic name shared by the whole touch stack,
+belonging to no device and resolving to no PnP instance. So the mouse and keyboard are resolved
+through Raw Input, whose strings are exactly what attribution will later match, and the touch screen
+is found by enumerating HID interfaces under our devnode and taking the one no already-resolved
+device is using.
+
+## 13.6 Attribution declared Nexus's own input too late
+
+The worst of the four, and it only appears once input is real hardware. Every event Nexus delivers is
+declared to the attribution ledger so the security detector can recognise it. The declaration was
+made **after** the delivery, on the sound reasoning that input Windows refused produced nothing to
+see.
+
+On the injection path that was harmless: a `SendInput` event carries Nexus's tag in `dwExtraInfo`, so
+the signature rule answers first and no timing is involved. On the virtual HID path there is no
+signature — that is the entire point of it — and the report reaches Windows *inside* the controller
+call. The low-level hook fires while the call is still returning, the detector reaches its verdict,
+and the claim is created afterwards.
+
+**An ARMED machine raised a security incident against its owner for their own keystroke.**
+
+Declarations are now made before the input and withdrawn if Windows refuses it, which keeps the
+invariant that mattered without depending on winning a race.
+
+## 13.7 Verified on this machine
+
+| | Result |
+|---|---|
+| Three VHF children enumerate | keyboard.inf, msmouse.inf, input.inf — all Started |
+| Mouse / Keyboard / Touch | all `VIRTUAL_HID` |
+| Pointer, click, scroll | delivered, cursor observed to move |
+| Keyboard | `GetAsyncKeyState` confirms Windows sees the key held, then released |
+| Text | typed and read back from a real edit control |
+| Direct touch | down / move / up all delivered |
+| ARMED + Nexus HID input | **no incident**, stays ARMED |
+| ARMED + input Nexus did not produce | **exactly one incident** |
+| Secure Desktop | `BLOCKED_BY_SECURE_DESKTOP` while a UAC prompt is up |
+| Elevated window | accepts HID key events without a broker |
+| Kill PC Core with things held | nothing stuck; the three devices disappear with it |
+| Restart | exactly one clean set returns, all three `VIRTUAL_HID` |
+
+## 13.8 What is still true
+
+`input.text` uses character injection and always will: a HID keyboard sends key usages, and the same
+usage produces a different character on a different keyboard layout. Turkish text works because it is
+injected as characters, and routing it through HID would silently corrupt it. The visible consequence
+is that `input.key` reaches an elevated window and `input.text` does not — Windows drops a
+medium-integrity `SendInput` at an elevated window, and there is no device to route around it.
+`input.status` reports this as `text_uses_character_injection`.

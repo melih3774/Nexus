@@ -13,6 +13,18 @@ public enum RawInputKind
 {
     Mouse,
     Keyboard,
+
+    /// <summary>
+    /// Everything else Raw Input reports — digitizers, game controllers, vendor collections.
+    /// <para>
+    /// <b>Enumerated but not subscribed.</b> These devices appear in <see cref="EnumerateDevices"/>
+    /// so that identity can be established for them, which is what lets Nexus recognise its own
+    /// touch screen; the listener still registers for mouse and keyboard input only, so no new event
+    /// flow comes with this. A digitizer's contribution to the desktop arrives as promoted pointer
+    /// messages, and those are already observed as mouse input.
+    /// </para>
+    /// </summary>
+    Hid,
 }
 
 /// <summary>
@@ -84,11 +96,15 @@ public sealed class RawInputListener : IDisposable
 
     private const uint RimTypeMouse = 0;
     private const uint RimTypeKeyboard = 1;
+    private const uint RimTypeHid = 2;
 
     private static readonly nint HwndMessage = -3;
 
     private readonly ILogger<RawInputListener> _logger;
     private readonly NexusHidDeviceRegistry _registry;
+
+    /// <summary>Devices already announced, so the log carries one line per device rather than per event.</summary>
+    private readonly HashSet<nint> _announced = [];
     private readonly TimeProvider _time;
 
     private readonly Lock _gate = new();
@@ -196,10 +212,14 @@ public sealed class RawInputListener : IDisposable
             {
                 var entry = Marshal.PtrToStructure<RawInputDeviceList>(buffer + (i * size));
 
+                // HID devices are included here and nowhere else. Without them a digitizer is
+                // invisible to identity resolution, which is exactly how Nexus's own touch screen
+                // came back unattributable while its mouse and keyboard resolved fine.
                 var kind = entry.Type switch
                 {
                     RimTypeMouse => (RawInputKind?)RawInputKind.Mouse,
                     RimTypeKeyboard => RawInputKind.Keyboard,
+                    RimTypeHid => RawInputKind.Hid,
                     _ => null,
                 };
 
@@ -430,6 +450,19 @@ public sealed class RawInputListener : IDisposable
             // The classification is the registry's, not this class's. This file knows about devices;
             // it deliberately knows nothing about what makes one trustworthy.
             var verdict = _registry.Classify(path);
+
+            // Once per device, say what it was decided to be. Without this, "Nexus HID input raised
+            // a security incident" is a fact with no visible cause: the registry, the resolver and
+            // the listener all look correct in isolation, and the only thing that distinguishes a
+            // recognised device from an unrecognised one is a string comparison nobody can see.
+            if (_announced.Add(header.Device))
+            {
+                _logger.LogInformation(
+                    "Raw Input {Kind} from {Verdict}: {Path}",
+                    kind.Value,
+                    verdict.IsNexus ? "a trusted Nexus device" : $"a physical device ({verdict.Reason})",
+                    path ?? "(unresolved)");
+            }
 
             Observed?.Invoke(observation, verdict);
         }

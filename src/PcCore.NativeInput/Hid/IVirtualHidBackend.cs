@@ -40,6 +40,26 @@ public sealed record VirtualHidDeviceIdentity
     public ushort ProductId { get; init; }
 }
 
+/// <summary>
+/// How Raw Input classifies one device. Mirrored here so PcCore.NativeInput can take a device list
+/// without referencing the project that owns the Raw Input P/Invoke.
+/// </summary>
+public enum RawInputDeviceClass
+{
+    Mouse,
+    Keyboard,
+
+    /// <summary>Everything else Raw Input reports, including digitizers.</summary>
+    Hid,
+}
+
+/// <summary>One device as Raw Input reports it: the interface path, and what kind it is.</summary>
+/// <param name="Path">
+/// The exact string Raw Input returns for <c>RIDI_DEVICENAME</c>, which is the same string it will
+/// report as the source of an event. Matching on anything else risks a near miss.
+/// </param>
+public readonly record struct RawInputDeviceInfo(string Path, RawInputDeviceClass Class);
+
 /// <summary>Why a virtual-HID backend is or is not carrying input.</summary>
 public enum VirtualHidState
 {
@@ -149,6 +169,23 @@ public interface IVirtualHidBackend : IDisposable
     /// </para>
     /// </summary>
     void Neutralize();
+
+    /// <summary>
+    /// Neutralises, then releases whatever connection the backend holds — without disposing it.
+    /// <para>
+    /// <b>Separate from <see cref="IDisposable.Dispose"/> because shutdown order matters.</b> A
+    /// container disposes singletons last, after everything that might still be sending reports has
+    /// stopped but also after the point where anything can observe the result. Releasing held input
+    /// is not bookkeeping that can happen whenever: it is the difference between a shutdown that
+    /// leaves a key held at the HID level and one that does not, and the owner has no way to undo
+    /// the former from software. So it gets its own call, made deliberately at a known moment.
+    /// </para>
+    /// <para>
+    /// Implementations that hold no connection may simply neutralise. Must be safe to call twice,
+    /// and safe to call before anything was ever connected.
+    /// </para>
+    /// </summary>
+    void Shutdown();
 }
 
 /// <summary>
@@ -184,6 +221,11 @@ public sealed class NoVirtualHidBackend : IVirtualHidBackend
     public void Neutralize()
     {
         // Nothing was ever held, because nothing was ever delivered.
+    }
+
+    public void Shutdown()
+    {
+        // Nothing was ever connected, so there is nothing to release and nothing to close.
     }
 
     public void Dispose()

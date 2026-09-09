@@ -219,7 +219,7 @@ public sealed class InputService : IInputService
         var pixelX = display.Left + (int)Math.Round(x * (display.Width - 1));
         var pixelY = display.Top + (int)Math.Round(y * (display.Height - 1));
 
-        return Record(state, _controller.MovePointerAbsolute(pixelX, pixelY), ActivityKind.PointerActivity, 1);
+        return Perform(state, ActivityKind.PointerActivity, 1, () => _controller.MovePointerAbsolute(pixelX, pixelY));
     }
 
     public InputResult MoveRelative(string ownerId, double dx, double dy)
@@ -235,7 +235,7 @@ public sealed class InputService : IInputService
         var moveX = (int)Math.Round(Math.Clamp(dx, -limit, limit));
         var moveY = (int)Math.Round(Math.Clamp(dy, -limit, limit));
 
-        return Record(state, _controller.MovePointerRelative(moveX, moveY), ActivityKind.PointerActivity, 1);
+        return Perform(state, ActivityKind.PointerActivity, 1, () => _controller.MovePointerRelative(moveX, moveY));
     }
 
     public InputResult Button(string ownerId, PointerButton button, ButtonAction action)
@@ -248,7 +248,17 @@ public sealed class InputService : IInputService
         }
 
         InputResult result;
-        var events = 1;
+
+        // Declared before the input, not after it: on the virtual HID path the hook fires inside the
+        // controller call, so a claim created afterwards arrives too late to excuse anything.
+        var events = action switch
+        {
+            ButtonAction.Click => 2,
+            ButtonAction.DoubleClick => 4,
+            _ => 1,
+        };
+
+        _attribution.Expect(ActivityKind.PointerActivity, events);
 
         switch (action)
         {
@@ -275,12 +285,10 @@ public sealed class InputService : IInputService
 
             case ButtonAction.Click:
                 result = Chord(button, 1);
-                events = 2;
                 break;
 
             default:
                 result = Chord(button, 2);
-                events = 4;
                 break;
         }
 
@@ -298,13 +306,9 @@ public sealed class InputService : IInputService
 
         var limit = _options.MaxScrollNotches;
 
-        return Record(
-            state,
-            _controller.Scroll(
-                (int)Math.Round(Math.Clamp(horizontal, -limit, limit)),
-                (int)Math.Round(Math.Clamp(vertical, -limit, limit))),
-            ActivityKind.PointerActivity,
-            2);
+        return Perform(state, ActivityKind.PointerActivity, 2, () => _controller.Scroll(
+            (int)Math.Round(Math.Clamp(horizontal, -limit, limit)),
+            (int)Math.Round(Math.Clamp(vertical, -limit, limit))));
     }
 
     public InputResult Key(string ownerId, NexusKey key, KeyAction action)
@@ -317,7 +321,9 @@ public sealed class InputService : IInputService
         }
 
         InputResult result;
-        var events = 1;
+        var events = action == KeyAction.Press ? 2 : 1;
+
+        _attribution.Expect(ActivityKind.KeyboardActivity, events);
 
         switch (action)
         {
@@ -344,7 +350,6 @@ public sealed class InputService : IInputService
 
             default:
                 result = _controller.Key(key, down: true);
-                events = 2;
 
                 if (result.Succeeded)
                 {
@@ -384,7 +389,7 @@ public sealed class InputService : IInputService
         }
 
         // Two events per character: KEYEVENTF_UNICODE sends a down and an up for each one.
-        return Record(state, _controller.Text(text), ActivityKind.KeyboardActivity, text.Length * 2);
+        return Perform(state, ActivityKind.KeyboardActivity, text.Length * 2, () => _controller.Text(text));
     }
 
     /// <summary>
@@ -428,6 +433,8 @@ public sealed class InputService : IInputService
 
         var pixelX = display.Left + (int)Math.Round(x * (display.Width - 1));
         var pixelY = display.Top + (int)Math.Round(y * (display.Height - 1));
+
+        _attribution.Expect(ActivityKind.PointerActivity, 1);
 
         var result = _controller.Touch(contactId, action, pixelX, pixelY);
 
@@ -589,11 +596,48 @@ public sealed class InputService : IInputService
     /// somebody else's.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// Declares input Nexus is about to cause, runs it, and takes the declaration back if Windows
+    /// refused it.
+    /// <para>
+    /// <b>Before, not after — and this was a real defect.</b> The declaration used to be made from
+    /// the delivered result, on the reasoning that input Windows refused produced nothing for the
+    /// detector to see. That reasoning holds; the ordering does not. On the virtual HID path the
+    /// report reaches Windows inside the controller call, the low-level hook fires while that call
+    /// is still returning, and the detector reaches its verdict before the claim exists. An ARMED
+    /// machine then raised a security incident against its owner for their own keystroke — the exact
+    /// failure the attribution work exists to prevent, and one that only appears once input is real
+    /// hardware rather than a tagged <c>SendInput</c> event.
+    /// </para>
+    /// </summary>
+    private InputResult Perform(SessionState state, ActivityKind kind, int events, Func<InputResult> action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+
+        _attribution.Expect(kind, events);
+
+        InputResult result;
+
+        try
+        {
+            result = action();
+        }
+        catch
+        {
+            _attribution.Withdraw(kind, events);
+            throw;
+        }
+
+        return Record(state, result, kind, events);
+    }
+
     private InputResult Record(SessionState state, InputResult result, ActivityKind kind, int events)
     {
-        if (result.Succeeded)
+        if (!result.Succeeded)
         {
-            _attribution.Expect(kind, events);
+            // Nothing reached the desktop, so nothing should be excusable. A claim left outstanding
+            // for a refused event could only ever be spent excusing somebody else's.
+            _attribution.Withdraw(kind, events);
         }
 
         if (result.Delivery == InputDelivery.BlockedByIntegrity && !state.WarnedAboutIntegrity)

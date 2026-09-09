@@ -333,9 +333,33 @@ public static class Program
         // on this one the controller exists, reports every capability unpublished, and the router
         // falls straight through to injection. The wiring is live either way, which is the point:
         // the day the driver is installed, nothing here has to change.
-        services.AddSingleton<NexusHidBackend>();
+        // The Raw Input device list is handed in rather than reached for. The backend resolves the
+        // device path of everything it creates by looking for the driver-assigned hardware id in
+        // Raw Input's own enumeration - the only list that cannot disagree with the strings Raw
+        // Input later reports for real events - and PcCore.NativeInput deliberately has no
+        // reference to the project that owns that P/Invoke.
+        services.AddSingleton<NexusHidBackend>(p => new NexusHidBackend(
+            p.GetRequiredService<NexusHidDeviceRegistry>(),
+            rawInputDevices: static () => RawInputListener.EnumerateDevices()
+                .Where(device => !string.IsNullOrWhiteSpace(device.Path))
+                .Select(device => new RawInputDeviceInfo(
+                    device.Path!,
+                    device.Kind switch
+                    {
+                        RawInputKind.Mouse => RawInputDeviceClass.Mouse,
+                        RawInputKind.Keyboard => RawInputDeviceClass.Keyboard,
+                        _ => RawInputDeviceClass.Hid,
+                    }))
+                .ToArray()));
         services.AddSingleton<IVirtualHidBackend>(p => p.GetRequiredService<NexusHidBackend>());
         services.AddSingleton<VirtualHidController>();
+
+        // The thing that actually asks. Everything above was wired and correct while nothing ever
+        // called Probe(), so the backend stayed in its constructor state and reported "not
+        // connected" on a machine where the driver was installed and started. One hosted service,
+        // registered once, owns the question from here on - and owns releasing the devices on the
+        // way out rather than leaving that to the driver's handle-cleanup backstop.
+        services.AddVirtualHidProbe();
 
         // Conditions are gathered once per call from cached component state, never by probing the
         // driver. Probing on the hot path is how routing starts to flap.
@@ -344,11 +368,15 @@ public static class Program
             var backend = p.GetRequiredService<NexusHidBackend>();
             var attribution = p.GetRequiredService<RawInputAttributionService>();
             var policy = p.GetRequiredService<CentralInputPolicy>();
+            var probe = p.GetRequiredService<VirtualHidProbeService>();
             var availability = backend.Availability;
             var health = attribution.Health;
 
             return new VirtualHidConditions
             {
+                // Diagnostic only. It is the one part of the picture the backend cannot report
+                // about itself: whether anything is driving it.
+                BackendPhase = probe.Describe(),
                 // The lifecycle, not the handle. A backend that has connected but not completed the
                 // neutral handshake is deliberately not eligible, and one inside a post-loss backoff
                 // stays ineligible until the backoff expires - which is what stops an intermittently
@@ -358,7 +386,7 @@ public static class Program
                 IdentitiesResolved = availability.Devices.Count > 0,
                 AttributionHealthy = health.IsReady,
                 AttributionSubscribed = health.SubscriptionActive,
-                DesktopAllowsInput = policy.CurrentDesktop == "DEFAULT",
+                DesktopAllowsInput = policy.PeekDesktop() == "DEFAULT",
                 AvailableKinds = availability.Devices
                     .Select(d => d.Kind switch
                     {
