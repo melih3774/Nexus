@@ -12,11 +12,9 @@ namespace PcCore.Windows;
 [SupportedOSPlatform("windows")]
 public sealed class WindowsSystemInfoProvider : ISystemInfoProvider
 {
-    private static readonly string Version =
-        typeof(WindowsSystemInfoProvider).Assembly
-            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
-            .Split('+')[0]
-        ?? "0.0.0";
+    // ProductInfo is the single source; this used to read the attribute itself, which was one of
+    // three places a version was derived and therefore one of three places it could drift.
+    private static readonly string Version = PcCore.Capabilities.Abstractions.ProductInfo.Version;
 
     public SystemInfo GetInfo()
     {

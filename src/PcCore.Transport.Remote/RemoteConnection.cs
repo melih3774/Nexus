@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using PcCore.Capabilities.Abstractions;
 using PcCore.Capabilities.Identity;
 using PcCore.Capabilities.Input;
+using PcCore.Capabilities.Media;
 using PcCore.Capabilities.Screen;
 using PcCore.Protocol;
 
@@ -71,6 +72,11 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
     private readonly IReadOnlyList<string> _allowedRoots;
     private readonly RemoteSessionRegistry _sessions;
     private readonly RemoteStreamCoordinator _streams;
+
+    /// <summary>One pump per live sensor, so the camera and the microphone are independent.</summary>
+    private readonly Dictionary<LiveSensorKind, CancellationTokenSource> _sensorPumps = [];
+
+    private readonly Lock _sensorGate = new();
     private readonly IInputService _input;
     private readonly IOwnerSessionService _ownerSessions;
     private readonly RemoteTransportOptions _options;
@@ -632,6 +638,86 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
         }
     }
 
+    /// <summary>
+    /// Starts pumping a live camera or microphone stream to this peer.
+    /// <para>
+    /// A second pump alongside the desktop one rather than replacing it, so the owner can watch the
+    /// screen and listen to the room at once. That is safe because every send goes through the same
+    /// gate: <c>SendFrameAsync</c> serialises on <c>_sendGate</c> and yields to control traffic
+    /// first, so two producers interleave whole messages instead of corrupting one.
+    /// </para>
+    /// <para>
+    /// Keyed by sensor, so starting the microphone does not cancel the camera.
+    /// </para>
+    /// </summary>
+    public void AttachSensor(LiveSensorSession session)
+    {
+        DetachSensor(session.Kind);
+
+        var pump = new CancellationTokenSource();
+
+        lock (_sensorGate)
+        {
+            _sensorPumps[session.Kind] = pump;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await foreach (var frame in session.Frames.ReadAllAsync(pump.Token).ConfigureAwait(false))
+                {
+                    if (!await SendFrameAsync(frame, pump.Token).ConfigureAwait(false))
+                    {
+                        break;
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Stopped, or the connection ended.
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(
+                    ex, "Live {Sensor} delivery ended on connection {ConnectionId}.", session.Kind, _connectionId);
+            }
+        });
+    }
+
+    public void DetachSensor(LiveSensorKind kind)
+    {
+        CancellationTokenSource? pump;
+
+        lock (_sensorGate)
+        {
+            if (!_sensorPumps.Remove(kind, out pump))
+            {
+                return;
+            }
+        }
+
+        pump.Cancel();
+        pump.Dispose();
+    }
+
+    private void DetachAllSensors()
+    {
+        CancellationTokenSource[] pumps;
+
+        lock (_sensorGate)
+        {
+            pumps = [.. _sensorPumps.Values];
+            _sensorPumps.Clear();
+        }
+
+        foreach (var pump in pumps)
+        {
+            pump.Cancel();
+            pump.Dispose();
+        }
+    }
+
     /// <summary>Sends one binary frame, yielding first to any control message that is waiting.</summary>
     private async Task<bool> SendFrameAsync(byte[] message, CancellationToken cancellationToken)
     {
@@ -712,6 +798,13 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
         // session that ended. Every one of those is cleaned up here, on every path out, including
         // the ones nobody chose.
         Detach();
+
+        // Live sensors stop with the connection that asked for them, unconditionally and on every
+        // path out. A camera that outlived the session watching it would be the exact failure this
+        // feature must not have.
+        DetachAllSensors();
+        _streams.StopLiveSensorsFor(_connectionId);
+
         _streams.Unregister(_connectionId);
 
         // The connection is forgotten; the owner's Full Remote authorisation is not. A phone link

@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using PcCore.Capabilities.Abstractions;
 using PcCore.Capabilities.Indicator;
 using PcCore.Capabilities.Input;
+using PcCore.Capabilities.Media;
 using PcCore.Capabilities.Screen;
 using PcCore.Protocol;
 
@@ -21,6 +22,12 @@ internal interface IFrameSink
 
     /// <summary>Stops pumping. The session itself is disposed by the coordinator.</summary>
     void Detach();
+
+    /// <summary>Starts pumping a live sensor stream. Independent of the desktop stream.</summary>
+    void AttachSensor(LiveSensorSession session);
+
+    /// <summary>Stops pumping one live sensor.</summary>
+    void DetachSensor(LiveSensorKind kind);
 }
 
 /// <summary>
@@ -37,7 +44,7 @@ internal interface IFrameSink
 /// producing frames for a channel with no reader.
 /// </para>
 /// </summary>
-public sealed class RemoteStreamCoordinator : IStreamCoordinator, IIndicatorActivityProbe
+public sealed class RemoteStreamCoordinator : IStreamCoordinator, IIndicatorActivityProbe, ILiveSensorSink
 {
     private readonly DesktopStreamService _streams;
     private readonly RemoteIndicatorService _indicator;
@@ -77,6 +84,53 @@ public sealed class RemoteStreamCoordinator : IStreamCoordinator, IIndicatorActi
             _sinks.Remove(connectionId);
         }
     }
+
+    /// <summary>
+    /// Set by the composition root so a departing connection can stop whatever it was watching.
+    /// <para>
+    /// A property rather than a constructor argument because the live sensor service and this both
+    /// have to exist before either can be told about the other; the alternative is a cycle.
+    /// </para>
+    /// </summary>
+    public LiveSensorService? LiveSensors { get; set; }
+
+    /// <summary>Hands a live sensor stream to the connection that asked for it.</summary>
+    public void AttachSensor(string connectionId, LiveSensorSession session)
+    {
+        IFrameSink? sink;
+
+        lock (_gate)
+        {
+            _sinks.TryGetValue(connectionId, out sink);
+        }
+
+        if (sink is null)
+        {
+            _logger.LogWarning(
+                "A live {Sensor} stream was started for connection {ConnectionId}, which is no longer here.",
+                session.Kind,
+                connectionId);
+            return;
+        }
+
+        sink.AttachSensor(session);
+    }
+
+    public void DetachSensor(string connectionId, LiveSensorKind kind)
+    {
+        IFrameSink? sink;
+
+        lock (_gate)
+        {
+            _sinks.TryGetValue(connectionId, out sink);
+        }
+
+        sink?.DetachSensor(kind);
+    }
+
+    /// <summary>Stops any live sensor a departing connection had open.</summary>
+    internal void StopLiveSensorsFor(string connectionId) =>
+        LiveSensors?.StopForConnection(connectionId, "the phone disconnected");
 
     public async Task<DesktopStreamSession> StartAsync(
         CallerDescriptor caller,

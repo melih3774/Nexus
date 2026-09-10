@@ -97,6 +97,12 @@ public sealed class DefaultCapabilityPolicy : ICapabilityPolicy
         "session.resume",
         "session.lock",
         "session.enroll_key",
+
+        // Live monitoring. Deliberately absent from WithoutOwnerAuthorization below: opening the
+        // camera is the last thing a stolen-but-paired phone should be able to do.
+        "media.live.start",
+        "media.live.stop",
+        "media.live.status",
     }.ToFrozenSet(StringComparer.Ordinal);
 
     /// <summary>

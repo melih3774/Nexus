@@ -3,6 +3,8 @@ using Microsoft.Extensions.Logging;
 using PcCore.Capabilities.Input;
 using PcCore.Capabilities.Storage;
 
+using PcCore.Capabilities.Media;
+
 namespace PcCore.Capabilities.Indicator;
 
 /// <summary>
@@ -90,6 +92,7 @@ public sealed class RemoteIndicatorService : IDisposable
     private IndicatorMode _mode;
     private int _viewers;
     private int _inputSessions;
+    private LiveSensorState _live;
 
     public RemoteIndicatorService(
         IRemoteIndicator indicator,
@@ -162,6 +165,19 @@ public sealed class RemoteIndicatorService : IDisposable
         Refresh();
     }
 
+    /// <summary>
+    /// Which sensors are being streamed. Drives the badge that says so on screen.
+    /// </summary>
+    public void SetLiveSensors(LiveSensorState live)
+    {
+        lock (_gate)
+        {
+            _live = live;
+        }
+
+        Refresh();
+    }
+
     /// <summary>How many remote input sessions are open.</summary>
     public void SetInputSessions(int sessions)
     {
@@ -175,9 +191,28 @@ public sealed class RemoteIndicatorService : IDisposable
 
     /// <summary>
     /// The whole policy, in one place.
+    /// <para>
+    /// <b>A live camera or microphone overrides the mode.</b> Every other case here is a preference:
+    /// the owner can decide how loudly ordinary remote control announces itself, because they are
+    /// the one being announced to. Streaming the room's camera or microphone is different in kind —
+    /// anyone else present is affected and has not chosen anything — so it always draws the badge,
+    /// including in <c>Minimal</c>. Without that rule this feature would have a configuration that
+    /// turns it into covert surveillance, and a setting that can do that is a setting that will.
+    /// </para>
     /// </summary>
-    public static IndicatorState Decide(IndicatorMode mode, bool viewing, bool inputActive)
+    public static IndicatorState Decide(
+        IndicatorMode mode,
+        bool viewing,
+        bool inputActive,
+        LiveSensorState live = default)
     {
+        if (live.Any)
+        {
+            // Named first and on its own: "Nexus · Camera LIVE" is more urgent than what the remote
+            // session happens to be doing at the same moment.
+            return new IndicatorState(true, true, live.Describe());
+        }
+
         if (!viewing && !inputActive)
         {
             return IndicatorState.Idle;
@@ -206,7 +241,7 @@ public sealed class RemoteIndicatorService : IDisposable
 
         lock (_gate)
         {
-            state = Decide(_mode, _viewers > 0, _inputSessions > 0);
+            state = Decide(_mode, _viewers > 0, _inputSessions > 0, _live);
         }
 
         if (state == Current)

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>PC Core v0.4 — developer test client</title>
+<title>__PCCORE_PRODUCT__ — control panel</title>
 <style>
   /* Deliberately plain. This is a debug tool, not the product UI. */
   body { font: 13px/1.5 Consolas, monospace; margin: 0; padding: 16px; background: #14161a; color: #d8dee9; }
@@ -20,12 +20,13 @@
   img { max-width: 100%; border: 1px solid #2b3038; margin-top: 8px; }
   .ok { color: #a3be8c; } .err { color: #bf616a; } .ev { color: #ebcb8b; }
   .row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .build { font-size: 0.55em; font-weight: normal; color: #8d97a5; vertical-align: middle; }
 </style>
 </head>
 <body>
 
-<h1>PC Core v0.4 — developer test client</h1>
-<div class="sub">Loopback only. Not the product UI; this exists to verify the capability contracts.</div>
+<h1>__PCCORE_PRODUCT__ <span class="build">control panel</span></h1>
+<div class="sub">Loopback only — this page is served to 127.0.0.1 and nowhere else. It drives the same capability contracts the phone uses.</div>
 
 <div class="cols">
   <div class="panel">

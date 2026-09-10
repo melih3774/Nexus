@@ -6,6 +6,18 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>PcCore.Host</AssemblyName>
     <UserSecretsId>pccore-host</UserSecretsId>
+
+    <!--
+      For the tray icon, and for nothing else. NotifyIcon is the supported way to put an icon in the
+      notification area, and the alternative - Shell_NotifyIcon with a message-only window and
+      TrackPopupMenu by hand - is two hundred lines of P/Invoke to reimplement a control that ships
+      with the framework. PC Core stays a console process; the tray runs on its own STA thread.
+    -->
+    <UseWindowsForms>true</UseWindowsForms>
+
+    <!-- The Windows Forms designer/entry-point conventions do not apply: this is still a Web SDK
+         application whose Main is written out by hand. -->
+    <EnableWindowsFormsHighDpiAutoResizing>false</EnableWindowsFormsHighDpiAutoResizing>
   </PropertyGroup>
 
   <!--

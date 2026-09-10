@@ -9,17 +9,20 @@ using PcCore.Capabilities.Files;
 using PcCore.Capabilities.Indicator;
 using PcCore.Capabilities.Input;
 using PcCore.Capabilities.Identity;
+using PcCore.Capabilities.Media;
 using PcCore.Capabilities.Screen;
 using PcCore.Capabilities.Security;
 using PcCore.Capabilities.Security.Detection;
 using PcCore.Capabilities.Security.Evidence;
 using PcCore.Capabilities.Security.Sessions;
 using PcCore.Capabilities.Storage;
+using PcCore.Protocol;
 using PcCore.Capabilities.System;
 using PcCore.Transport.Loopback;
 using PcCore.Transport.Remote;
 using PcCore.Windows;
 using PcCore.Windows.Capture;
+using PcCore.Windows.Media;
 using PcCore.NativeInput.Hid;
 using PcCore.Windows.Input;
 
@@ -47,6 +50,12 @@ public static class Program
         if (TryHandleNativeInputCommand(args, out var nativeExitCode))
         {
             return nativeExitCode;
+        }
+
+        // Start Menu entry, install location and auto-start. Also management: it runs and exits.
+        if (NexusShellInstaller.TryHandle(args, out var shellExitCode))
+        {
+            return shellExitCode;
         }
 
         // Exercises the security workflow against this machine's real hooks, camera and microphone.
@@ -212,6 +221,12 @@ public static class Program
         // configuration described the machine as it was a second before the driver connected, and
         // warned that elevated windows were out of reach on every single start.
         app.Lifetime.ApplicationStarted.Register(() => ReportNativeInput(app.Services, logger));
+
+        // The tray, once there is something for it to report. It is started after the host so its
+        // first status is the real one, and it is disposed on shutdown so the icon goes away with
+        // the process rather than lingering until someone hovers over it.
+        var tray = StartTray(app, transportOptions, logger);
+        app.Lifetime.ApplicationStopping.Register(() => tray?.Dispose());
 
         StartSecurityWorkflow(app.Services, logger);
         logger.LogInformation("Remote transport port: {Port} (Tailscale only)", remoteOptions.Port);
@@ -470,6 +485,19 @@ public static class Program
         services.AddSingleton<ICapabilityDispatcher, CapabilityDispatcher>();
 
         // --- Capabilities exposed by v0.1 -------------------------------------------------------
+        // Live camera and microphone monitoring. The sources are registered as their own interfaces
+        // rather than reusing the evidence ones: same devices, deliberately different code paths,
+        // because one writes to disk and the other must never be able to.
+        services.AddSingleton<ILiveCameraSource>(p =>
+            new WindowsLiveCamera(p.GetRequiredService<ILogger<WindowsLiveCamera>>()));
+        services.AddSingleton<ILiveAudioSource>(p =>
+            new WindowsLiveMicrophone(p.GetRequiredService<ILogger<WindowsLiveMicrophone>>()));
+        services.AddSingleton<LiveSensorService>();
+
+        services.AddSingleton<ICapabilityAction, StartLiveSensorAction>();
+        services.AddSingleton<ICapabilityAction, StopLiveSensorAction>();
+        services.AddSingleton<ICapabilityAction, GetLiveSensorStatusAction>();
+
         services.AddSingleton<ICapabilityAction, GetSystemInfoAction>();
         services.AddSingleton<ICapabilityAction, ListProcessesAction>();
         services.AddSingleton<ICapabilityAction, ListFilesAction>();
@@ -595,6 +623,34 @@ public static class Program
 
         logger.LogInformation("Remote-control indicator: {Mode}", indicator.Mode);
 
+        // Live sensors, joined to the three things they need: somewhere to send frames, a way to ask
+        // whether the session still holds Full Remote, and the on-screen badge. Done here rather
+        // than by constructor injection because the coordinator and the service each have to exist
+        // before the other can be told about it.
+        var live = services.GetRequiredService<LiveSensorService>();
+        var coordinator = services.GetRequiredService<RemoteStreamCoordinator>();
+        var sessions = services.GetRequiredService<IOwnerSessionService>();
+
+        coordinator.LiveSensors = live;
+
+        live.Connect(
+            sink: coordinator,
+            isAuthorized: connectionId => sessions.AuthorityOf(
+                new CallerDescriptor("remote", connectionId, ActorType.Device)) == RemoteAuthority.FullRemote,
+            onChanged: state =>
+            {
+                indicator.SetLiveSensors(state);
+
+                if (state.Any)
+                {
+                    logger.LogWarning("{Indicator} — the PC is showing this on screen.", state.Describe());
+                }
+                else
+                {
+                    logger.LogInformation("Live camera and microphone are off.");
+                }
+            });
+
         logger.LogInformation(
             "Secure Desktop capture: {State}",
             SecureDesktopCapture.IsHelperListening()
@@ -677,7 +733,13 @@ public static class Program
 
             return File.ReadAllText(path)
                 .Replace("__PCCORE_TOKEN__", token.Value, StringComparison.Ordinal)
-                .Replace("__PCCORE_ROOTS__", roots, StringComparison.Ordinal);
+                .Replace("__PCCORE_ROOTS__", roots, StringComparison.Ordinal)
+
+                // From ProductInfo rather than the markup. The page said "PC Core v0.4" for six
+                // releases because the version was written down in a file nobody edits when the
+                // version changes.
+                .Replace("__PCCORE_PRODUCT__", ProductInfo.Display, StringComparison.Ordinal)
+                .Replace("__PCCORE_VERSION__", ProductInfo.Version, StringComparison.Ordinal);
         }
         catch (IOException ex)
         {
@@ -741,6 +803,61 @@ public static class Program
         }
 
         autoStart.Register();
+    }
+
+    /// <summary>
+    /// Puts Nexus in the notification area.
+    /// <para>
+    /// Everything the menu shows is read through a snapshot function, so the tray thread never
+    /// touches capability state and a slow or failing status read degrades the menu rather than the
+    /// system. Failure to create the icon at all is logged and ignored: PC Core serving the phone
+    /// matters more than PC Core having an icon.
+    /// </para>
+    /// </summary>
+    private static NexusTray? StartTray(
+        WebApplication app,
+        LoopbackTransportOptions transportOptions,
+        ILogger logger)
+    {
+        try
+        {
+            var services = app.Services;
+            var url = LoopbackTransport.DescribeEndpoint(transportOptions);
+
+            var tray = new NexusTray(
+                status: () =>
+                {
+                    var input = services.GetRequiredService<IInputController>().Status;
+                    var security = services.GetRequiredService<ISecurityStateService>().Current;
+                    var phone = services.GetRequiredService<IPrimaryPhoneRegistry>().Current;
+                    var sessions = services.GetRequiredService<IOwnerSessionService>();
+                    var live = services.GetRequiredService<LiveSensorService>();
+
+                    return new TrayStatus(
+                        Version: ProductInfo.Version,
+                        Input: input.Summary,
+                        Security: security.State.ToString(),
+                        Phone: phone is null ? "not paired" : phone.DisplayName,
+                        Connected: sessions.AnyFullRemote,
+                        Live: live.TrayState);
+                },
+                controlPanelUrl: url,
+                onExit: () =>
+                {
+                    logger.LogInformation("Nexus is stopping: the owner chose Exit from the tray.");
+                    app.Lifetime.StopApplication();
+                },
+                onStopLive: () => services.GetRequiredService<LiveSensorService>().StopAll("stopped from the tray"),
+                logger: logger);
+
+            tray.Start();
+            return tray;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "The Nexus tray could not be started; PC Core continues without it.");
+            return null;
+        }
     }
 
     /// <summary>

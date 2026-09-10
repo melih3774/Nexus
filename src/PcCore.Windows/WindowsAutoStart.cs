@@ -71,9 +71,22 @@ public sealed class WindowsAutoStart
     }
 
     /// <summary>Registers, or corrects the path if the executable has moved. Idempotent.</summary>
-    public AutoStartStatus Register()
+    public AutoStartStatus Register() => Register(null);
+
+    /// <summary>
+    /// Registers a specific executable rather than the running one.
+    /// <para>
+    /// The installer needs this. PC Core normally registers itself, which is right when it is
+    /// running from where it lives — and wrong during development, where "where it is running from"
+    /// is build output that a clean or a branch switch can delete. <c>--install-app</c> copies the
+    /// build somewhere permanent and registers <em>that</em>, which is a different path from the one
+    /// doing the registering.
+    /// </para>
+    /// </summary>
+    /// <param name="executablePath">The executable to register, or null for this process.</param>
+    public AutoStartStatus Register(string? executablePath)
     {
-        var expected = ExpectedCommand();
+        var expected = executablePath is null ? ExpectedCommand() : $"\"{executablePath}\"";
 
         using var key = Registry.CurrentUser.CreateSubKey(RunKeyPath, writable: true);
         if (key is null)
