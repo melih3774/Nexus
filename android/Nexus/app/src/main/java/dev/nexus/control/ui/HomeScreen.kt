@@ -61,6 +61,12 @@ fun HomeScreen(
             DetailRow("PC Core", info?.pcCoreVersion?.let { "v$it" } ?: "—")
             DetailRow("Paired", state.pairedPc?.pairedAt?.take(10) ?: "—")
 
+            // The identifier PC Core names in its log when it refuses a phone. Showing it is what
+            // makes "this installation is paired with <id>" a comparison the owner can actually
+            // make, instead of a string with nothing to check it against. It is an identifier, not
+            // a credential: it is sent in the clear on every connection attempt.
+            state.pairedPc?.deviceId?.let { DetailRow("This phone", it) }
+
             if (state.connection is ConnectionState.Connected) {
                 DetailRow("Link", "Tailscale · ${state.pairedPc?.endpoint ?: "—"}")
             }

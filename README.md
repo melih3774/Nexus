@@ -1,4 +1,4 @@
-# Nexus v1.1
+# Nexus v1.1.1
 
 A user-level Windows process that exposes a **small, explicit set of capabilities** over a structured request/response/event protocol — locally over loopback, and remotely to one paired phone over Tailscale.
 
@@ -15,6 +15,8 @@ A user-level Windows process that exposes a **small, explicit set of capabilitie
 - **v0.9 — Virtual HID:** a signed UMDF2 source driver publishes a Nexus mouse, keyboard and touch screen through the Windows Virtual HID Framework. Input arrives from a device rather than an injection call, so it reaches elevated windows without an elevated broker — and Raw Input can still tell those devices apart from the ones on the desk.
 - **v1.0 — Owner-Authenticated Sessions, Secure Desktop, Real Cursors:** the phone app opens locked and unlocks with Android's own `BiometricPrompt`, backed by a hardware Keystore key the platform will not use without a real prompt. Remote control now requires proving *who* is holding the phone, not just *which* phone it is. A LocalSystem helper makes the UAC consent prompt visible remotely without weakening it, and the screen stream composites the actual Windows pointer shape instead of forcing an arrow.
 - **v1.1 — Evidence Playback, a Windows Shell, and Live Monitoring:** camera clips and audio from a security incident play on the phone instead of saying they cannot; Nexus has a tray icon, a Start Menu entry and one authoritative version; and the owner can watch or listen to the room their PC is in, over the authenticated session, with the PC saying so on its own screen the whole time.
+
+- **v1.1.1 — Why a phone was refused:** every failed device authentication used to print one sentence, "invalid proof for device X", for three different problems with three different remedies. It now names which one, using identifiers only, in the PC's own log — while the answer sent back over the wire stays a single opaque `authentication_failed`, so the detail cannot be used to enumerate device ids. Repeats are collapsed instead of filling the log, the phone stops retrying a credential the PC has already refused, and both ends show the device id so the two can actually be compared.
 
 Still deliberately absent: no AI integration, no virtual display (IDD), no multi-user support, no internet exposure — the remote path is Tailscale only. See [SPEC.md](SPEC.md) and [PLAN.md](PLAN.md).
 

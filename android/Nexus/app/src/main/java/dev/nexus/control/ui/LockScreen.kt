@@ -39,6 +39,8 @@ fun LockScreen(
     connection: ConnectionState,
     onUnlock: () -> Unit,
     modifier: Modifier = Modifier,
+    /** This phone's paired device id, so a refusal can be checked against the PC's log. */
+    deviceId: String? = null,
 ) {
     Column(
         modifier = modifier
@@ -59,7 +61,7 @@ fun LockScreen(
         Spacer(Modifier.height(10.dp))
 
         Text(
-            explanation(state, connection),
+            explanation(state, connection, deviceId),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
@@ -90,7 +92,11 @@ private fun headline(state: SessionGateState): String = when (state) {
     else -> "Nexus is locked"
 }
 
-private fun explanation(state: SessionGateState, connection: ConnectionState): String {
+private fun explanation(
+    state: SessionGateState,
+    connection: ConnectionState,
+    deviceId: String? = null,
+): String {
     (state as? SessionGateState.Locked)?.message?.let { return it }
 
     if (state is SessionGateState.Authenticating) {
@@ -103,9 +109,13 @@ private fun explanation(state: SessionGateState, connection: ConnectionState): S
     if (connection is ConnectionState.Failed
         && connection.reason == FailureReason.AuthenticationFailed
     ) {
+        val identifies = deviceId?.let {
+            " This phone identifies itself as $it; your PC's log names the phone it is paired with."
+        }.orEmpty()
+
         return "Your PC answered but did not accept this phone's saved credential, so it is not " +
             "this phone's lock that is in the way. Unlocking will not change that: the pairing " +
-            "itself has to be repaired on the PC."
+            "itself has to be repaired on the PC.$identifies"
     }
 
     val about = when (connection) {

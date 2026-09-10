@@ -183,7 +183,12 @@ fun NexusApp(
 
                 gateState.isUnlocked -> PairedFlow(navController, state, viewModel)
 
-                else -> LockScreen(gateState, state.connection, unlock)
+                else -> LockScreen(
+                    gateState,
+                    state.connection,
+                    unlock,
+                    deviceId = state.pairedPc?.deviceId,
+                )
             }
         }
     }
