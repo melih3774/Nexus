@@ -19,6 +19,19 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!--
+      The wire contract with the LocalSystem helper, compiled into both sides from one file.
+
+      A link rather than a project reference, and deliberately: PC Core must not gain a dependency on
+      the privileged executable, and the privileged executable must not gain one on PC Core. What
+      they share is a protocol, and a protocol is exactly the kind of thing that should live in a
+      single file both compile rather than in two definitions that agree until they do not.
+    -->
+    <Compile Include="..\PcCore.SecureCapture\SecureCaptureProtocol.cs" Link="Capture\SecureCaptureProtocol.cs" />
+    <Compile Include="..\PcCore.SecureCapture\SecureCaptureMessages.cs" Link="Capture\SecureCaptureMessages.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="System.Drawing.Common" Version="10.0.0" />
     <!-- DPAPI: the built-in per-user secret protection used for the phone credential. -->
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" />

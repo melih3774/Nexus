@@ -36,6 +36,7 @@ public sealed class RemoteControlTransportTests : IAsyncLifetime
     private ServiceProvider _services = null!;
     private RemoteTransport _transport = null!;
     private PairingCompletion _phone = null!;
+    private readonly OwnerPhoneKey _ownerKey = new();
     private Uri _uri = null!;
     private IPcIdentityProvider _identity = null!;
     private RecordingInputController _input = null!;
@@ -114,6 +115,7 @@ public sealed class RemoteControlTransportTests : IAsyncLifetime
     {
         await _transport.DisposeAsync();
         await _services.DisposeAsync();
+        _ownerKey.Dispose();
         _state.Dispose();
     }
 
@@ -126,7 +128,11 @@ public sealed class RemoteControlTransportTests : IAsyncLifetime
         return port;
     }
 
-    private async Task<RemotePhoneClient> ConnectAsync(CancellationToken token)
+    /// <summary>
+    /// A phone that has authenticated as the Primary Phone and nothing more. Everything below
+    /// viewing and control is reachable from here; nothing above it is.
+    /// </summary>
+    private async Task<RemotePhoneClient> ConnectUnauthorizedAsync(CancellationToken token)
     {
         var client = new RemotePhoneClient(_phone.DeviceId, _phone.SharedSecret);
         await client.ConnectAsync(_uri, token);
@@ -135,6 +141,100 @@ public sealed class RemoteControlTransportTests : IAsyncLifetime
         Assert.True(authenticated.Success);
 
         return client;
+    }
+
+    /// <summary>
+    /// A Full Remote Session: authenticated as the phone, then authorised by a signature from the
+    /// key Android only releases after the owner satisfies a system prompt.
+    /// </summary>
+    private async Task<RemotePhoneClient> ConnectAsync(CancellationToken token)
+    {
+        var client = await ConnectUnauthorizedAsync(token);
+        await client.AuthorizeAsync(_ownerKey, _identity.PcInstanceId, _phone.DeviceId, token);
+        return client;
+    }
+
+    /// <summary>
+    /// Viewing and control need the owner, not just the phone. This is the whole difference between
+    /// a paired device and a person holding it.
+    /// </summary>
+    [Theory]
+    [InlineData("screen.list_displays")]
+    [InlineData("screen.stream.start")]
+    [InlineData("input.begin")]
+    public async Task AnUnauthorizedSessionCannotViewOrControl(string action)
+    {
+        var token = TestContext.Current.CancellationToken;
+        await using var client = await ConnectUnauthorizedAsync(token);
+
+        var response = await client.SendRequestAsync(action, null, token);
+
+        Assert.False(response.Success, $"{action} was allowed without owner authorisation");
+        Assert.Equal(ErrorCodes.NotAuthorized, response.Error!.Code);
+    }
+
+    /// <summary>Locking the phone takes control away immediately, not in fifteen minutes.</summary>
+    [Fact]
+    public async Task LockingThePhoneWithdrawsControlAtOnce()
+    {
+        var token = TestContext.Current.CancellationToken;
+        await using var client = await ConnectAsync(token);
+
+        Assert.True((await client.SendRequestAsync("input.begin", null, token)).Success);
+        Assert.True((await client.SendRequestAsync("session.lock", null, token)).Success);
+
+        var afterLock = await client.SendRequestAsync("input.pointer", new { mode = "RELATIVE", dx = 5, dy = 5 }, token);
+
+        Assert.False(afterLock.Success);
+        Assert.Equal(ErrorCodes.NotAuthorized, afterLock.Error!.Code);
+    }
+
+    /// <summary>
+    /// A reconnect must not cost a fingerprint. The ticket is what carries the owner's authorisation
+    /// across a socket that dropped in a lift.
+    /// </summary>
+    [Fact]
+    public async Task AReconnectResumesTheSessionFromItsTicket()
+    {
+        var token = TestContext.Current.CancellationToken;
+
+        string ticket;
+
+        await using (var first = await ConnectUnauthorizedAsync(token))
+        {
+            ticket = await first.AuthorizeAsync(_ownerKey, _identity.PcInstanceId, _phone.DeviceId, token);
+        }
+
+        await using var second = await ConnectUnauthorizedAsync(token);
+
+        // Not authorised yet: the grant belonged to a connection that no longer exists.
+        Assert.False((await second.SendRequestAsync("input.begin", null, token)).Success);
+
+        var resumed = await second.SendRequestAsync("session.resume", new { ticket }, token);
+        Assert.True(resumed.Success, $"session.resume failed: {resumed.Error?.Code}");
+
+        Assert.True((await second.SendRequestAsync("input.begin", null, token)).Success);
+    }
+
+    /// <summary>A ticket the owner has locked away is not a way back in.</summary>
+    [Fact]
+    public async Task ATicketIsUselessAfterThePhoneLocks()
+    {
+        var token = TestContext.Current.CancellationToken;
+
+        string ticket;
+
+        await using (var first = await ConnectUnauthorizedAsync(token))
+        {
+            ticket = await first.AuthorizeAsync(_ownerKey, _identity.PcInstanceId, _phone.DeviceId, token);
+            Assert.True((await first.SendRequestAsync("session.lock", null, token)).Success);
+        }
+
+        await using var second = await ConnectUnauthorizedAsync(token);
+        var resumed = await second.SendRequestAsync("session.resume", new { ticket }, token);
+
+        Assert.False(resumed.Success);
+        Assert.Equal(ErrorCodes.AuthenticationFailed, resumed.Error!.Code);
     }
 
     private static async Task<bool> WaitAsync(Func<bool> condition, CancellationToken token, int timeoutMs = 5000)

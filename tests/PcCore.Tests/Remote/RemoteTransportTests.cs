@@ -43,6 +43,7 @@ public sealed class RemoteTransportTests : IAsyncLifetime
     private IPcIdentityProvider _identity = null!;
 
     private PairingCompletion _phone = null!;
+    private readonly OwnerPhoneKey _ownerKey = new();
     private Uri _uri = null!;
     private TempDirectory _allowedRoot = null!;
 
@@ -128,6 +129,7 @@ public sealed class RemoteTransportTests : IAsyncLifetime
     {
         await _transport.DisposeAsync();
         await _services.DisposeAsync();
+        _ownerKey.Dispose();
         _allowedRoot.Dispose();
         _state.Dispose();
     }
@@ -163,6 +165,17 @@ public sealed class RemoteTransportTests : IAsyncLifetime
         var client = await ConnectAsync(cancellationToken);
         var response = await client.AuthenticateAsync(_identity.PcInstanceId, cancellationToken);
         Assert.True(response.Success);
+        return client;
+    }
+
+    /// <summary>
+    /// Authenticated as the phone <em>and</em> authorised by the owner. Most capabilities need both,
+    /// and the difference is what <see cref="AuthenticationAloneUnlocksAlmostNothing"/> pins down.
+    /// </summary>
+    private async Task<RemotePhoneClient> ConnectAndAuthorizeAsync(CancellationToken cancellationToken)
+    {
+        var client = await ConnectAndAuthenticateAsync(cancellationToken);
+        await client.AuthorizeAsync(_ownerKey, _identity.PcInstanceId, _phone.DeviceId, cancellationToken);
         return client;
     }
 
@@ -322,6 +335,46 @@ public sealed class RemoteTransportTests : IAsyncLifetime
     public async Task AllowedActionsSucceedForADevice(string action)
     {
         var token = TestContext.Current.CancellationToken;
+        await using var client = await ConnectAndAuthorizeAsync(token);
+
+        var response = await client.SendRequestAsync(action, null, token);
+
+        Assert.True(response.Success, $"{action} was refused: {response.Error?.Code}");
+    }
+
+    /// <summary>
+    /// The distinction v1.0 introduced, stated as a test.
+    /// <para>
+    /// Authenticating proves which phone this is. It is a stored credential, so it is a fact about a
+    /// device - and a device can be picked up by somebody else. Everything that lets the holder see
+    /// or touch the PC therefore needs the second proof, and what is left without it is two status
+    /// reads and the handshake that obtains the second proof.
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("files.list")]
+    [InlineData("system.list_processes")]
+    [InlineData("screen.capture")]
+    [InlineData("security.arm")]
+    public async Task AuthenticationAloneUnlocksAlmostNothing(string action)
+    {
+        var token = TestContext.Current.CancellationToken;
+        await using var client = await ConnectAndAuthenticateAsync(token);
+
+        var response = await client.SendRequestAsync(action, new { path = _allowedRoot.Path }, token);
+
+        Assert.False(response.Success, $"{action} was allowed without owner authorisation");
+        Assert.Equal(ErrorCodes.NotAuthorized, response.Error!.Code);
+    }
+
+    /// <summary>What a locked phone may still ask, so it can show whether the PC is even there.</summary>
+    [Theory]
+    [InlineData("system.get_info")]
+    [InlineData("security.get_state")]
+    [InlineData("session.status")]
+    public async Task ALockedPhoneCanStillSeeThatThePcIsThere(string action)
+    {
+        var token = TestContext.Current.CancellationToken;
         await using var client = await ConnectAndAuthenticateAsync(token);
 
         var response = await client.SendRequestAsync(action, null, token);
@@ -329,11 +382,59 @@ public sealed class RemoteTransportTests : IAsyncLifetime
         Assert.True(response.Success, $"{action} was refused: {response.Error?.Code}");
     }
 
+    /// <summary>
+    /// A key registered once cannot be swapped by the connection that registered it. Otherwise a
+    /// phone in the wrong hands - which is an authenticated phone - could simply enroll its own.
+    /// </summary>
+    [Fact]
+    public async Task AnAlreadyRegisteredOwnerKeyCannotBeReplacedRemotely()
+    {
+        var token = TestContext.Current.CancellationToken;
+        await using var client = await ConnectAndAuthorizeAsync(token);
+
+        using var attacker = new OwnerPhoneKey();
+
+        var response = await client.SendRequestAsync(
+            "session.enroll_key", new { public_key = attacker.PublicKey }, token);
+
+        Assert.True(response.Success);
+        Assert.False(OwnerSessionTesting.Read(response.Result).GetProperty("registered").GetBoolean());
+    }
+
+    /// <summary>A signature made by another key is not a signature by the owner's.</summary>
+    [Fact]
+    public async Task AWrongSignatureDoesNotAuthorizeTheSession()
+    {
+        var token = TestContext.Current.CancellationToken;
+        await using var client = await ConnectAndAuthenticateAsync(token);
+
+        Assert.True((await client.SendRequestAsync(
+            "session.enroll_key", new { public_key = _ownerKey.PublicKey }, token)).Success);
+
+        var challenge = await client.SendRequestAsync("session.challenge", null, token);
+        var payload = OwnerSessionTesting.Read(challenge.Result);
+
+        using var impostor = new OwnerPhoneKey();
+
+        var response = await client.SendRequestAsync(
+            "session.authorize",
+            new
+            {
+                challenge_id = payload.GetProperty("challenge_id").GetString(),
+                signature = impostor.Sign(
+                    _identity.PcInstanceId, _phone.DeviceId, payload.GetProperty("challenge").GetString()!),
+            },
+            token);
+
+        Assert.False(response.Success);
+        Assert.Equal(ErrorCodes.AuthenticationFailed, response.Error!.Code);
+    }
+
     [Fact]
     public async Task ADeviceCanListFilesInsideTheAllowedRoots()
     {
         var token = TestContext.Current.CancellationToken;
-        await using var client = await ConnectAndAuthenticateAsync(token);
+        await using var client = await ConnectAndAuthorizeAsync(token);
 
         var response = await client.SendRequestAsync("files.list", new { path = _allowedRoot.Path }, token);
 
@@ -345,7 +446,7 @@ public sealed class RemoteTransportTests : IAsyncLifetime
     {
         // Policy grants files.list; it does not widen the allowed roots.
         var token = TestContext.Current.CancellationToken;
-        await using var client = await ConnectAndAuthenticateAsync(token);
+        await using var client = await ConnectAndAuthorizeAsync(token);
 
         var response = await client.SendRequestAsync("files.list", new { path = @"C:\Windows" }, token);
 
@@ -357,7 +458,7 @@ public sealed class RemoteTransportTests : IAsyncLifetime
     public async Task ADeviceCanCaptureTheScreen()
     {
         var token = TestContext.Current.CancellationToken;
-        await using var client = await ConnectAndAuthenticateAsync(token);
+        await using var client = await ConnectAndAuthorizeAsync(token);
 
         var response = await client.SendRequestAsync("screen.capture", null, token);
 
@@ -439,10 +540,37 @@ public sealed class RemoteTransportTests : IAsyncLifetime
                 "security.sessions.get",
                 "security.sessions.list",
                 "security.this_was_me",
+                "session.authorize",
+                "session.challenge",
+                "session.enroll_key",
+                "session.lock",
+                "session.resume",
+                "session.status",
                 "system.get_info",
                 "system.list_processes",
             ],
             DefaultCapabilityPolicy.RemoteAllowedActions.Order(StringComparer.Ordinal));
+    }
+
+    /// <summary>
+    /// And the much shorter list a phone may reach before its owner has authenticated on it. Adding
+    /// anything here is adding it to what a stolen, unlocked phone can do.
+    /// </summary>
+    [Fact]
+    public void TheUnauthorizedSubsetIsExactlyTheBootstrapAndTwoStatusReads()
+    {
+        Assert.Equal(
+            [
+                "security.get_state",
+                "session.authorize",
+                "session.challenge",
+                "session.enroll_key",
+                "session.lock",
+                "session.resume",
+                "session.status",
+                "system.get_info",
+            ],
+            DefaultCapabilityPolicy.ActionsWithoutOwnerAuthorization.Order(StringComparer.Ordinal));
     }
 
     [Fact]
@@ -480,7 +608,7 @@ public sealed class RemoteTransportTests : IAsyncLifetime
     public async Task ADeviceCanArmAndDisarmAndReceivesTheStateChangedEvent()
     {
         var token = TestContext.Current.CancellationToken;
-        await using var client = await ConnectAndAuthenticateAsync(token);
+        await using var client = await ConnectAndAuthorizeAsync(token);
 
         var armed = await client.SendRequestAsync("security.arm", null, token);
         Assert.True(armed.Success);
@@ -502,7 +630,7 @@ public sealed class RemoteTransportTests : IAsyncLifetime
     public async Task AnIdempotentTransitionProducesNoDuplicateEvent()
     {
         var token = TestContext.Current.CancellationToken;
-        await using var client = await ConnectAndAuthenticateAsync(token);
+        await using var client = await ConnectAndAuthorizeAsync(token);
 
         await client.SendRequestAsync("security.arm", null, token);
         await client.WaitForEventAsync(SecurityEvents.StateChanged, TimeSpan.FromSeconds(10), token);

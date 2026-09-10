@@ -86,6 +86,36 @@ public sealed class ProtocolVectorTests
             Convert.ToHexStringLower(message));
     }
 
+    /// <summary>
+    /// The owner-session message the phone has to reproduce byte for byte, and a signature over it
+    /// verified by the same code that will verify the phone's.
+    /// </summary>
+    [Fact]
+    public void TheOwnerSessionVectorVerifiesAgainstTheRealVerifier()
+    {
+        var challenge = Base64Url.DecodeFromChars(Challenge.AsSpan());
+        var message = OwnerSessionService.SigningMessage(PcInstanceId, DeviceId, challenge);
+
+        Assert.Equal(
+            Vector("owner_session")["signed_message_hex"]!.GetValue<string>(),
+            Convert.ToHexStringLower(message));
+
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+
+        var signature = key.SignData(message, HashAlgorithmName.SHA256, DSASignatureFormat.Rfc3279DerSequence);
+
+        Assert.True(key.VerifyData(
+            message, signature, HashAlgorithmName.SHA256, DSASignatureFormat.Rfc3279DerSequence));
+
+        // And a signature over the wrong bytes does not verify, which is the property the vector is
+        // protecting.
+        Assert.False(key.VerifyData(
+            OwnerSessionService.SigningMessage(PcInstanceId, "another-device", challenge),
+            signature,
+            HashAlgorithmName.SHA256,
+            DSASignatureFormat.Rfc3279DerSequence));
+    }
+
     [Fact]
     public void ThePairingPayloadVectorDecodesToTheStatedFields()
     {
@@ -420,6 +450,22 @@ public sealed class ProtocolVectorTests
                 ["signed_message_hex"] = Convert.ToHexStringLower(authMessage),
                 ["proof_b64url"] = Base64Url.EncodeToString(
                     HMACSHA256.HashData(Base64Url.DecodeFromChars(SharedSecret.AsSpan()), authMessage)),
+            },
+
+            // --- owner-session challenge --------------------------------------------------------
+            // What the phone signs with its biometric-gated Keystore key. Newline-separated rather
+            // than NUL-separated like the two proofs above, and that difference is exactly the kind
+            // of thing a vector exists to pin: both sides build these bytes independently, and a
+            // signature over subtly different bytes fails with no clue as to why.
+            ["owner_session"] = new JsonObject
+            {
+                ["context"] = "nexus.owner-session.v1",
+                ["pc_instance_id"] = PcInstanceId,
+                ["device_id"] = DeviceId,
+                ["challenge_b64url"] = Challenge,
+                ["signed_message_hex"] = Convert.ToHexStringLower(
+                    OwnerSessionService.SigningMessage(
+                        PcInstanceId, DeviceId, Base64Url.DecodeFromChars(Challenge.AsSpan()))),
             },
 
             // --- enrollment proof -------------------------------------------------------------

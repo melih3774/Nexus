@@ -12,6 +12,7 @@ import dev.nexus.control.nexusContainer
 import dev.nexus.control.protocol.NexusProtocol
 import dev.nexus.control.protocol.PairingCode
 import dev.nexus.control.protocol.SystemInfo
+import dev.nexus.control.security.SessionGate
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -42,7 +43,16 @@ data class AppUiState(
  *
  * Per-feature view models own their own screen's data. This one owns nothing a screen could own.
  */
-class AppViewModel(private val repository: NexusRepository) : ViewModel() {
+class AppViewModel(
+    private val repository: NexusRepository,
+
+    /**
+     * The lock, passed through rather than owned. It lives in the application container because it
+     * outlives every screen; the shell needs a handle on it, and reaching into the container from a
+     * composable would put an application reference where the view model already has one.
+     */
+    val gate: SessionGate,
+) : ViewModel() {
 
     private val systemInfo = MutableStateFlow<SystemInfo?>(null)
 
@@ -150,7 +160,10 @@ class AppViewModel(private val repository: NexusRepository) : ViewModel() {
 
     companion object {
         val Factory = viewModelFactory {
-            initializer { AppViewModel(this.nexusContainer.repository) }
+            initializer {
+                val container = this.nexusContainer
+                AppViewModel(container.repository, container.gate)
+            }
         }
     }
 }

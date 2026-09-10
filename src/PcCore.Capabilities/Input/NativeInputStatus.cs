@@ -173,6 +173,25 @@ public sealed record NativeInputStatus
     /// <summary>True while Windows is showing a UAC prompt, the lock screen or Ctrl+Alt+Del.</summary>
     public bool SecureDesktopActive => Desktop is not "DEFAULT";
 
+    /// <summary>
+    /// Whether an owner-authenticated session can drive the Secure Desktop.
+    /// <para>
+    /// True exactly when the pointer and the keyboard are Nexus HID devices, because that is the
+    /// only backend that can: a device produces reports Windows delivers to whichever desktop has
+    /// focus, and <c>SendInput</c> from the interactive session cannot reach Winlogon at all. It is
+    /// reported rather than assumed, because the honest answer on a machine without the driver is
+    /// no — and an owner who cannot answer a UAC prompt remotely should be told why.
+    /// </para>
+    /// </summary>
+    public bool ReachesSecureDesktop =>
+        Backends.Mouse == InputBackend.VirtualHid && Backends.Keyboard == InputBackend.VirtualHid;
+
+    /// <summary>
+    /// Whether the privileged capture helper is installed, so the Secure Desktop is also
+    /// <em>visible</em> remotely rather than only controllable.
+    /// </summary>
+    public bool SecureDesktopCaptureInstalled { get; init; }
+
     public string? BrokerVersion { get; init; }
 
     /// <summary>Short, safe to show. Why the native path is not in use, when it is not.</summary>
@@ -275,4 +294,40 @@ public sealed record NativeInputStatus
         (_, NativeInputState.Unavailable) => "Native input: unavailable",
         _ => "Standard input",
     };
+
+    /// <summary>
+    /// The sentence the owner reads about what is carrying their input.
+    /// <para>
+    /// <b>Here rather than at the one call site, because it has to agree with the fields beside
+    /// it.</b> The router used to compose this from the broker's installation state alone, which
+    /// produced "elevated application windows are out of reach" on a machine whose own
+    /// <see cref="ReachesElevatedWindows"/> was true in the same object. Both facts were computed a
+    /// few lines apart and nothing made them agree. Keeping the rule next to the fields it must be
+    /// consistent with is what makes that a testable invariant rather than a matter of care.
+    /// </para>
+    /// </summary>
+    /// <param name="backends">Which backend is carrying each kind.</param>
+    /// <param name="brokerRegistered">Whether the elevated broker task is installed.</param>
+    /// <param name="brokerDiagnostic">What the broker said, when it is the thing being described.</param>
+    public static string DescribeInputPath(
+        InputBackends backends,
+        bool brokerRegistered,
+        string? brokerDiagnostic)
+    {
+        ArgumentNullException.ThrowIfNull(backends);
+
+        // A device produces reports Windows delivers to whichever desktop has focus, so UIPI has
+        // nothing to filter and the broker is not merely absent but unnecessary.
+        if (backends.Mouse == InputBackend.VirtualHid && backends.Keyboard == InputBackend.VirtualHid)
+        {
+            return "Nexus HID devices are carrying input, so elevated application windows are "
+                + "reachable. The elevated broker is not installed and is not needed.";
+        }
+
+        return brokerRegistered
+            ? brokerDiagnostic
+              ?? "Native input is installed but not responding; PC Core is injecting input itself."
+            : "Native input is not installed. PC Core is injecting input itself, so elevated "
+              + "application windows are out of reach.";
+    }
 }

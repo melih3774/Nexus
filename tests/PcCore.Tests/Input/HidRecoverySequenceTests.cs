@@ -38,7 +38,6 @@ public sealed class HidRecoverySequenceTests
         IdentitiesResolved = identitiesResolved,
         AttributionHealthy = attributionHealthy,
         AttributionSubscribed = true,
-        DesktopAllowsInput = true,
         AvailableKinds = kinds,
     };
 

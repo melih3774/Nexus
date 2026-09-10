@@ -162,6 +162,30 @@ internal static unsafe class DxgiInterop
         }
     }
 
+    /// <summary>
+    /// IDXGIOutputDuplication::GetFramePointerShape, slot 11.
+    /// <para>
+    /// Slots 9 and 10 are GetFrameDirtyRects and GetFrameMoveRects, which Nexus does not use — the
+    /// whole frame is re-encoded every time. They are named here only so the count to 11 can be
+    /// checked against dxgi1_2.h rather than trusted.
+    /// </para>
+    /// </summary>
+    public static int GetFramePointerShape(
+        IntPtr duplication,
+        uint bufferSize,
+        byte[] buffer,
+        out uint required,
+        out DxgiOutduplPointerShapeInfo info)
+    {
+        fixed (byte* target = buffer)
+        fixed (uint* neededBytes = &required)
+        fixed (DxgiOutduplPointerShapeInfo* shape = &info)
+        {
+            return ((delegate* unmanaged[Stdcall]<IntPtr, uint, byte*, uint*, DxgiOutduplPointerShapeInfo*, int>)
+                (*(void***)duplication)[11])(duplication, bufferSize, target, neededBytes, shape);
+        }
+    }
+
     /// <summary>IDXGIOutputDuplication::ReleaseFrame, slot 14.</summary>
     public static int ReleaseFrame(IntPtr duplication) =>
         ((delegate* unmanaged[Stdcall]<IntPtr, int>)(*(void***)duplication)[14])(duplication);
@@ -265,6 +289,24 @@ internal struct DxgiOutduplFrameInfo
     public int PointerVisible;
     public uint TotalMetadataBufferSize;
     public uint PointerShapeBufferSize;
+}
+
+/// <summary>
+/// DXGI_OUTDUPL_POINTER_SHAPE_INFO. <see cref="Type"/> is one of the DXGI_OUTDUPL_POINTER_SHAPE_TYPE
+/// values: 1 monochrome, 2 colour, 4 masked colour.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct DxgiOutduplPointerShapeInfo
+{
+    public uint Type;
+    public uint Width;
+
+    /// <summary>For a monochrome shape this is twice the visible height: an AND mask above an XOR mask.</summary>
+    public uint Height;
+
+    public uint Pitch;
+    public int HotSpotX;
+    public int HotSpotY;
 }
 
 [StructLayout(LayoutKind.Sequential)]

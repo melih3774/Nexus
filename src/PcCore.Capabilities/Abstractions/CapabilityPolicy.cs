@@ -88,7 +88,54 @@ public sealed class DefaultCapabilityPolicy : ICapabilityPolicy
         "security.evidence.get",
         "security.this_was_me",
         "security.not_me",
+
+        // v1.0 — the owner-authenticated session. These are the only things a phone that has not
+        // proved its owner may reach, and they exist to let it do exactly one thing: prove it.
+        "session.status",
+        "session.challenge",
+        "session.authorize",
+        "session.resume",
+        "session.lock",
+        "session.enroll_key",
     }.ToFrozenSet(StringComparer.Ordinal);
+
+    /// <summary>
+    /// What a phone may do before its owner has authenticated on it.
+    /// <para>
+    /// <b>An allowlist inside an allowlist, and deliberately tiny.</b> A stolen phone holds a valid
+    /// device credential — that is what a stored credential is — so device authentication cannot be
+    /// the thing that unlocks the desktop. What is left here is the bootstrap needed to authenticate
+    /// (<c>session.*</c>), the two status reads the locked screen shows so it can say whether the PC
+    /// is even reachable, and nothing else. No screen, no input, no files, no processes, no
+    /// evidence.
+    /// </para>
+    /// <para>
+    /// <c>security.get_state</c> stays because a locked Nexus must still be able to say "your PC is
+    /// armed"; it returns a state word and no evidence. Answering an incident is not here: standing
+    /// down an alarm is a decision, and decisions need the owner.
+    /// </para>
+    /// </summary>
+    private static readonly FrozenSet<string> WithoutOwnerAuthorization = new[]
+    {
+        "system.get_info",
+        "security.get_state",
+        "session.status",
+        "session.challenge",
+        "session.authorize",
+        "session.resume",
+        "session.lock",
+        "session.enroll_key",
+    }.ToFrozenSet(StringComparer.Ordinal);
+
+    private readonly IRemoteAuthorityProvider _authority;
+
+    /// <summary>
+    /// <paramref name="authority"/> decides whether a connection has completed owner
+    /// authentication. It defaults to granting nothing, which is what every construction that does
+    /// not care about the distinction should get: a policy that cannot tell must not assume.
+    /// </summary>
+    public DefaultCapabilityPolicy(IRemoteAuthorityProvider? authority = null) =>
+        _authority = authority ?? NoRemoteAuthority.Instance;
 
     public PolicyDecision Evaluate(string action, CallerDescriptor caller)
     {
@@ -100,9 +147,7 @@ public sealed class DefaultCapabilityPolicy : ICapabilityPolicy
             // machine already has full control of it; restricting them here would protect nothing.
             ActorType.Local => PolicyDecision.Allow,
 
-            ActorType.Device => DeviceAllowed.Contains(action)
-                ? PolicyDecision.Allow
-                : PolicyDecision.Deny($"'{action}' is not available to a remote device"),
+            ActorType.Device => EvaluateDevice(action, caller),
 
             // No AI adapter exists yet. Failing closed means the day one arrives, its access is a
             // deliberate decision rather than something it inherited by default.
@@ -112,8 +157,28 @@ public sealed class DefaultCapabilityPolicy : ICapabilityPolicy
         };
     }
 
+    private PolicyDecision EvaluateDevice(string action, CallerDescriptor caller)
+    {
+        if (!DeviceAllowed.Contains(action))
+        {
+            return PolicyDecision.Deny($"'{action}' is not available to a remote device");
+        }
+
+        if (WithoutOwnerAuthorization.Contains(action))
+        {
+            return PolicyDecision.Allow;
+        }
+
+        return _authority.AuthorityOf(caller) == RemoteAuthority.FullRemote
+            ? PolicyDecision.Allow
+            : PolicyDecision.Deny($"'{action}' needs an owner-authenticated session");
+    }
+
     /// <summary>The remote allowlist, exposed so tests and diagnostics can read it rather than restate it.</summary>
     public static IReadOnlyCollection<string> RemoteAllowedActions => DeviceAllowed;
+
+    /// <summary>The subset a phone may reach before its owner has authenticated on it.</summary>
+    public static IReadOnlyCollection<string> ActionsWithoutOwnerAuthorization => WithoutOwnerAuthorization;
 }
 
 /// <summary>

@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using PcCore.Capabilities.Abstractions;
 using PcCore.Capabilities.Screen;
 using PcCore.Protocol;
+using PcCore.Windows.Capture;
 using PcCore.Windows.Interop;
 
 namespace PcCore.Windows;
@@ -176,17 +177,26 @@ public sealed class DxgiDesktopStream : IDesktopStream
                 throw new CapabilityException(ErrorCodes.InvalidParameters, "No such display.");
             }
 
-            var source = new DxgiCaptureSource(
-                adapter,
-                output,
-                display,
-                _loggerFactory.CreateLogger<DxgiCaptureSource>());
-
-            // Ownership moved into the source.
+            // Ownership moves before the call, not after it, and this is the fix for a crash rather
+            // than a tidy-up.
+            //
+            // The constructor releases everything it was given if it throws — and it throws on every
+            // ordinary Secure Desktop: DuplicateOutput answers DXGI_ERROR_ACCESS_DENIED while a UAC
+            // prompt is up. Transferring ownership only on the success path meant the finally below
+            // released the same adapter and output a second time, taking the reference count past
+            // zero. That is an access violation inside DXGI, and 0xC0000005 does not unwind — it
+            // ends the process. PC Core did not exit when UAC appeared; it was killed by its own
+            // cleanup, one second later, when the capture loop tried to reopen.
+            var ownedAdapter = adapter;
+            var ownedOutput = output;
             adapter = IntPtr.Zero;
             output = IntPtr.Zero;
 
-            return source;
+            return new DxgiCaptureSource(
+                ownedAdapter,
+                ownedOutput,
+                display,
+                _loggerFactory.CreateLogger<DxgiCaptureSource>());
         }
         finally
         {
@@ -211,9 +221,22 @@ internal sealed class DxgiCaptureSource : IDesktopCaptureSource
     private IntPtr _duplication;
     private IntPtr _staging;
 
-    private byte[] _pixels = [];
+    /// <summary>The desktop as Windows produced it, with no pointer on it.</summary>
+    private byte[] _desktop = [];
+
+    /// <summary>What is sent: a copy of the desktop with the pointer composited in.</summary>
+    private byte[] _composed = [];
+
+    private byte[] _shapeBuffer = [];
+
     private int _stride;
     private bool _delivered;
+
+    private PointerShape? _pointer;
+    private int _pointerX;
+    private int _pointerY;
+    private bool _pointerVisible;
+    private bool _pointerChanged;
 
     public DxgiCaptureSource(IntPtr adapter, IntPtr output, DisplayInfo display, ILogger<DxgiCaptureSource> logger)
     {
@@ -275,9 +298,14 @@ internal sealed class DxgiCaptureSource : IDesktopCaptureSource
         {
             throw new CapabilityException(
                 ErrorCodes.Unsupported,
-                hr == DxgiInterop.DxgiErrorNotCurrentlyAvailable
-                    ? "The display is already being duplicated by another application."
-                    : "The display could not be duplicated.");
+                hr switch
+                {
+                    DxgiInterop.DxgiErrorNotCurrentlyAvailable =>
+                        "The display is already being duplicated by another application.",
+                    DxgiInterop.DxgiErrorAccessDenied =>
+                        "Windows denied access to the desktop, most likely a secure desktop.",
+                    _ => "The display could not be duplicated.",
+                });
         }
 
         DxgiInterop.GetDuplicationDesc(_duplication, out var desc);
@@ -314,12 +342,16 @@ internal sealed class DxgiCaptureSource : IDesktopCaptureSource
         }
 
         _stride = PixelWidth * 4;
-        _pixels = new byte[(long)_stride * PixelHeight <= int.MaxValue ? _stride * PixelHeight : 0];
 
-        if (_pixels.Length == 0)
+        var bytes = (long)_stride * PixelHeight;
+
+        if (bytes <= 0 || bytes > int.MaxValue / 2)
         {
             throw new CapabilityException(ErrorCodes.Unsupported, "The display is too large to capture.");
         }
+
+        _desktop = new byte[bytes];
+        _composed = new byte[bytes];
     }
 
     public CaptureResult TryGetFrame(TimeSpan timeout)
@@ -334,10 +366,10 @@ internal sealed class DxgiCaptureSource : IDesktopCaptureSource
 
         if (hr == DxgiInterop.DxgiErrorWaitTimeout)
         {
-            // Nothing changed. On a still desktop that is the normal answer — except right at the
-            // start, when the client has nothing at all to show. Priming the first frame from a
-            // one-shot GDI grab avoids a black screen that only clears when something happens to
-            // move; after that, silence correctly means "your last frame is still correct".
+            // Nothing changed at all. On a still desktop that is the normal answer — except right at
+            // the start, when the client has nothing to show. Priming the first frame from a
+            // one-shot GDI grab avoids a black screen that only clears when something moves; after
+            // that, silence correctly means "your last frame is still correct".
             return _delivered ? CaptureResult.TimedOut : PrimeFirstFrame();
         }
 
@@ -348,62 +380,156 @@ internal sealed class DxgiCaptureSource : IDesktopCaptureSource
 
         try
         {
-            if (info.AccumulatedFrames == 0 && _delivered)
-            {
-                // Pointer-only update: the desktop image is unchanged and the texture holds nothing
-                // worth encoding.
-                return CaptureResult.TimedOut;
-            }
+            UpdatePointer(info);
 
-            if (info.AccumulatedFrames == 0 && !_delivered)
-            {
-                return PrimeFirstFrame();
-            }
+            var desktopChanged = info.AccumulatedFrames > 0;
 
-            var textureIid = DxgiInterop.IidTexture2D;
-            if (DxgiInterop.QueryInterface(resource, ref textureIid, out var texture) < 0)
+            if (desktopChanged)
             {
-                return CaptureResult.Lost("the acquired frame was not a texture");
-            }
-
-            try
-            {
-                DxgiInterop.CopyResource(_context, _staging, texture);
-
-                if (DxgiInterop.Map(_context, _staging, out var mapped) < 0)
+                var textureIid = DxgiInterop.IidTexture2D;
+                if (DxgiInterop.QueryInterface(resource, ref textureIid, out var texture) < 0)
                 {
-                    return CaptureResult.Lost("the captured frame could not be read");
+                    return CaptureResult.Lost("the acquired frame was not a texture");
                 }
 
                 try
                 {
-                    CopyRows(mapped);
+                    DxgiInterop.CopyResource(_context, _staging, texture);
+
+                    if (DxgiInterop.Map(_context, _staging, out var mapped) < 0)
+                    {
+                        return CaptureResult.Lost("the captured frame could not be read");
+                    }
+
+                    try
+                    {
+                        CopyRows(mapped);
+                    }
+                    finally
+                    {
+                        DxgiInterop.Unmap(_context, _staging);
+                    }
                 }
                 finally
                 {
-                    DxgiInterop.Unmap(_context, _staging);
+                    DxgiInterop.Release(ref texture);
+                }
+
+                if (info.ProtectedContentMaskedOut != 0)
+                {
+                    // The frame is real; parts of it are black because Windows refuses to hand over
+                    // protected content. Worth saying once, not once a frame.
+                    _logger.LogDebug("Protected content was masked out of a captured frame.");
                 }
             }
-            finally
+            else if (!_delivered)
             {
-                DxgiInterop.Release(ref texture);
+                return PrimeFirstFrame();
+            }
+            else if (!_pointerChanged)
+            {
+                // Neither the desktop nor the pointer moved. Nothing to send.
+                return CaptureResult.TimedOut;
             }
 
-            if (info.ProtectedContentMaskedOut != 0)
-            {
-                // The frame is real; parts of it are black because Windows refuses to hand over
-                // protected content. Worth saying once, not once a frame.
-                _logger.LogDebug("Protected content was masked out of a captured frame.");
-            }
-
+            // A pointer-only update is a frame worth sending, and used not to be. The pointer is
+            // baked into the image, so "the mouse moved and nothing else did" is a visible change to
+            // what the phone is looking at — and on a still desktop it is the only change there is.
+            _pointerChanged = false;
             _delivered = true;
-            return CaptureResult.Captured(BuildFrame());
+
+            return CaptureResult.Captured(Compose());
         }
         finally
         {
             DxgiInterop.Release(ref resource);
             DxgiInterop.ReleaseFrame(_duplication);
         }
+    }
+
+    /// <summary>
+    /// Takes whatever pointer news arrived with this frame.
+    /// <para>
+    /// Position and visibility come on every acquire that saw a mouse update; the shape only when it
+    /// actually changed, which is why it is cached. Moving the mouse across a text box changes the
+    /// shape once and the position sixty times.
+    /// </para>
+    /// </summary>
+    private void UpdatePointer(DxgiOutduplFrameInfo info)
+    {
+        if (info.LastMouseUpdateTime != 0)
+        {
+            var visible = info.PointerVisible != 0;
+
+            if (visible != _pointerVisible || info.PointerX != _pointerX || info.PointerY != _pointerY)
+            {
+                _pointerChanged = true;
+            }
+
+            _pointerVisible = visible;
+            _pointerX = info.PointerX;
+            _pointerY = info.PointerY;
+        }
+
+        if (info.PointerShapeBufferSize == 0)
+        {
+            return;
+        }
+
+        if (_shapeBuffer.Length < info.PointerShapeBufferSize)
+        {
+            _shapeBuffer = new byte[info.PointerShapeBufferSize];
+        }
+
+        var hr = DxgiInterop.GetFramePointerShape(
+            _duplication,
+            (uint)_shapeBuffer.Length,
+            _shapeBuffer,
+            out var required,
+            out var shapeInfo);
+
+        if (hr < 0)
+        {
+            _logger.LogDebug("The pointer shape could not be read (0x{Hr:x8}, {Required} bytes).", hr, required);
+            return;
+        }
+
+        var declared = (long)shapeInfo.Pitch * shapeInfo.Height;
+
+        if (declared <= 0 || declared > _shapeBuffer.Length)
+        {
+            _logger.LogDebug(
+                "Ignoring a pointer shape claiming {Declared} bytes from a {Actual}-byte buffer.",
+                declared,
+                _shapeBuffer.Length);
+            return;
+        }
+
+        var bytes = new byte[declared];
+        Array.Copy(_shapeBuffer, bytes, bytes.Length);
+
+        var shape = new PointerShape(
+            (PointerShapeType)shapeInfo.Type,
+            (int)shapeInfo.Width,
+            (int)shapeInfo.Height,
+            (int)shapeInfo.Pitch,
+            shapeInfo.HotSpotX,
+            shapeInfo.HotSpotY,
+            bytes);
+
+        if (!shape.IsUsable)
+        {
+            _logger.LogDebug(
+                "Ignoring a pointer shape that does not describe itself consistently: type {Type}, {Width}x{Height}, pitch {Pitch}.",
+                shapeInfo.Type,
+                shapeInfo.Width,
+                shapeInfo.Height,
+                shapeInfo.Pitch);
+            return;
+        }
+
+        _pointer = shape;
+        _pointerChanged = true;
     }
 
     /// <summary>
@@ -415,7 +541,7 @@ internal sealed class DxgiCaptureSource : IDesktopCaptureSource
 
         for (var y = 0; y < PixelHeight; y++)
         {
-            Marshal.Copy(mapped.Data + (y * pitch), _pixels, y * _stride, _stride);
+            Marshal.Copy(mapped.Data + (y * pitch), _desktop, y * _stride, _stride);
         }
     }
 
@@ -442,7 +568,7 @@ internal sealed class DxgiCaptureSource : IDesktopCaptureSource
             {
                 for (var y = 0; y < PixelHeight; y++)
                 {
-                    Marshal.Copy(data.Scan0 + (y * data.Stride), _pixels, y * _stride, _stride);
+                    Marshal.Copy(data.Scan0 + (y * data.Stride), _desktop, y * _stride, _stride);
                 }
             }
             finally
@@ -451,7 +577,9 @@ internal sealed class DxgiCaptureSource : IDesktopCaptureSource
             }
 
             _delivered = true;
-            return CaptureResult.Captured(BuildFrame());
+            _pointerChanged = false;
+
+            return CaptureResult.Captured(Compose());
         }
         catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or ExternalException)
         {
@@ -460,53 +588,52 @@ internal sealed class DxgiCaptureSource : IDesktopCaptureSource
     }
 
     /// <summary>
-    /// Wraps the pixel buffer, drawing the real cursor into it.
+    /// Copies the clean desktop and paints the pointer onto the copy.
     /// <para>
-    /// Desktop Duplication does not include the pointer in the frame; it reports the shape
-    /// separately. Drawing the actual cursor here rather than sending coordinates for the phone to
-    /// draw its own means the owner sees the I-beam, the resize arrows and the busy spinner they
-    /// would see sitting at the machine — and it makes double-rendering impossible, because the
-    /// frame's flags tell the client the pointer is already in the image.
+    /// Two buffers rather than one, because the pointer now moves independently of the desktop. If
+    /// the cursor were drawn into the capture buffer, the next pointer-only update would have
+    /// nothing clean to draw over and the desktop would slowly fill with a trail of dead cursors.
+    /// </para>
+    /// <para>
+    /// The pointer is reported to the client as already drawn (<c>CursorBakedIn</c>), so the phone
+    /// never draws its own on top. Sending coordinates and letting the client draw an arrow would
+    /// be cheaper and would also be a lie: the owner would see an arrow while their PC was showing
+    /// an I-beam, a resize handle or a spinner.
     /// </para>
     /// </summary>
-    private RawFrame BuildFrame()
+    private RawFrame Compose()
     {
+        Buffer.BlockCopy(_desktop, 0, _composed, 0, _desktop.Length);
+
         var cursorX = 0;
         var cursorY = 0;
         var cursorVisible = false;
 
-        try
+        if (_pointerVisible)
         {
-            var info = new CursorInfo { Size = Marshal.SizeOf<CursorInfo>() };
-
-            if (InputInterop.GetCursorInfo(ref info) && info.Flags == InputInterop.CursorShowing
-                && info.Cursor != IntPtr.Zero)
+            if (_pointer is { } shape)
             {
-                // The duplication surface can be larger than the display rectangle when Windows is
-                // scaling; map through the ratio rather than assuming they match.
-                var scaleX = Display.Width == 0 ? 1.0 : (double)PixelWidth / Display.Width;
-                var scaleY = Display.Height == 0 ? 1.0 : (double)PixelHeight / Display.Height;
+                shape.DrawInto(_composed, PixelWidth, PixelHeight, _stride, _pointerX, _pointerY);
 
-                var localX = (int)Math.Round((info.ScreenX - Display.Left) * scaleX);
-                var localY = (int)Math.Round((info.ScreenY - Display.Top) * scaleY);
-
-                if (localX >= 0 && localY >= 0 && localX < PixelWidth && localY < PixelHeight)
-                {
-                    cursorX = localX;
-                    cursorY = localY;
-                    cursorVisible = true;
-                    DrawCursor(info.Cursor, localX, localY);
-                }
+                // The client is told where the pointer actually points, not where its image starts.
+                cursorX = _pointerX + shape.HotspotX;
+                cursorY = _pointerY + shape.HotspotY;
+                cursorVisible = true;
+            }
+            else
+            {
+                // Before the first shape arrives — which needs the mouse to move at least once —
+                // fall back to what Windows can tell us about the current cursor.
+                cursorVisible = DrawSystemCursor(out cursorX, out cursorY);
             }
         }
-        catch (Exception ex) when (ex is ExternalException or InvalidOperationException)
+        else if (_pointer is null)
         {
-            // A frame without a pointer drawn on it is still a usable frame.
-            _logger.LogDebug(ex, "The cursor could not be drawn into a captured frame.");
+            cursorVisible = DrawSystemCursor(out cursorX, out cursorY);
         }
 
         return new RawFrame(
-            _pixels,
+            _composed,
             PixelWidth,
             PixelHeight,
             _stride,
@@ -514,6 +641,57 @@ internal sealed class DxgiCaptureSource : IDesktopCaptureSource
             cursorX,
             cursorY,
             cursorVisible);
+    }
+
+    /// <summary>
+    /// The stop-gap pointer, used only until Desktop Duplication has reported a real shape.
+    /// <para>
+    /// Kept because a freshly opened stream on a completely still desktop would otherwise show no
+    /// pointer at all until the owner moved the mouse — and the first thing they do is look for it.
+    /// </para>
+    /// </summary>
+    private bool DrawSystemCursor(out int cursorX, out int cursorY)
+    {
+        cursorX = 0;
+        cursorY = 0;
+
+        try
+        {
+            var info = new CursorInfo { Size = Marshal.SizeOf<CursorInfo>() };
+
+            if (!InputInterop.GetCursorInfo(ref info)
+                || (info.Flags & InputInterop.CursorShowing) == 0
+                || info.Cursor == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            // The duplication surface can be larger than the display rectangle when Windows is
+            // scaling; map through the ratio rather than assuming they match.
+            var scaleX = Display.Width == 0 ? 1.0 : (double)PixelWidth / Display.Width;
+            var scaleY = Display.Height == 0 ? 1.0 : (double)PixelHeight / Display.Height;
+
+            var localX = (int)Math.Round((info.ScreenX - Display.Left) * scaleX);
+            var localY = (int)Math.Round((info.ScreenY - Display.Top) * scaleY);
+
+            if (localX < 0 || localY < 0 || localX >= PixelWidth || localY >= PixelHeight)
+            {
+                return false;
+            }
+
+            cursorX = localX;
+            cursorY = localY;
+            DrawCursor(info.Cursor, localX, localY);
+            return true;
+        }
+        catch (Exception ex) when (ex is ExternalException or InvalidOperationException or OutOfMemoryException)
+        {
+            // A frame without a pointer drawn on it is still a usable frame. GDI+ reports most
+            // failures as OutOfMemoryException, which is why it is caught here rather than allowed
+            // to look like real memory exhaustion.
+            _logger.LogDebug(ex, "The cursor could not be drawn into a captured frame.");
+            return false;
+        }
     }
 
     private void DrawCursor(IntPtr cursor, int x, int y)
@@ -525,7 +703,7 @@ internal sealed class DxgiCaptureSource : IDesktopCaptureSource
 
         try
         {
-            var handle = GCHandle.Alloc(_pixels, GCHandleType.Pinned);
+            var handle = GCHandle.Alloc(_composed, GCHandleType.Pinned);
 
             try
             {
@@ -596,6 +774,9 @@ internal sealed class DxgiCaptureSource : IDesktopCaptureSource
         DxgiInterop.Release(ref _output);
         DxgiInterop.Release(ref _adapter);
 
-        _pixels = [];
+        _desktop = [];
+        _composed = [];
+        _shapeBuffer = [];
+        _pointer = null;
     }
 }

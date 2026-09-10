@@ -33,11 +33,11 @@ public sealed class CentralInputPolicyTests
     }
 
     [Fact]
-    public void TheOrdinaryDesktopAllowsInput()
+    public void TheOrdinaryDesktopAllowsInjectedInput()
     {
         var (policy, _, _) = Build();
 
-        Assert.Equal(InputPolicyDecision.Allow, policy.Evaluate(_ => true));
+        Assert.Equal(InputPolicyDecision.Allow, policy.Evaluate(false, _ => true));
         Assert.Equal("DEFAULT", policy.CurrentDesktop);
     }
 
@@ -45,18 +45,55 @@ public sealed class CentralInputPolicyTests
     [InlineData(InputDesktopKind.Secure)]
     [InlineData(InputDesktopKind.Other)]
     [InlineData(InputDesktopKind.Unknown)]
-    public void AnythingButTheOrdinaryDesktopBlocks(InputDesktopKind kind)
+    public void AnythingButTheOrdinaryDesktopBlocksInjection(InputDesktopKind kind)
     {
         var (policy, _, desktop) = Build();
         desktop.Kind = kind;
 
-        Assert.Equal(InputPolicyDecision.BlockedBySecureDesktop, policy.Evaluate(_ => true));
+        Assert.Equal(InputPolicyDecision.BlockedBySecureDesktop, policy.Evaluate(false, _ => true));
     }
 
     /// <summary>
-    /// Unknown is the case the check exists for. A desktop that cannot be identified is one Nexus
-    /// has no business injecting into, and failing open here would exempt exactly the situation
-    /// where the gate matters most.
+    /// A HID device is not injecting into a desktop; it is producing reports Windows delivers to
+    /// whichever desktop has focus, exactly as the keyboard on the owner's desk does. Refusing there
+    /// protected nothing and stopped the owner answering their own UAC prompt.
+    /// </summary>
+    [Theory]
+    [InlineData(InputDesktopKind.Secure)]
+    [InlineData(InputDesktopKind.Other)]
+    [InlineData(InputDesktopKind.Unknown)]
+    public void ADeviceBackedRouteCarriesInputOnAnyDesktop(InputDesktopKind kind)
+    {
+        var (policy, _, desktop) = Build();
+        desktop.Kind = kind;
+
+        Assert.Equal(InputPolicyDecision.Allow, policy.Evaluate(true, _ => true));
+    }
+
+    /// <summary>
+    /// And it must not release what it is holding on the way in. The devices survive the desktop
+    /// change, so the state they hold survives it too - inventing a key-up because a prompt appeared
+    /// would be Nexus typing something the owner did not.
+    /// </summary>
+    [Fact]
+    public void ADeviceBackedRouteDoesNotNeutralizeOnADesktopChange()
+    {
+        var (policy, ownership, desktop) = Build();
+        ownership.RecordDown(new BackendInstance(InputBackend.VirtualHid, 1), HeldInputKind.Modifier);
+
+        var neutralized = 0;
+        desktop.Kind = InputDesktopKind.Secure;
+
+        policy.Evaluate(true, _ => { neutralized++; return true; });
+
+        Assert.Equal(0, neutralized);
+        Assert.False(ownership.Held.IsNeutral);
+    }
+
+    /// <summary>
+    /// Unknown is the case the check exists for. A desktop that cannot be identified is one an
+    /// injection path has no business sending into, and failing open here would exempt exactly the
+    /// situation where the gate matters most.
     /// </summary>
     [Fact]
     public void AnUnreadableDesktopFailsClosed()
@@ -64,7 +101,7 @@ public sealed class CentralInputPolicyTests
         var (policy, _, desktop) = Build();
         desktop.Kind = InputDesktopKind.Unknown;
 
-        var decision = policy.Evaluate(_ => true);
+        var decision = policy.Evaluate(false, _ => true);
 
         Assert.Equal(InputPolicyDecision.BlockedBySecureDesktop, decision);
         Assert.Equal("UNKNOWN", policy.CurrentDesktop);
@@ -83,7 +120,7 @@ public sealed class CentralInputPolicyTests
         var neutralized = 0;
         desktop.Kind = InputDesktopKind.Secure;
 
-        policy.Evaluate(_ => { neutralized++; return true; });
+        policy.Evaluate(false, _ => { neutralized++; return true; });
 
         Assert.Equal(1, neutralized);
         Assert.True(ownership.Held.IsNeutral);
@@ -104,7 +141,7 @@ public sealed class CentralInputPolicyTests
 
         for (var i = 0; i < 25; i++)
         {
-            policy.Evaluate(_ => { neutralized++; return true; });
+            policy.Evaluate(false, _ => { neutralized++; return true; });
         }
 
         Assert.Equal(1, neutralized);
@@ -121,14 +158,14 @@ public sealed class CentralInputPolicyTests
         ownership.RecordDown(Local, HeldInputKind.Modifier);
 
         desktop.Kind = InputDesktopKind.Secure;
-        policy.Evaluate(_ => false);
+        policy.Evaluate(false, _ => false);
 
         Assert.True(ownership.IsUncertain);
         Assert.True(policy.NeutralizationUncertain);
 
         desktop.Kind = InputDesktopKind.Default;
 
-        Assert.Equal(InputPolicyDecision.BlockedByUncertainState, policy.Evaluate(_ => false));
+        Assert.Equal(InputPolicyDecision.BlockedByUncertainState, policy.Evaluate(false, _ => false));
     }
 
     /// <summary>Returning to the ordinary desktop restores routing but never restores held input.</summary>
@@ -139,11 +176,11 @@ public sealed class CentralInputPolicyTests
         ownership.RecordDown(Local, HeldInputKind.Key);
 
         desktop.Kind = InputDesktopKind.Secure;
-        policy.Evaluate(_ => true);
+        policy.Evaluate(false, _ => true);
 
         desktop.Kind = InputDesktopKind.Default;
 
-        Assert.Equal(InputPolicyDecision.Allow, policy.Evaluate(_ => true));
+        Assert.Equal(InputPolicyDecision.Allow, policy.Evaluate(false, _ => true));
         Assert.True(ownership.Held.IsNeutral);
     }
 

@@ -118,6 +118,7 @@ public sealed class RemoteTransport : IAsyncDisposable
         var streams = _services.GetRequiredService<RemoteStreamCoordinator>();
         var input = _services.GetRequiredService<PcCore.Capabilities.Input.IInputService>();
         var phones = _services.GetRequiredService<IPrimaryPhoneRegistry>();
+        var ownerSessions = _services.GetRequiredService<IOwnerSessionService>();
         var identity = _services.GetRequiredService<IPcIdentityProvider>();
         var events = _services.GetRequiredService<IEventStream>();
         var connectionLogger = _loggerFactory.CreateLogger("PcCore.Transport.Remote.Connection");
@@ -161,6 +162,7 @@ public sealed class RemoteTransport : IAsyncDisposable
                 _sessions,
                 streams,
                 input,
+                ownerSessions,
                 _options,
                 connectionLogger);
 

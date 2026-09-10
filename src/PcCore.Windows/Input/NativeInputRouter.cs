@@ -52,6 +52,12 @@ public sealed class NativeInputRouter : IInputController, IDisposable
 
     private readonly Func<VirtualHidConditions>? _conditions;
 
+    /// <summary>
+    /// Whether the privileged Secure Desktop capture helper is installed. Passed in rather than
+    /// probed here: the router decides how input travels and has no business opening pipes.
+    /// </summary>
+    private readonly Func<bool>? _secureCaptureInstalled;
+
     private bool _usingBroker;
 
     public NativeInputRouter(
@@ -62,7 +68,8 @@ public sealed class NativeInputRouter : IInputController, IDisposable
         CentralInputPolicy? policy = null,
         RemoteInputOwnership? ownership = null,
         VirtualHidController? hid = null,
-        Func<VirtualHidConditions>? conditions = null)
+        Func<VirtualHidConditions>? conditions = null,
+        Func<bool>? secureCaptureInstalled = null)
     {
         _broker = broker;
         _local = local;
@@ -72,6 +79,7 @@ public sealed class NativeInputRouter : IInputController, IDisposable
         _ownership = ownership;
         _hid = hid;
         _conditions = conditions;
+        _secureCaptureInstalled = secureCaptureInstalled;
     }
 
     /// <summary>
@@ -128,6 +136,7 @@ public sealed class NativeInputRouter : IInputController, IDisposable
                 return new NativeInputStatus
                 {
                     VirtualHidDiagnostic = DescribeVirtualHid(),
+                    SecureDesktopCaptureInstalled = _secureCaptureInstalled?.Invoke() ?? false,
                     Backends = CurrentBackends(elevatedBrokerReady: true),
                     Path = InputPath.NativeBroker,
                     State = info.Elevated ? NativeInputState.Ready : NativeInputState.Degraded,
@@ -152,24 +161,29 @@ public sealed class NativeInputRouter : IInputController, IDisposable
 
             var backends = CurrentBackends(elevatedBrokerReady: false);
 
+            // Whether real Nexus HID devices are carrying the pointer and the keyboard. When they
+            // are, every broker-shaped sentence below is answering a question nobody asked.
+            var hidCarrying = backends.Mouse == InputBackend.VirtualHid
+                && backends.Keyboard == InputBackend.VirtualHid;
+
             return local with
             {
                 VirtualHidDiagnostic = DescribeVirtualHid(),
+                SecureDesktopCaptureInstalled = _secureCaptureInstalled?.Invoke() ?? false,
                 Backends = backends,
 
                 // Virtual HID reaches elevated windows without a broker, and that is the whole point
                 // of it: the input arrives from a device, so UIPI has nothing to filter. Reporting
                 // this from the broker alone said "elevated windows are out of reach" on a machine
                 // where they demonstrably were not.
-                ReachesElevatedWindows = local.ReachesElevatedWindows
-                    || (backends.Mouse == InputBackend.VirtualHid
-                        && backends.Keyboard == InputBackend.VirtualHid),
+                ReachesElevatedWindows = local.ReachesElevatedWindows || hidCarrying,
                 State = installation.Registered ? NativeInputState.Unavailable : NativeInputState.NotInstalled,
-                Diagnostic = installation.Registered
-                    ? _broker.Diagnostic
-                      ?? "Native input is installed but not responding; PC Core is injecting input itself."
-                    : "Native input is not installed. PC Core is injecting input itself, so elevated "
-                      + "application windows are out of reach.",
+
+                // The diagnostic describes what is carrying input, not what the broker is doing.
+                // The rule lives on NativeInputStatus so it cannot drift from ReachesElevatedWindows
+                // above, which is exactly how it came to contradict it.
+                Diagnostic = NativeInputStatus.DescribeInputPath(
+                    backends, installation.Registered, _broker.Diagnostic),
             };
         }
     }
@@ -337,11 +351,15 @@ public sealed class NativeInputRouter : IInputController, IDisposable
         BrokerRequest request,
         Func<InputResult> local)
     {
-        // The central gate, before any backend. Nothing below this line runs while the Secure
-        // Desktop is up, whichever path would have carried it.
+        // Which tier will carry this is decided before the gate, because the gate's answer depends
+        // on it: a HID device reaches the Secure Desktop and an injection path does not, so the
+        // desktop question cannot be answered without knowing which one is about to be used.
+        var hidRoute = hid is not null && HidEligible(kind);
+
+        // The central gate, before any backend.
         if (_policy is not null)
         {
-            var decision = _policy.Evaluate(NeutralizeCurrent);
+            var decision = _policy.Evaluate(hidRoute, NeutralizeCurrent);
 
             if (decision != InputPolicyDecision.Allow)
             {
@@ -354,7 +372,7 @@ public sealed class NativeInputRouter : IInputController, IDisposable
         // Unsupported is not a failure here - it is a capability answer, and the honest response is
         // to try the next tier. A HID mouse genuinely cannot position absolutely, and a backend with
         // no digitizer genuinely cannot do touch.
-        if (hid is not null && HidEligible(kind))
+        if (hidRoute && hid is not null)
         {
             var attempt = hid();
 
@@ -367,7 +385,9 @@ public sealed class NativeInputRouter : IInputController, IDisposable
         else if (_hid is not null && WasUsingHid())
         {
             // HID was carrying input and has just stopped being eligible - attribution went
-            // unhealthy, the driver vanished, the desktop changed, or a capability disappeared.
+            // unhealthy, the driver vanished, or a capability disappeared. A desktop change is no
+            // longer one of the reasons, and must not be: the devices stay, so the state they hold
+            // stays with them.
             // Whatever it was holding is released through the HID device before anything else
             // carries input, because nothing below can release it afterwards.
             var released = _hid.Neutralize();

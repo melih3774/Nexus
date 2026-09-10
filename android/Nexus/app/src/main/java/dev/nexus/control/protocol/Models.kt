@@ -36,6 +36,45 @@ data class AuthenticatedSession(
     @SerialName("session_id") val sessionId: String? = null,
     @SerialName("pc_instance_id") val pcInstanceId: String? = null,
     @SerialName("allowed_roots") val allowedRoots: List<String> = emptyList(),
+
+    /**
+     * Whether the PC will refuse everything but the session handshake until the owner authenticates.
+     * Defaults to false so a phone built against this protocol still works against an older PC Core.
+     */
+    @SerialName("owner_authorization_required") val ownerAuthorizationRequired: Boolean = false,
+
+    /** Whether this phone has already registered its owner-authentication key with the PC. */
+    @SerialName("owner_key_registered") val ownerKeyRegistered: Boolean = false,
+)
+
+/** What `session.status` reports about this connection. */
+@Serializable
+data class OwnerSessionStatus(
+    val authorized: Boolean = false,
+    @SerialName("owner_key_registered") val ownerKeyRegistered: Boolean = false,
+    @SerialName("expires_at_utc") val expiresAtUtc: String? = null,
+    val reason: String = "",
+)
+
+/** The result of `session.authorize` or `session.resume`. */
+@Serializable
+data class OwnerSessionGrant(
+    val authorized: Boolean = false,
+
+    /**
+     * Kept in memory only, and never written to disk. Losing it on process death is precisely what
+     * makes a cold launch ask for a fingerprint again.
+     */
+    val ticket: String = "",
+    @SerialName("expires_at_utc") val expiresAtUtc: String = "",
+    @SerialName("idle_minutes") val idleMinutes: Int = 15,
+)
+
+/** The result of `session.enroll_key`. */
+@Serializable
+data class OwnerKeyRegistration(
+    val registered: Boolean = false,
+    val reason: String = "",
 )
 
 @Serializable

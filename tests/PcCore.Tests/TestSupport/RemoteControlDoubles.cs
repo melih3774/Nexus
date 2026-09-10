@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
 using PcCore.Capabilities.Abstractions;
 using PcCore.Capabilities.Indicator;
+using PcCore.Capabilities.Identity;
 using PcCore.Capabilities.Input;
 using PcCore.Capabilities.Screen;
 using PcCore.Capabilities.Security.Detection;
@@ -236,6 +237,20 @@ public static class RemoteControlTestServices
         services.AddSingleton(new InputOptions());
         services.AddSingleton<INexusInputAttribution, NullNexusInputAttribution>();
         services.AddSingleton<IInputService, InputService>();
+
+        // The real owner-session service, not a double. Every remote test that authenticates a
+        // device now also has to be able to authorise one, and a fake would be testing the fake.
+        services.AddSingleton(new OwnerSessionOptions());
+        services.AddSingleton<OwnerSessionService>();
+        services.AddSingleton<IOwnerSessionService>(p => p.GetRequiredService<OwnerSessionService>());
+        services.AddSingleton<IRemoteAuthorityProvider>(p => p.GetRequiredService<OwnerSessionService>());
+
+        services.AddSingleton<ICapabilityAction, GetSessionStatusAction>();
+        services.AddSingleton<ICapabilityAction, EnrollOwnerKeyAction>();
+        services.AddSingleton<ICapabilityAction, GetSessionChallengeAction>();
+        services.AddSingleton<ICapabilityAction, AuthorizeSessionAction>();
+        services.AddSingleton<ICapabilityAction, ResumeSessionAction>();
+        services.AddSingleton<ICapabilityAction, LockSessionAction>();
 
         services.AddSingleton<NullRemoteIndicator>();
         services.AddSingleton<IRemoteIndicator>(p => p.GetRequiredService<NullRemoteIndicator>());

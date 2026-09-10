@@ -5,7 +5,12 @@ using Xunit;
 namespace PcCore.Tests.Input;
 
 /// <summary>
-/// Virtual HID eligibility: seven conditions, evaluated in one place, reported with a reason.
+/// Virtual HID eligibility: six conditions, evaluated in one place, reported with a reason.
+///
+/// Which desktop is live is deliberately not one of them any more. It was, and it meant a UAC prompt
+/// demoted Nexus from a HID device to SendInput - dropping the only backend that could have reached
+/// the prompt. The desktop question moved to CentralInputPolicy, which asks it about the chosen
+/// route.
 /// </summary>
 public sealed class VirtualHidEligibilityTests
 {
@@ -16,7 +21,6 @@ public sealed class VirtualHidEligibilityTests
         IdentitiesResolved = true,
         AttributionHealthy = true,
         AttributionSubscribed = true,
-        DesktopAllowsInput = true,
         AvailableKinds = new HashSet<InputKind>(kinds.Length == 0
             ? [InputKind.Mouse, InputKind.Keyboard, InputKind.Touch]
             : kinds),
@@ -28,13 +32,12 @@ public sealed class VirtualHidEligibilityTests
         Assert.True(VirtualHidEligibility.Evaluate(AllGood(), InputKind.Mouse).Eligible);
     }
 
-    /// <summary>Opening a handle is not eligibility. Six more things must hold.</summary>
+    /// <summary>Opening a handle is not eligibility. Four more things must hold.</summary>
     [Theory]
     [InlineData(nameof(VirtualHidConditions.ProtocolCompatible), VirtualHidIneligibility.ProtocolIncompatible)]
     [InlineData(nameof(VirtualHidConditions.IdentitiesResolved), VirtualHidIneligibility.IdentityNotResolved)]
     [InlineData(nameof(VirtualHidConditions.AttributionHealthy), VirtualHidIneligibility.AttributionUnhealthy)]
     [InlineData(nameof(VirtualHidConditions.AttributionSubscribed), VirtualHidIneligibility.AttributionNotSubscribed)]
-    [InlineData(nameof(VirtualHidConditions.DesktopAllowsInput), VirtualHidIneligibility.DesktopBlocked)]
     public void AnyMissingConditionMakesItIneligible(string condition, VirtualHidIneligibility expected)
     {
         var c = AllGood();
@@ -44,8 +47,7 @@ public sealed class VirtualHidEligibilityTests
             nameof(VirtualHidConditions.ProtocolCompatible) => c with { ProtocolCompatible = false },
             nameof(VirtualHidConditions.IdentitiesResolved) => c with { IdentitiesResolved = false },
             nameof(VirtualHidConditions.AttributionHealthy) => c with { AttributionHealthy = false },
-            nameof(VirtualHidConditions.AttributionSubscribed) => c with { AttributionSubscribed = false },
-            _ => c with { DesktopAllowsInput = false },
+            _ => c with { AttributionSubscribed = false },
         };
 
         var verdict = VirtualHidEligibility.Evaluate(c, InputKind.Mouse);

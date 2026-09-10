@@ -17,7 +17,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.activity.compose.LocalActivity
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
+import androidx.fragment.app.FragmentActivity
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
@@ -29,8 +33,12 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import dev.nexus.control.security.BiometricOwnerConfirmation
 import dev.nexus.control.security.SecurityAlertPreference
 import dev.nexus.control.security.SecurityAlertService
+import dev.nexus.control.security.LockReason
+import dev.nexus.control.security.SessionGateState
+import kotlinx.coroutines.launch
 import dev.nexus.control.remote.RemoteScreen
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
@@ -67,7 +75,27 @@ fun NexusApp(
 
     val context = LocalContext.current
 
+    val gate = viewModel.gate
+    val gateState by gate.state.collectAsStateWithLifecycle()
+
+    // BiometricPrompt needs the hosting activity, so it is built here rather than in the container.
+    // The gate itself never touches an Android UI type: it is handed a yes-or-no question to ask.
+    val activity = LocalActivity.current as? FragmentActivity
+    val scope = rememberCoroutineScope()
+
+    val unlock: () -> Unit = {
+        activity?.let { host ->
+            scope.launch { gate.authenticate(BiometricOwnerConfirmation(host)) }
+        }
+
+        Unit
+    }
+
     LifecycleEventEffect(Lifecycle.Event.ON_START) {
+        // Before anything else on the way in. Whether this launch needs the owner again is a
+        // decision about the session, not about the screen that happens to be showing.
+        gate.onForeground()
+
         // `viewModel.isPairedNow`, never `state.isPaired`: the latter is still false this early,
         // which is what left the app showing "Disconnected" after being reopened.
         val paired = viewModel.isPairedNow
@@ -101,10 +129,30 @@ fun NexusApp(
     }
 
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
+        // The clock starts here; nothing is locked yet. Fifteen minutes of it is forgiven, because
+        // answering a message and coming back is what using a phone looks like.
+        gate.onBackground()
+
         // Unconditional until v0.7.1, which is what made the security alert impossible: the
         // foreground service held a socket this had already closed.
         if (BackgroundPolicy.shouldDisconnectOnStop(SecurityAlertPreference.isEnabled(context))) {
             viewModel.disconnect()
+        }
+    }
+
+    // The prompt is raised as soon as the lock screen appears, rather than waiting for a tap. The
+    // owner opened Nexus to use it; making them press one more button first would be ceremony.
+    //
+    // Only for the reasons that mean "time passed". A cancelled prompt and a refusal from the PC are
+    // both states the owner has to act on, and re-raising the prompt on top of them would be a loop
+    // they could not read.
+    val autoPrompt = (gateState as? SessionGateState.Locked)?.reason in setOf(
+        LockReason.Started, LockReason.ScreenLocked, LockReason.AwayTooLong,
+    )
+
+    LaunchedEffect(gateState, state.isPaired, activity) {
+        if (state.isPaired && autoPrompt && activity != null) {
+            unlock()
         }
     }
 
@@ -128,10 +176,14 @@ fun NexusApp(
         // inset. Painting inside the insets instead would leave the bars showing the window's own
         // colour, which is not the theme's.
         Box(Modifier.safeDrawingPadding()) {
-            if (state.isPaired) {
-                PairedFlow(navController, state, viewModel)
-            } else {
-                UnpairedFlow(navController, pairing, viewModel)
+            when {
+                // Pairing comes first: an unpaired phone has no session to lock and nothing to show
+                // behind a lock screen.
+                !state.isPaired -> UnpairedFlow(navController, pairing, viewModel)
+
+                gateState.isUnlocked -> PairedFlow(navController, state, viewModel)
+
+                else -> LockScreen(gateState, state.connection, unlock)
             }
         }
     }

@@ -58,6 +58,15 @@ object NexusProtocol {
         const val INPUT_TOUCH = "input.touch"
         const val INPUT_STATUS = "input.status"
 
+        // v1.0 - the owner-authenticated session. These are the only things a locked Nexus may call,
+        // and they exist so it can stop being locked.
+        const val SESSION_STATUS = "session.status"
+        const val SESSION_ENROLL_KEY = "session.enroll_key"
+        const val SESSION_CHALLENGE = "session.challenge"
+        const val SESSION_AUTHORIZE = "session.authorize"
+        const val SESSION_RESUME = "session.resume"
+        const val SESSION_LOCK = "session.lock"
+
         // v0.7 - the security workflow. The phone receives the alert, so it can inspect the incident
         // and answer it. Deleting evidence and changing security settings are deliberately absent:
         // those stay at the PC, behind Windows Hello.
@@ -113,5 +122,12 @@ object NexusProtocol {
     object Context {
         const val AUTH = "nexus-auth-v1"
         const val PAIRING = "nexus-pair-v1"
+
+        /**
+         * The owner-session challenge. Newline-separated rather than NUL-separated like the two
+         * above, and signed with an EC key rather than HMAC'd - it is a different mechanism proving
+         * a different thing, so it deliberately shares nothing with them but a challenge.
+         */
+        const val OWNER_SESSION = "nexus.owner-session.v1"
     }
 }

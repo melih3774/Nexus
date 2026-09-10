@@ -19,6 +19,7 @@ using PcCore.Capabilities.System;
 using PcCore.Transport.Loopback;
 using PcCore.Transport.Remote;
 using PcCore.Windows;
+using PcCore.Windows.Capture;
 using PcCore.NativeInput.Hid;
 using PcCore.Windows.Input;
 
@@ -61,6 +62,14 @@ public static class Program
             DpiAwareness.TryEnablePerMonitorV2();
             using var nativeLogs = LoggerFactory.Create(b => b.AddSimpleConsole(c => c.SingleLine = true));
             return await NativeInputSelfTest.RunAsync(args, nativeLogs).ConfigureAwait(false);
+        }
+
+        // Whether Windows will let the LocalSystem helper photograph the Secure Desktop. Nothing but
+        // a real consent prompt answers that, so this raises one.
+        if (args.Contains("--selftest-secure-capture"))
+        {
+            using var captureLogs = LoggerFactory.Create(b => b.AddSimpleConsole(c => c.SingleLine = true));
+            return await SecureCaptureSelfTest.RunAsync(args, captureLogs).ConfigureAwait(false);
         }
 
         // A local diagnostic for the three v0.6 pieces that only exist against real Windows.
@@ -119,6 +128,7 @@ public static class Program
         var streamOptions = Bind<StreamOptions>(builder.Configuration, StreamOptions.SectionName);
         var inputOptions = Bind<InputOptions>(builder.Configuration, InputOptions.SectionName);
         var detectionOptions = Bind<DetectionOptions>(builder.Configuration, DetectionOptions.SectionName);
+        var ownerSessionOptions = Bind<OwnerSessionOptions>(builder.Configuration, OwnerSessionOptions.SectionName);
         var evidenceOptions = Bind<EvidenceOptions>(builder.Configuration, EvidenceOptions.SectionName);
         var attributionOptions = Bind<AttributionOptions>(builder.Configuration, AttributionOptions.SectionName);
         var securityStorage = Bind<SecurityStorageOptions>(builder.Configuration, SecurityStorageOptions.SectionName);
@@ -138,7 +148,8 @@ public static class Program
             detectionOptions,
             evidenceOptions,
             attributionOptions,
-            securityStorage);
+            securityStorage,
+            ownerSessionOptions);
         RegisterRemoteTransport(builder.Services, remoteOptions);
 
         var app = builder.Build();
@@ -195,7 +206,13 @@ public static class Program
         logger.LogInformation("Security state: {State}", app.Services.GetRequiredService<ISecurityStateService>().Current.State);
 
         WireRemoteControl(app.Services, logger);
-        ReportNativeInput(app.Services, logger);
+
+        // After the host has started, not here. The virtual HID probe does its first pass inside
+        // its StartAsync, and hosted services do not run until app.RunAsync() - so reporting from
+        // configuration described the machine as it was a second before the driver connected, and
+        // warned that elevated windows were out of reach on every single start.
+        app.Lifetime.ApplicationStarted.Register(() => ReportNativeInput(app.Services, logger));
+
         StartSecurityWorkflow(app.Services, logger);
         logger.LogInformation("Remote transport port: {Port} (Tailscale only)", remoteOptions.Port);
 
@@ -238,7 +255,8 @@ public static class Program
         DetectionOptions detectionOptions,
         EvidenceOptions evidenceOptions,
         AttributionOptions attributionOptions,
-        SecurityStorageOptions securityStorage)
+        SecurityStorageOptions securityStorage,
+        OwnerSessionOptions ownerSessionOptions)
     {
         // --- Platform implementations (the only Windows-specific registrations) ---------------
         services.AddSingleton<IRealPathResolver, Win32RealPathResolver>();
@@ -253,7 +271,18 @@ public static class Program
         // v0.6 platform pieces. Live capture, input injection and the on-screen indicator are the
         // only three things in this milestone that touch Windows directly, and all three sit behind
         // an interface the capability layer declares.
-        services.AddSingleton<IDesktopStream, DxgiDesktopStream>();
+        // Capture is two things behind one interface. Desktop Duplication reads the ordinary desktop;
+        // a LocalSystem helper reads the Secure Desktop, which Windows will not let this process see
+        // however it asks. DesktopTransitionStream owns the switch between them, so a UAC prompt is a
+        // change of source rather than the end of a stream - and it refuses the Secure Desktop
+        // outright unless an owner-authenticated session is live.
+        services.AddSingleton<DxgiDesktopStream>();
+        services.AddSingleton<SecureDesktopCapture>();
+        services.AddSingleton<IDesktopStream>(p => new DesktopTransitionStream(
+            p.GetRequiredService<DxgiDesktopStream>(),
+            p.GetRequiredService<SecureDesktopCapture>(),
+            () => p.GetRequiredService<IOwnerSessionService>().AnyFullRemote,
+            p.GetRequiredService<ILoggerFactory>()));
         services.AddSingleton<IDisplayCatalog>(p => p.GetRequiredService<IDesktopStream>());
         services.AddSingleton<IFrameEncoder, JpegFrameEncoder>();
         // The input path. WindowsInputController is PC Core injecting for itself; BrokerInputChannel
@@ -263,7 +292,16 @@ public static class Program
         services.AddSingleton<WindowsInputController>();
         services.AddSingleton<BrokerInputChannel>();
         services.AddSingleton<NativeInputInstaller>();
-        services.AddSingleton<NativeInputRouter>();
+        services.AddSingleton<NativeInputRouter>(p => new NativeInputRouter(
+            p.GetRequiredService<BrokerInputChannel>(),
+            p.GetRequiredService<WindowsInputController>(),
+            p.GetRequiredService<NativeInputInstaller>(),
+            p.GetRequiredService<ILoggerFactory>().CreateLogger<NativeInputRouter>(),
+            p.GetRequiredService<CentralInputPolicy>(),
+            p.GetRequiredService<RemoteInputOwnership>(),
+            p.GetRequiredService<VirtualHidController>(),
+            p.GetRequiredService<Func<VirtualHidConditions>>(),
+            SecureDesktopCapture.IsHelperListening));
         services.AddSingleton<IInputController>(p => p.GetRequiredService<NativeInputRouter>());
         services.AddSingleton<IRemoteIndicator, WindowsRemoteIndicator>();
 
@@ -282,6 +320,14 @@ public static class Program
         services.AddSingleton<IPrimaryPhoneRegistry, PrimaryPhoneRegistry>();
         services.AddSingleton<IPairingService, PairingService>();
         services.AddSingleton<IDeviceAuthenticator, DeviceAuthenticator>();
+
+        // Owner presence, as distinct from device identity. The authenticator above answers "which
+        // phone is this"; this answers "is the owner holding it", and only a signature from a
+        // biometric-gated Android Keystore key can make it say yes.
+        services.AddSingleton(ownerSessionOptions);
+        services.AddSingleton<OwnerSessionService>();
+        services.AddSingleton<IOwnerSessionService>(p => p.GetRequiredService<OwnerSessionService>());
+        services.AddSingleton<IRemoteAuthorityProvider>(p => p.GetRequiredService<OwnerSessionService>());
 
         // Remote pairing enrollment: not a capability, and deliberately not registered as one. The
         // remote transport is its only caller (see RemoteConnection), which is what confines it to
@@ -386,7 +432,6 @@ public static class Program
                 IdentitiesResolved = availability.Devices.Count > 0,
                 AttributionHealthy = health.IsReady,
                 AttributionSubscribed = health.SubscriptionActive,
-                DesktopAllowsInput = policy.PeekDesktop() == "DEFAULT",
                 AvailableKinds = availability.Devices
                     .Select(d => d.Kind switch
                     {
@@ -418,8 +463,10 @@ public static class Program
         services.AddSingleton<IEventStream>(p => p.GetRequiredService<EventBus>());
         services.AddSingleton<ICapabilityRegistry>(p => new CapabilityRegistry(p.GetServices<ICapabilityAction>()));
         // The first real caller distinction: local keeps everything, the Primary Phone gets an
-        // explicit allowlist. Evaluated inside the dispatcher, so both transports share it.
-        services.AddSingleton<ICapabilityPolicy, DefaultCapabilityPolicy>();
+        // explicit allowlist, and most of that allowlist needs an owner-authenticated session on top.
+        // Evaluated inside the dispatcher, so both transports share it.
+        services.AddSingleton<ICapabilityPolicy>(p => new DefaultCapabilityPolicy(
+            p.GetRequiredService<IRemoteAuthorityProvider>()));
         services.AddSingleton<ICapabilityDispatcher, CapabilityDispatcher>();
 
         // --- Capabilities exposed by v0.1 -------------------------------------------------------
@@ -449,6 +496,17 @@ public static class Program
         services.AddSingleton<ICapabilityAction, KeyInputAction>();
         services.AddSingleton<ICapabilityAction, TextInputAction>();
         services.AddSingleton<ICapabilityAction, ReleaseAllInputAction>();
+
+        // --- Capabilities added by v1.0: the owner-authenticated session -------------------------
+        services.AddSingleton<ICapabilityAction, GetSessionStatusAction>();
+        services.AddSingleton<ICapabilityAction, EnrollOwnerKeyAction>();
+        services.AddSingleton<ICapabilityAction, GetSessionChallengeAction>();
+        services.AddSingleton<ICapabilityAction, AuthorizeSessionAction>();
+        services.AddSingleton<ICapabilityAction, ResumeSessionAction>();
+        services.AddSingleton<ICapabilityAction, LockSessionAction>();
+
+        // Local-only: the way back in when Android has invalidated the phone's key.
+        services.AddSingleton<ICapabilityAction, ResetOwnerKeyAction>();
 
         // --- Capabilities added by v0.8 -----------------------------------------------------------
         services.AddSingleton<ICapabilityAction, TouchInputAction>();
@@ -536,6 +594,13 @@ public static class Program
         var indicator = services.GetRequiredService<RemoteIndicatorService>();
 
         logger.LogInformation("Remote-control indicator: {Mode}", indicator.Mode);
+
+        logger.LogInformation(
+            "Secure Desktop capture: {State}",
+            SecureDesktopCapture.IsHelperListening()
+                ? "the privileged helper is running; a UAC prompt stays visible to an authenticated session"
+                : "not installed. UAC will interrupt the picture until "
+                  + "PcCore.SecureCapture.exe --install is run once from an elevated terminal");
 
         var displays = services.GetRequiredService<IDisplayCatalog>().GetDisplays();
 
@@ -692,7 +757,21 @@ public static class Program
 
         var status = services.GetRequiredService<IInputController>().Status;
 
-        if (status.State == NativeInputState.Ready)
+        if (status.Backends.Mouse == InputBackend.VirtualHid
+            && status.Backends.Keyboard == InputBackend.VirtualHid)
+        {
+            // Virtual HID answers first, because it is the better answer and because the broker
+            // fields below describe a component this machine does not need. Logging the broker's
+            // "not installed" as a warning here told the owner their elevated windows were out of
+            // reach while Nexus HID devices were demonstrably reaching them.
+            logger.LogInformation(
+                "Input: {Summary}. Elevated application windows are reachable; Secure Desktop "
+                + "{Secure}; touch {Touch}.",
+                status.Summary,
+                status.ReachesSecureDesktop ? "reachable" : "out of reach",
+                status.TouchAvailable ? "available" : "unavailable");
+        }
+        else if (status.State == NativeInputState.Ready)
         {
             logger.LogInformation(
                 "Native input: READY via the Nexus Input Broker {Version}. Elevated application "

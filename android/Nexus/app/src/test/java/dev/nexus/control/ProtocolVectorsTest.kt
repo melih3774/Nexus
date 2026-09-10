@@ -128,6 +128,49 @@ class ProtocolVectorsTest {
         )
     }
 
+    /**
+     * The bytes the phone signs with its biometric-gated Keystore key.
+     *
+     * Newline-separated, not NUL-separated like the two HMAC proofs, and that difference is the
+     * whole reason this vector exists: an ECDSA signature over subtly different bytes is refused
+     * with no clue as to why, on a phone, at the moment the owner is trying to unlock their PC.
+     */
+    @Test
+    fun `the owner-session message matches PC Core byte for byte`() {
+        val v = vector("owner_session")
+
+        val message = NexusCrypto.buildOwnerSessionMessage(
+            pcInstanceId = v["pc_instance_id"]!!.jsonPrimitive.content,
+            deviceId = v["device_id"]!!.jsonPrimitive.content,
+            challenge = Base64Url.decode(v["challenge_b64url"]!!.jsonPrimitive.content),
+        )
+
+        assertEquals(
+            "the signed message differs - the PC would refuse this phone's owner authentication",
+            v["signed_message_hex"]!!.jsonPrimitive.content,
+            toHex(message),
+        )
+    }
+
+    /** A different device id is a different message, which is what stops one signature standing in. */
+    @Test
+    fun `the owner-session message is bound to the PC and the device`() {
+        val v = vector("owner_session")
+        val challenge = Base64Url.decode(v["challenge_b64url"]!!.jsonPrimitive.content)
+        val pc = v["pc_instance_id"]!!.jsonPrimitive.content
+        val device = v["device_id"]!!.jsonPrimitive.content
+
+        assertFalse(
+            toHex(NexusCrypto.buildOwnerSessionMessage(pc, "another-device", challenge)) ==
+                toHex(NexusCrypto.buildOwnerSessionMessage(pc, device, challenge)),
+        )
+
+        assertFalse(
+            toHex(NexusCrypto.buildOwnerSessionMessage("another-pc", device, challenge)) ==
+                toHex(NexusCrypto.buildOwnerSessionMessage(pc, device, challenge)),
+        )
+    }
+
     @Test
     fun `the enrollment proof matches PC Core byte for byte`() {
         val v = vector("enrollment_proof")

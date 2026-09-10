@@ -1,7 +1,10 @@
 package dev.nexus.control
 
 import android.app.Application
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.CreationExtras
 import dev.nexus.control.data.CredentialStore
@@ -9,6 +12,9 @@ import dev.nexus.control.data.NexusRepository
 import dev.nexus.control.net.AndroidPrivateNetworkProbe
 import dev.nexus.control.net.PcConnectionManager
 import dev.nexus.control.net.PcEnrollmentClient
+import dev.nexus.control.security.OwnerKeyStore
+import dev.nexus.control.security.OwnerSessionClient
+import dev.nexus.control.security.SessionGate
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -32,6 +38,18 @@ class NexusContainer(context: Context) {
     val connection = PcConnectionManager(scope, AndroidPrivateNetworkProbe(context))
 
     val repository = NexusRepository(credentials, connection, PcEnrollmentClient())
+
+    private val ownerKeys = OwnerKeyStore()
+
+    /**
+     * The lock, and the authority behind it.
+     *
+     * In the container rather than in a view model because it must outlive every screen and every
+     * rotation: a lock that resets when the activity is recreated is not a lock, and one that
+     * forgets its session ticket on rotation would ask for a fingerprint every time the phone was
+     * turned sideways.
+     */
+    val gate = SessionGate(scope, connection.state, OwnerSessionClient(connection, ownerKeys))
 }
 
 class NexusApplication : Application() {
@@ -43,6 +61,22 @@ class NexusApplication : Application() {
         super.onCreate()
         container = NexusContainer(this)
         container.repository.restore()
+
+        // Screen off is the owner putting the phone down, and it is the one lock signal that does
+        // not arrive through the activity lifecycle - Android does not stop the activity when the
+        // screen goes off while the app is in front. Registered on the application rather than the
+        // activity so it keeps working while the alert service holds the app alive in the
+        // background.
+        registerReceiver(
+            object : BroadcastReceiver() {
+                override fun onReceive(context: Context?, intent: Intent?) {
+                    if (intent?.action == Intent.ACTION_SCREEN_OFF) {
+                        container.gate.onScreenOff()
+                    }
+                }
+            },
+            IntentFilter(Intent.ACTION_SCREEN_OFF),
+        )
     }
 }
 

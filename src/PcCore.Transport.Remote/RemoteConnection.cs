@@ -72,6 +72,7 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
     private readonly RemoteSessionRegistry _sessions;
     private readonly RemoteStreamCoordinator _streams;
     private readonly IInputService _input;
+    private readonly IOwnerSessionService _ownerSessions;
     private readonly RemoteTransportOptions _options;
     private readonly ILogger _logger;
     private readonly string _connectionId;
@@ -108,6 +109,7 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
         RemoteSessionRegistry sessions,
         RemoteStreamCoordinator streams,
         IInputService input,
+        IOwnerSessionService ownerSessions,
         RemoteTransportOptions options,
         ILogger logger)
     {
@@ -122,6 +124,7 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
         _sessions = sessions;
         _streams = streams;
         _input = input;
+        _ownerSessions = ownerSessions;
         _options = options;
         _logger = logger;
     }
@@ -298,6 +301,13 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
                 // would be to enumerate the boundary. It widens nothing — every path sent back is
                 // still authorised from scratch.
                 AllowedRoots = _allowedRoots,
+
+                // What the phone must do next. Authenticating as the Primary Phone is not the same
+                // as the owner being present, and the reply says so rather than leaving the client
+                // to infer it: until session.authorize or session.resume succeeds, this connection
+                // may read two status fields and nothing else.
+                OwnerAuthorizationRequired = true,
+                OwnerKeyRegistered = _registry.Current?.HasOwnerKey ?? false,
             })),
             cancellationToken).ConfigureAwait(false);
 
@@ -703,6 +713,11 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
         // the ones nobody chose.
         Detach();
         _streams.Unregister(_connectionId);
+
+        // The connection is forgotten; the owner's Full Remote authorisation is not. A phone link
+        // drops constantly and must not cost a fingerprint each time - the ticket the phone holds is
+        // what re-establishes authority, and it expires on its own.
+        _ownerSessions.Forget(_connectionId);
 
         try
         {

@@ -11,12 +11,21 @@ public enum InputKind
 /// <summary>
 /// Everything that has to be true before virtual HID may carry input, gathered in one place.
 /// <para>
-/// <b>Why a record of conditions rather than checks at the call sites.</b> Seven things must hold,
-/// and they are owned by five different components: the driver client, the protocol handshake, the
-/// device registry, the Raw Input listener, and the desktop policy. Checking them where input is
-/// submitted means seven checks per kind, each of which can be forgotten, reordered, or quietly
-/// dropped when someone adds a capability. Gathering them means the answer is computed once and the
-/// reasons are reportable.
+/// <b>Why a record of conditions rather than checks at the call sites.</b> Six things must hold, and
+/// they are owned by four different components: the driver client, the protocol handshake, the
+/// device registry, and the Raw Input listener. Checking them where input is submitted means six
+/// checks per kind, each of which can be forgotten, reordered, or quietly dropped when someone adds
+/// a capability. Gathering them means the answer is computed once and the reasons are reportable.
+/// </para>
+/// <para>
+/// <b>Which desktop is live is deliberately not among them.</b> It used to be, and it was the wrong
+/// question asked in the wrong place: a HID device does not inject into a desktop, it produces
+/// reports that Windows delivers to whichever desktop has input focus, exactly as the keyboard on
+/// the owner's desk does. Making the desktop a HID eligibility condition meant a UAC prompt demoted
+/// Nexus from a device to <c>SendInput</c> — the one path that genuinely cannot reach the Secure
+/// Desktop — so the capable backend was dropped precisely when it was the only one that would have
+/// worked. The desktop question belongs to <c>CentralInputPolicy</c>, which asks it about the route
+/// that was actually chosen.
 /// </para>
 /// </summary>
 public sealed record VirtualHidConditions
@@ -44,9 +53,6 @@ public sealed record VirtualHidConditions
 
     /// <summary>The security monitor is actually consuming the attribution ledger.</summary>
     public required bool AttributionSubscribed { get; init; }
-
-    /// <summary>The current input desktop is the ordinary one.</summary>
-    public required bool DesktopAllowsInput { get; init; }
 
     /// <summary>Whether the backend published a device for this kind at all.</summary>
     public required IReadOnlySet<InputKind> AvailableKinds { get; init; }
@@ -77,7 +83,6 @@ public sealed record VirtualHidConditions
         IdentitiesResolved = false,
         AttributionHealthy = false,
         AttributionSubscribed = false,
-        DesktopAllowsInput = false,
         AvailableKinds = new HashSet<InputKind>(),
     };
 }
@@ -92,7 +97,6 @@ public enum VirtualHidIneligibility
     IdentityNotResolved,
     AttributionUnhealthy,
     AttributionNotSubscribed,
-    DesktopBlocked,
     NeutralizationUncertain,
 }
 
@@ -108,7 +112,6 @@ public readonly record struct VirtualHidVerdict(bool Eligible, VirtualHidIneligi
         VirtualHidIneligibility.IdentityNotResolved => "the Nexus device identity has not been resolved",
         VirtualHidIneligibility.AttributionUnhealthy => "Raw Input attribution is not healthy",
         VirtualHidIneligibility.AttributionNotSubscribed => "security attribution is not subscribed",
-        VirtualHidIneligibility.DesktopBlocked => "the current input desktop does not permit remote input",
         _ => "held input state from a previous backend has not been confirmed released",
     };
 }
@@ -164,11 +167,6 @@ public static class VirtualHidEligibility
         if (!conditions.AttributionSubscribed)
         {
             return new VirtualHidVerdict(false, VirtualHidIneligibility.AttributionNotSubscribed);
-        }
-
-        if (!conditions.DesktopAllowsInput)
-        {
-            return new VirtualHidVerdict(false, VirtualHidIneligibility.DesktopBlocked);
         }
 
         if (conditions.NeutralizationUncertain)

@@ -56,6 +56,25 @@ object NexusCrypto {
     fun buildEnrollmentMessage(pcInstanceId: String, sessionId: String, challenge: ByteArray): ByteArray =
         message(NexusProtocol.Context.PAIRING, pcInstanceId, sessionId, challenge)
 
+    /**
+     * What the phone signs with its biometric-gated Keystore key to open a Full Remote Session.
+     *
+     * Newlines, not NUL bytes, and the PC instance id and device id are both in it: a signature made
+     * for one PC cannot be replayed at another, and one made by a different device does not verify.
+     * `owner_session` in the shared vectors pins these exact bytes on both sides.
+     */
+    fun buildOwnerSessionMessage(pcInstanceId: String, deviceId: String, challenge: ByteArray): ByteArray {
+        // Built by joining rather than with escapes inside a template string. The separator is a
+        // single line feed and nothing else, and writing it as a named value keeps it from being one
+        // editor's idea of a newline away from a signature the PC will not accept.
+        val header = listOf(NexusProtocol.Context.OWNER_SESSION, pcInstanceId, deviceId, "")
+            .joinToString(LINE_FEED)
+
+        return header.toByteArray(Charsets.UTF_8) + challenge
+    }
+
+    private val LINE_FEED: String = Char(10).toString()
+
     /** @param sharedSecretB64Url the permanent credential, base64url as PC Core issued it. */
     fun signAuth(
         pcInstanceId: String,
