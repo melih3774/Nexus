@@ -60,18 +60,23 @@ public sealed class NexusTray : IDisposable
     private System.Windows.Forms.Timer? _poll;
     private bool _lastLive;
 
+    /// <summary>Where PC Core's log is, so the tray can open it. Null when it could not be created.</summary>
+    private readonly string? _logPath;
+
     public NexusTray(
         Func<TrayStatus> status,
         string controlPanelUrl,
         Action onExit,
         Action onStopLive,
-        ILogger logger)
+        ILogger logger,
+        string? logPath = null)
     {
         _status = status;
         _controlPanelUrl = controlPanelUrl;
         _onExit = onExit;
         _onStopLive = onStopLive;
         _logger = logger;
+        _logPath = logPath;
     }
 
     /// <summary>
@@ -179,6 +184,15 @@ public sealed class NexusTray : IDisposable
             }
 
             menu.Items.Add(new ToolStripMenuItem("Open Nexus", null, (_, _) => OpenControlPanel()));
+
+            // The tray is where the owner arrives when something is wrong, so the log is one click
+            // from it. Without this, PC Core's account of what happened exists but is unreachable
+            // by anyone who does not already know the path.
+            if (_logPath is not null)
+            {
+                menu.Items.Add(new ToolStripMenuItem("Open log", null, (_, _) => OpenLog()));
+            }
+
             menu.Items.Add(new ToolStripSeparator());
 
             menu.Items.Add(new ToolStripMenuItem($"Input: {status.Input}") { Enabled = false });
@@ -239,6 +253,29 @@ public sealed class NexusTray : IDisposable
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "The Nexus control panel could not be opened.");
+        }
+    }
+
+    /// <summary>
+    /// Opens the log in whatever the owner uses for text files.
+    /// <para>
+    /// Selected in Explorer rather than opened directly: PC Core holds the file open for appending,
+    /// and handing the path to a viewer that wants exclusive access is how "open log" becomes an
+    /// error dialog. Explorer also puts the previous generation right next to it.
+    /// </para>
+    /// </summary>
+    private void OpenLog()
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{_logPath}\"")
+            {
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "The Nexus log could not be opened.");
         }
     }
 

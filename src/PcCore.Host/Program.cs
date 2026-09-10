@@ -137,6 +137,13 @@ public static class Program
             console.TimestampFormat = "HH:mm:ss ";
         });
 
+        // And to a file, because the console is usually not there. Started from the Start Menu, the
+        // tray, or at sign-in, PC Core has no window — so every diagnostic it wrote went nowhere,
+        // and "why did my phone stop connecting?" was answerable only by someone who had thought to
+        // launch it from a terminal first.
+        var fileLog = new RollingFileLoggerProvider(StateDirectory.ForCurrentUser());
+        builder.Logging.AddProvider(fileLog);
+
         var transportOptions = Bind<LoopbackTransportOptions>(builder.Configuration, LoopbackTransportOptions.SectionName);
         var filesOptions = Bind<FilesOptions>(builder.Configuration, FilesOptions.SectionName);
         var screenOptions = Bind<ScreenOptions>(builder.Configuration, ScreenOptions.SectionName);
@@ -180,6 +187,13 @@ public static class Program
             info.PcCoreVersion,
             info.MachineName,
             info.OsDescription);
+
+        if (fileLog.Path is not null)
+        {
+            // Named in the log itself, which is the only place it is certain to be seen by someone
+            // who is already looking for it.
+            logger.LogInformation("Log file: {LogPath}", fileLog.Path);
+        }
 
         if (info.IsElevated)
         {
@@ -234,7 +248,7 @@ public static class Program
         // The tray, once there is something for it to report. It is started after the host so its
         // first status is the real one, and it is disposed on shutdown so the icon goes away with
         // the process rather than lingering until someone hovers over it.
-        var tray = StartTray(app, transportOptions, logger);
+        var tray = StartTray(app, transportOptions, logger, fileLog.Path);
         app.Lifetime.ApplicationStopping.Register(() => tray?.Dispose());
 
         StartSecurityWorkflow(app.Services, logger);
@@ -826,7 +840,8 @@ public static class Program
     private static NexusTray? StartTray(
         WebApplication app,
         LoopbackTransportOptions transportOptions,
-        ILogger logger)
+        ILogger logger,
+        string? logPath)
     {
         try
         {
@@ -857,7 +872,8 @@ public static class Program
                     app.Lifetime.StopApplication();
                 },
                 onStopLive: () => services.GetRequiredService<LiveSensorService>().StopAll("stopped from the tray"),
-                logger: logger);
+                logger: logger,
+                logPath: logPath);
 
             tray.Start();
             return tray;
