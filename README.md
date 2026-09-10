@@ -1,4 +1,4 @@
-# Nexus v1.0
+# Nexus v1.1
 
 A user-level Windows process that exposes a **small, explicit set of capabilities** over a structured request/response/event protocol — locally over loopback, and remotely to one paired phone over Tailscale.
 
@@ -14,6 +14,7 @@ A user-level Windows process that exposes a **small, explicit set of capabilitie
 - **v0.8 — Native Windows Input:** input reaches ordinary Administrator windows, Direct mode sends real Windows touch, and the security detector can still tell Nexus's own input from a person's.
 - **v0.9 — Virtual HID:** a signed UMDF2 source driver publishes a Nexus mouse, keyboard and touch screen through the Windows Virtual HID Framework. Input arrives from a device rather than an injection call, so it reaches elevated windows without an elevated broker — and Raw Input can still tell those devices apart from the ones on the desk.
 - **v1.0 — Owner-Authenticated Sessions, Secure Desktop, Real Cursors:** the phone app opens locked and unlocks with Android's own `BiometricPrompt`, backed by a hardware Keystore key the platform will not use without a real prompt. Remote control now requires proving *who* is holding the phone, not just *which* phone it is. A LocalSystem helper makes the UAC consent prompt visible remotely without weakening it, and the screen stream composites the actual Windows pointer shape instead of forcing an arrow.
+- **v1.1 — Evidence Playback, a Windows Shell, and Live Monitoring:** camera clips and audio from a security incident play on the phone instead of saying they cannot; Nexus has a tray icon, a Start Menu entry and one authoritative version; and the owner can watch or listen to the room their PC is in, over the authenticated session, with the PC saying so on its own screen the whole time.
 
 Still deliberately absent: no AI integration, no virtual display (IDD), no multi-user support, no internet exposure — the remote path is Tailscale only. See [SPEC.md](SPEC.md) and [PLAN.md](PLAN.md).
 
@@ -746,6 +747,111 @@ All three documented shape types are now composited directly — monochrome, col
 colour — so arrow, text, hand, resize and wait cursors all render as themselves, at the hotspot
 Windows reports. The client is told the pointer is already drawn, so the phone never paints its own
 arrow on top of a PC showing a spinner.
+
+## Evidence you can actually look at (v1.1)
+
+An incident records a screenshot, camera stills, camera clips and an audio clip. Until v1.1 the
+phone showed the stills and said this about everything else:
+
+> clip playback is not available in this version, the file is on the PC
+
+Which was most of the incident, because the camera records clips and the microphone records audio.
+
+**The cause was not what it looked like.** The obvious theory was that resolving an incident cut off
+access to its evidence. Measured against the real store on this machine, that is not what happens:
+a resolved `ACKNOWLEDGED_OWNER` incident returns every item on request, bytes included. What the
+phone did was fetch the whole clip and then throw it away — the view model checked whether the kind
+was an image *after* downloading it, and replaced the result with that sentence. The evidence was
+never inaccessible. It was fetched and discarded.
+
+So v1.1 plays it:
+
+| | |
+|---|---|
+| **Camera stills, screenshots** | Rendered as before |
+| **Camera clips, screen recordings** | Play in the incident dialog, with scrubbing |
+| **Audio clips** | Play with the same transport controls |
+| **Deleted or expired** | Says so, distinctly from an error |
+
+`security.evidence.get` is now a ranged read: `offset` and `max_bytes` in, `chunk_bytes` and
+`end_of_file` out. The old 12 MB ceiling was a wall — a file above it was refused outright — and is
+now a chunk size. The phone appends chunks to a `.part` file, checks the whole against the digest
+the PC recorded, and only then renames it into a content-addressed name, so a file that exists is
+complete by construction and opening the same clip twice costs one download. Cached files live in
+`cacheDir`, are pruned to a budget, and never touch external storage or the media gallery.
+
+Evidence that the session lists but disk no longer holds is reported as `MISSING` rather than thrown
+as `NOT_FOUND`, so the phone can say "deleted or passed its retention period" instead of "something
+went wrong". Retention and deletion rules are unchanged.
+
+## Nexus on Windows (v1.1)
+
+`PcCore.Host.exe` is still the whole product. It now also has an ordinary Windows presence:
+
+- **A tray icon** while it runs, showing what is carrying input, the security state, the paired
+  phone, and whether it is connected. It turns red while a camera or microphone is live.
+- **Open Nexus** on the tray menu launches the control panel — no PowerShell, no port number.
+- **A Start Menu entry**, so typing "Nexus" finds it.
+
+Installed once:
+
+```bash
+PcCore.Host.exe --install-app
+```
+
+That copies the build to `%LOCALAPPDATA%\Programs\Nexus`, points the Start Menu shortcut there, and
+**re-points auto-start at the installed copy**. That last part is why the command exists: PC Core
+registers its own path at sign-in, and during development that path is `bin\Release` — a directory a
+rebuild or a branch switch can empty, leaving a startup entry that silently stops working. Per-user
+throughout: no elevation, no service, no `Program Files`. `--shell-status` reports what is where,
+and warns if auto-start still points into build output.
+
+The control panel called itself "PC Core v0.4" for six releases. Version now comes from
+`ProductInfo`, which reads the assembly attribute MSBuild stamps from `VersionPrefix` — so the page,
+the tray and `system.get_info` cannot disagree, and the page is titled from a placeholder rather
+than a literal.
+
+## Live camera and microphone (v1.1)
+
+The owner can watch and listen to the room their PC is in, from the Security screen.
+
+```
+media.live.start { "sensor": "CAMERA" }   →  JPEG frames over the authenticated connection
+media.live.start { "sensor": "MICROPHONE" } →  16-bit mono PCM
+media.live.stop                            →  both, or one
+```
+
+**What stops it.** All of these, without anybody asking:
+
+- The Full Remote session lapsing — re-checked on a timer, not only at start
+- The phone disconnecting
+- Leaving the Security screen
+- PC Core shutting down
+- The owner, from the phone or from the PC's tray
+
+**What it is not.** Nothing is written to disk. There is no file path in the live-capture service
+and no option that adds one. Live monitoring and incident evidence are separate subsystems, and that
+is deliberate: one is watched and discarded, the other is recorded and kept.
+
+**It cannot be hidden.** While a sensor is live the PC shows a badge on its own screen reading
+`Nexus · Camera LIVE`, turns its tray icon red, and puts the state at the top of the tray menu with
+a Stop entry. The indicator mode can quieten the badge for ordinary remote control and **cannot**
+quieten this — a setting that could would turn the feature into covert surveillance. Windows' own
+camera and microphone privacy settings and hardware indicators are untouched and relied upon: this
+goes through `MediaCapture` and `AudioGraph` like any application, so if Windows says no, it fails.
+
+Starting a stream does not prompt for a fingerprint again. The Full Remote session *is* the
+authorisation, and a prompt per action is how you train someone to approve without reading.
+
+### Checking the devices without a phone
+
+```bash
+PcCore.Host.exe --selftest-live-sensors
+```
+
+Captures from both devices for a few seconds and reports frame counts, rates and time to first
+frame. Worth having because a device that produces nothing looks exactly like a device nobody is
+watching — this separates "the PC cannot capture" from "the phone is not receiving".
 
 ## Protocol vectors
 

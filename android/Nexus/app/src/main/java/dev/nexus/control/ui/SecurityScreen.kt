@@ -25,11 +25,14 @@ import androidx.compose.runtime.remember
 import androidx.fragment.app.FragmentActivity
 import dev.nexus.control.security.ActiveIncidentPanel
 import dev.nexus.control.security.BiometricOwnerConfirmation
+import dev.nexus.control.security.LiveMonitorCard
+import dev.nexus.control.security.LiveMonitorViewModel
 import dev.nexus.control.security.EvidenceDialog
 import dev.nexus.control.security.HistoryRow
 import dev.nexus.control.security.SecurityAlertToggle
 import dev.nexus.control.security.SecurityIncidentViewModel
 import dev.nexus.control.security.SessionDetailDialog
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -90,10 +93,12 @@ fun SecurityScreen(
     onViewLive: () -> Unit = {},
     viewModel: SecurityViewModel = viewModel(factory = SecurityViewModel.Factory),
     incidentViewModel: SecurityIncidentViewModel = viewModel(factory = SecurityIncidentViewModel.Factory),
+    liveViewModel: LiveMonitorViewModel = viewModel(factory = LiveMonitorViewModel.Factory),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val incidents by incidentViewModel.state.collectAsStateWithLifecycle()
     val viewedEvidence by incidentViewModel.evidence.collectAsStateWithLifecycle()
+    val liveState by liveViewModel.state.collectAsStateWithLifecycle()
 
     // BiometricPrompt needs the hosting activity. Built here rather than injected so the view model
     // stays free of Android UI types and can be tested with a scripted prompt.
@@ -105,6 +110,14 @@ fun SecurityScreen(
     LaunchedEffect(Unit) {
         viewModel.refresh()
         incidentViewModel.refresh()
+        liveViewModel.refresh()
+    }
+
+    // Leaving the Security screen stops live capture. A camera the owner is no longer looking at is
+    // a camera nobody asked to leave on, and the PC would otherwise keep streaming to a screen that
+    // has gone away.
+    DisposableEffect(Unit) {
+        onDispose { liveViewModel.stopAll() }
     }
 
     Column(
@@ -244,6 +257,14 @@ fun SecurityScreen(
         Spacer(Modifier.height(24.dp))
 
         SecurityAlertToggle()
+
+        Spacer(Modifier.height(24.dp))
+
+        LiveMonitorCard(
+            state = liveState,
+            onToggle = liveViewModel::toggle,
+            onStopAll = liveViewModel::stopAll,
+        )
 
         Spacer(Modifier.height(24.dp))
 

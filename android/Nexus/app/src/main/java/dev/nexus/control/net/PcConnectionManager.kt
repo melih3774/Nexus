@@ -13,6 +13,7 @@ import dev.nexus.control.protocol.NexusProtocol
 import dev.nexus.control.protocol.ProtocolError
 import dev.nexus.control.protocol.RequestEnvelope
 import dev.nexus.control.protocol.ResponseEnvelope
+import dev.nexus.control.protocol.LiveSensorFrame
 import dev.nexus.control.protocol.StreamFrame
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -107,6 +108,24 @@ class PcConnectionManager(
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
     val frames: SharedFlow<StreamFrame> = _frames.asSharedFlow()
+
+    /**
+     * Live camera and microphone frames.
+     *
+     * Its own flow rather than a variant of [frames]: the desktop stream and a live sensor can be
+     * running at the same time, and a collector that wanted one would otherwise have to filter every
+     * frame of the other.
+     *
+     * `extraBufferCapacity` with `DROP_OLDEST` for the same reason the PC drops frames — a live view
+     * that queues is a delayed view that gets worse.
+     */
+    private val _liveFrames = MutableSharedFlow<LiveSensorFrame>(
+        replay = 0,
+        extraBufferCapacity = 4,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
+    )
+
+    val liveFrames: SharedFlow<LiveSensorFrame> = _liveFrames.asSharedFlow()
 
     private val pending = ConcurrentHashMap<String, CompletableDeferred<ResponseEnvelope>>()
     private val requestCounter = AtomicLong(0)
@@ -258,17 +277,22 @@ class PcConnectionManager(
                 }
 
                 override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                    // Binary means one thing on this connection: a desktop frame. It goes straight
-                    // to the frame flow rather than through the request pump, so a stream running at
-                    // fifteen frames a second never queues behind a command or delays one.
-                    val frame = StreamFrame.parse(bytes.toByteArray())
+                    // Binary carries two things now, told apart by their magic: desktop frames and
+                    // live camera/microphone frames. Both go straight to their own flow rather than
+                    // through the request pump, so neither queues behind a command or delays one.
+                    val raw = bytes.toByteArray()
 
-                    if (frame == null) {
-                        Log.d(TAG, "Discarded a malformed binary message")
+                    StreamFrame.parse(raw)?.let {
+                        _frames.tryEmit(it)
                         return
                     }
 
-                    _frames.tryEmit(frame)
+                    LiveSensorFrame.parse(raw)?.let {
+                        _liveFrames.tryEmit(it)
+                        return
+                    }
+
+                    Log.d(TAG, "Discarded a malformed binary message")
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {

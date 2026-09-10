@@ -14,6 +14,8 @@ using Windows.Media.MediaProperties;
 using Windows.Media.Render;
 using Windows.Storage.Streams;
 
+using WinRT;
+
 namespace PcCore.Windows.Media;
 
 /// <summary>
@@ -37,8 +39,14 @@ namespace PcCore.Windows.Media;
 public sealed class WindowsLiveCamera : ILiveCameraSource
 {
     /// <summary>
-    /// Frames per second. Eight is a deliberate compromise: enough to see someone move through a
-    /// room, low enough that a JPEG per frame over a tunnel stays well inside a home uplink.
+    /// The ceiling on how often a frame is requested, not a promise of eight a second.
+    /// <para>
+    /// The loop is capture-bound rather than delay-bound on real hardware: this machine's webcam
+    /// takes about 800 ms per still through the photo pipeline even with the capture prepared once
+    /// and taken from the preview pin, so the measured rate is closer to 1.2 frames a second. The
+    /// interval still matters on a camera that is faster, and it keeps a quick camera from spending
+    /// a home uplink on frames nobody asked for.
+    /// </para>
     /// </summary>
     private static readonly TimeSpan FrameInterval = TimeSpan.FromMilliseconds(125);
 
@@ -78,7 +86,12 @@ public sealed class WindowsLiveCamera : ILiveCameraSource
             await capture.InitializeAsync(new MediaCaptureInitializationSettings
             {
                 StreamingCaptureMode = StreamingCaptureMode.Video,
-                PhotoCaptureSource = PhotoCaptureSource.Auto,
+
+                // VideoPreview rather than Auto: Auto lets Windows use the camera's dedicated photo
+                // pin, which means a capture-mode switch per shot. Measured on this machine that was
+                // about 850 ms a frame - roughly one frame a second against the eight this asks for.
+                // The preview pin is already streaming, so a frame is just the next one.
+                PhotoCaptureSource = PhotoCaptureSource.VideoPreview,
             }).AsTask(cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
@@ -90,14 +103,33 @@ public sealed class WindowsLiveCamera : ILiveCameraSource
             yield break;
         }
 
+        // 640x480 is what a monitoring view needs. Asking for more would cost bandwidth to show the
+        // same room.
+        var encoding = ImageEncodingProperties.CreateJpeg();
+        encoding.Width = 640;
+        encoding.Height = 480;
+
+        LowLagPhotoCapture? photo = null;
+
         try
         {
-            // 640x480 is what a monitoring view needs. Asking for more would cost bandwidth to show
-            // the same room.
-            var encoding = ImageEncodingProperties.CreateJpeg();
-            encoding.Width = 640;
-            encoding.Height = 480;
+            // LowLagPhotoCapture rather than CapturePhotoToStreamAsync, measured rather than assumed:
+            // the one-shot call tears the capture pipeline down and rebuilds it every time, which on
+            // this machine's webcam cost about 850 ms a frame - roughly one frame a second, where the
+            // interval below asks for eight. Preparing once and firing repeatedly keeps the pipeline
+            // warm, which is exactly what this API exists for.
+            photo = await capture.PrepareLowLagPhotoCaptureAsync(encoding)
+                .AsTask(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("The camera could not be prepared for live capture: {Reason}", ex.Message);
+            capture.Dispose();
+            yield break;
+        }
 
+        try
+        {
             while (!cancellationToken.IsCancellationRequested)
             {
                 var next = Task.Delay(FrameInterval, cancellationToken);
@@ -105,11 +137,11 @@ public sealed class WindowsLiveCamera : ILiveCameraSource
 
                 try
                 {
-                    using var stream = new InMemoryRandomAccessStream();
+                    var captured = await photo.CaptureAsync().AsTask(cancellationToken).ConfigureAwait(false);
 
-                    await capture.CapturePhotoToStreamAsync(encoding, stream)
-                        .AsTask(cancellationToken).ConfigureAwait(false);
-
+                    // CapturedFrame is itself a random-access stream, so it is read directly rather
+                    // than copied into another one first.
+                    using var stream = captured.Frame;
                     var size = (uint)stream.Size;
 
                     if (size > 0)
@@ -154,8 +186,17 @@ public sealed class WindowsLiveCamera : ILiveCameraSource
         }
         finally
         {
-            // Disposed promptly so the camera light goes out when the owner stops the stream rather
-            // than whenever a finaliser runs.
+            // Finished and disposed promptly, so the camera light goes out when the owner stops the
+            // stream rather than whenever a finaliser runs.
+            try
+            {
+                await photo.FinishAsync().AsTask(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "The low-lag photo capture did not finish cleanly.");
+            }
+
             capture.Dispose();
             _logger.LogInformation("The live camera was released.");
         }
@@ -253,13 +294,25 @@ public sealed class WindowsLiveMicrophone : ILiveAudioSource
             input.AddOutgoingConnection(output);
 
             var sampleRate = (int)graph.EncodingProperties.SampleRate;
+
+            // The device decides this, not the graph's nominal shape: a laptop array microphone
+            // reports several channels, and reading its quantum as mono sent seven times the samples
+            // at seven times the pitch. Measured here at 15360 bytes a quantum where mono would be
+            // 1920.
+            var channels = (int)Math.Max(1, input.EncodingProperties.ChannelCount);
             var node = output;
+
+            if (channels > 1)
+            {
+                _logger.LogInformation(
+                    "The microphone reports {Channels} channels; they are mixed down to mono.", channels);
+            }
 
             graph.QuantumStarted += (_, _) =>
             {
                 try
                 {
-                    var pcm = ReadQuantum(node, out var samples);
+                    var pcm = ReadQuantum(node, channels, out var samples);
 
                     if (samples > 0)
                     {
@@ -317,8 +370,23 @@ public sealed class WindowsLiveMicrophone : ILiveAudioSource
     /// a decoder. Converting here rather than on the phone means the conversion happens once, on the
     /// machine that has the samples already, and halves what goes over the link.
     /// </para>
+    /// <para>
+    /// <b>Two wrong ways got here first, and both failed silently.</b> Casting the buffer reference
+    /// to <c>IMemoryBufferByteAccess</c> the way every UWP sample does throws
+    /// <c>InvalidCastException</c> under CsWinRT, because the object is a <c>WinRT.IInspectable</c>
+    /// projection rather than a raw COM pointer. Copying it with
+    /// <c>Buffer.CreateCopyFromMemoryBuffer</c> instead returns a zero-length buffer, because an
+    /// <c>AudioBuffer</c> from a capture quantum reports <c>Length</c> 0 with a real
+    /// <c>Capacity</c> — measured here at 15360 bytes against a copy of 0. Both produce a graph that
+    /// runs, a microphone light that comes on, and not one sample delivered.
+    /// </para>
+    /// <para>
+    /// <c>WinRT.CastExtensions.As&lt;T&gt;</c> is the supported route: a genuine
+    /// <c>QueryInterface</c> through the projection, which is what the cast was only pretending to
+    /// be.
+    /// </para>
     /// </summary>
-    private static unsafe byte[] ReadQuantum(AudioFrameOutputNode node, out int samples)
+    private static unsafe byte[] ReadQuantum(AudioFrameOutputNode node, int channels, out int samples)
     {
         samples = 0;
 
@@ -326,29 +394,40 @@ public sealed class WindowsLiveMicrophone : ILiveAudioSource
         using var buffer = frame.LockBuffer(global::Windows.Media.AudioBufferAccessMode.Read);
         using var reference = buffer.CreateReference();
 
-        ((IMemoryBufferByteAccess)reference).GetBuffer(out var data, out var capacity);
+        var access = reference.As<IMemoryBufferByteAccess>();
+        access.GetBuffer(out var data, out var capacity);
 
-        if (capacity == 0)
+        if (capacity == 0 || data is null)
         {
             return [];
         }
 
         var floats = (float*)data;
-        var count = (int)(capacity / sizeof(float));
-        var pcm = new byte[count * sizeof(short)];
+        var total = (int)(capacity / sizeof(float));
+        var frames = total / channels;
+        var pcm = new byte[frames * sizeof(short)];
 
-        for (var i = 0; i < count; i++)
+        for (var i = 0; i < frames; i++)
         {
+            // Averaged rather than taking the first channel: on an array microphone the channels are
+            // separate elements, and picking one throws away most of the room.
+            var sum = 0f;
+
+            for (var c = 0; c < channels; c++)
+            {
+                sum += floats[(i * channels) + c];
+            }
+
             // Clamped before scaling: a graph can hand back values outside -1..1 and wrapping them
             // is what turns a loud noise into a burst of static.
-            var sample = Math.Clamp(floats[i], -1f, 1f);
+            var sample = Math.Clamp(sum / channels, -1f, 1f);
             var value = (short)(sample * short.MaxValue);
 
             pcm[i * 2] = (byte)(value & 0xFF);
             pcm[(i * 2) + 1] = (byte)((value >> 8) & 0xFF);
         }
 
-        samples = count;
+        samples = frames;
         return pcm;
     }
 

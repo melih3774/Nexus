@@ -81,6 +81,15 @@ public static class Program
             return await SecureCaptureSelfTest.RunAsync(args, captureLogs).ConfigureAwait(false);
         }
 
+        // Whether this machine's camera and microphone actually produce live frames. Only real
+        // hardware answers that, and a device that produces nothing looks exactly like a device
+        // nobody is watching.
+        if (args.Contains("--selftest-live-sensors"))
+        {
+            using var liveLogs = LoggerFactory.Create(b => b.AddSimpleConsole(c => c.SingleLine = true));
+            return await LiveSensorSelfTest.RunAsync(args, liveLogs).ConfigureAwait(false);
+        }
+
         // A local diagnostic for the three v0.6 pieces that only exist against real Windows.
         if (args.Contains("--selftest-remote-control"))
         {

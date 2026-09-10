@@ -75,6 +75,11 @@ object NexusProtocol {
         const val SECURITY_EVIDENCE_GET = "security.evidence.get"
         const val SECURITY_THIS_WAS_ME = "security.this_was_me"
         const val SECURITY_NOT_ME = "security.not_me"
+
+        // Live camera and microphone monitoring. FullRemote only on the PC side.
+        const val MEDIA_LIVE_START = "media.live.start"
+        const val MEDIA_LIVE_STOP = "media.live.stop"
+        const val MEDIA_LIVE_STATUS = "media.live.status"
     }
 
     object Events {
