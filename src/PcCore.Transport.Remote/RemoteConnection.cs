@@ -259,7 +259,10 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
         }
         catch (CapabilityException ex)
         {
-            _logger.LogWarning(
+            // Debug, not warning: the authenticator has already reported this at warning level with
+            // the reason and with repeats collapsed. A second warning per attempt would restore
+            // exactly the flood that one is there to prevent, and adds only the connection id.
+            _logger.LogDebug(
                 "Remote authentication failed on {ConnectionId} for device {DeviceId}.",
                 _connectionId,
                 parameters.DeviceId);

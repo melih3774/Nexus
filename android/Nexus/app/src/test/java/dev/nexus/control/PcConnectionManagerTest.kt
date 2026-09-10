@@ -248,6 +248,73 @@ class PcConnectionManagerTest {
         assertEquals(false, state.willRetry)
     }
 
+    /**
+     * The reconnect loop the owner actually saw: PC Core rejects the credential, and the app tries
+     * again on the next foreground, and the next, writing the same warning to the PC's log forever.
+     */
+    @Test
+    fun `a refused credential is not retried by later connect calls`() {
+        start(FakePc(acceptAuth = false))
+        connect()
+
+        assertTrue(runBlocking { await { manager.state.value is ConnectionState.Failed } })
+
+        // No second socket is enqueued: if the manager opened one, MockWebServer would have no
+        // response for it and this would fail on the attempt rather than on the assertion.
+        repeat(3) { connect() }
+
+        val state = manager.state.value as ConnectionState.Failed
+        assertEquals(FailureReason.AuthenticationFailed, state.reason)
+        assertEquals(false, state.willRetry)
+        assertEquals(0, server.requestCount - 1)
+    }
+
+    /** The Retry button, which is the owner saying they know something the app does not. */
+    @Test
+    fun `an explicit retry is allowed to try the refused credential again`() {
+        start(FakePc(acceptAuth = false))
+        connect()
+
+        assertTrue(runBlocking { await { manager.state.value is ConnectionState.Failed } })
+
+        // The PC has been re-paired in the meantime, so this time it accepts.
+        start(FakePc(acceptAuth = true))
+        manager.allowAuthenticationRetry()
+        connect()
+
+        val connected = awaitConnected()
+        assertEquals(DEVICE_ID, connected.deviceId)
+    }
+
+    /**
+     * PC Core answers a bad credential and closes at once. When the close is processed first, the
+     * handshake never sees the response — and used to call that an ordinary drop and retry forever.
+     */
+    @Test
+    fun `a policy-violation close during the handshake is a refusal, not a dropped socket`() {
+        start(object : FakePc(acceptAuth = false) {
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                val request = NexusJson.decodeFromString(RequestEnvelope.serializer(), text)
+
+                if (request.action == NexusProtocol.Actions.AUTHENTICATE) {
+                    // No response at all: just the close PC Core sends immediately afterwards.
+                    webSocket.close(1008, "authentication failed")
+                    return
+                }
+
+                super.onMessage(webSocket, text)
+            }
+        })
+
+        connect()
+
+        assertTrue(runBlocking { await { manager.state.value is ConnectionState.Failed } })
+
+        val state = manager.state.value as ConnectionState.Failed
+        assertEquals(FailureReason.AuthenticationFailed, state.reason)
+        assertEquals(false, state.willRetry)
+    }
+
     @Test
     fun `responses are matched to their own requests, whatever order they arrive in`() {
         // The failure this prevents is the quiet one: two screens each get an answer, and they are

@@ -103,7 +103,7 @@ class AppViewModel(
 
     fun retry() {
         repository.disconnect()
-        repository.connect()
+        repository.retryAfterRefusal()
     }
 
     fun pair(rawCode: String, displayName: String) {

@@ -115,9 +115,15 @@ private fun describe(state: ConnectionState): Pair<String, String?> = when (stat
             "PC unreachable" to "The PC did not answer. Check it is awake, that Tailscale is " +
                 "connected there, and that PC Core is running."
 
+        // Named for the layer it belongs to. The other thing the owner sees called "authentication"
+        // is the fingerprint prompt, and telling them "authentication failed" when their fingerprint
+        // was fine sends them to try it again, which is not the problem and cannot become the
+        // solution. This one is about the credential stored at pairing time.
         FailureReason.AuthenticationFailed ->
-            "Authentication failed" to "The PC rejected this phone's credential. It may have been " +
-                "unpaired there. Pair again."
+            "This phone is not the paired one" to "Your PC answered, but did not accept the " +
+                "credential this phone saved when it paired — so the two no longer agree on which " +
+                "phone is the Primary Phone. Your PC's log names the phone it is paired with. " +
+                "Retry if you have just re-paired there; otherwise pair again."
 
         FailureReason.ProtocolError ->
             "Unexpected reply" to "The PC answered with something this app does not understand."

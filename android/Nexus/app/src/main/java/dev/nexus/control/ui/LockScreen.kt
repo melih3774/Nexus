@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import dev.nexus.control.net.ConnectionState
+import dev.nexus.control.net.FailureReason
 import dev.nexus.control.security.LockReason
 import dev.nexus.control.security.SessionGateState
 
@@ -94,6 +95,17 @@ private fun explanation(state: SessionGateState, connection: ConnectionState): S
 
     if (state is SessionGateState.Authenticating) {
         return "Confirm with your fingerprint, face or screen lock."
+    }
+
+    // A refused credential is not an unreachable PC, and saying so sends the owner to check
+    // Tailscale and their PC's power settings for a problem that is neither. It is also not
+    // something unlocking fixes, so this returns early rather than inviting a fingerprint.
+    if (connection is ConnectionState.Failed
+        && connection.reason == FailureReason.AuthenticationFailed
+    ) {
+        return "Your PC answered but did not accept this phone's saved credential, so it is not " +
+            "this phone's lock that is in the way. Unlocking will not change that: the pairing " +
+            "itself has to be repaired on the PC."
     }
 
     val about = when (connection) {

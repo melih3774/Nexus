@@ -104,6 +104,14 @@ public sealed class DeviceAuthenticator : IDeviceAuthenticator
 
     private readonly ConcurrentDictionary<string, Pending> _challenges = new(StringComparer.Ordinal);
 
+    /// <summary>How often an unchanging failure is allowed to say so again. See <see cref="Report"/>.</summary>
+    private static readonly TimeSpan RepeatSummaryInterval = TimeSpan.FromMinutes(1);
+
+    private readonly Lock _reportGate = new();
+    private string? _lastReason;
+    private int _repeats;
+    private DateTimeOffset _lastReportedUtc;
+
     public DeviceAuthenticator(
         IPcIdentityProvider identity,
         IPrimaryPhoneRegistry registry,
@@ -170,9 +178,16 @@ public sealed class DeviceAuthenticator : IDeviceAuthenticator
         // The registry holds the secret and does the constant-time comparison. A device id that
         // does not match the paired phone simply has no secret to check against — presenting a
         // guessed device id establishes nothing.
-        if (!_registry.VerifyProof(deviceId, message, presented))
+        var outcome = _registry.CheckProof(deviceId, message, presented);
+
+        if (outcome != ProofOutcome.Verified)
         {
-            throw Failed($"invalid proof for device {deviceId}");
+            // The caller is still told nothing (see Failed). The owner's own log, though, gets the
+            // one sentence that separates "this phone is no longer the paired one" from "this
+            // phone's secret is wrong" — a distinction that otherwise costs an afternoon, because
+            // both used to print the same line and both are cured by re-pairing, which is the last
+            // thing to try rather than the first.
+            throw Failed(Explain(outcome, deviceId));
         }
 
         _logger.LogInformation("Device {DeviceId} authenticated.", deviceId);
@@ -209,12 +224,102 @@ public sealed class DeviceAuthenticator : IDeviceAuthenticator
         return message;
     }
 
+    /// <summary>
+    /// Turns a verification outcome into something the owner can act on, using identifiers only.
+    /// <para>
+    /// No key material appears here, and none is needed: the two ids are enough to tell a phone
+    /// carrying a superseded pairing from one carrying the wrong secret, and the installation id is
+    /// enough to tell a phone paired to a different PC Core entirely.
+    /// </para>
+    /// </summary>
+    private string Explain(ProofOutcome outcome, string deviceId) => outcome switch
+    {
+        ProofOutcome.NotPaired =>
+            $"device {deviceId} presented a proof but no primary phone is paired on this "
+            + "installation (or its stored credential could not be read)",
+
+        // The actionable one. The phone is not lying about who it is; it is holding a credential
+        // this PC replaced, which is what happens when pairing is run again after the phone had
+        // already enrolled.
+        ProofOutcome.DifferentDevice =>
+            $"device {deviceId} is not the paired phone — this installation is paired with "
+            + $"{_registry.Current?.DeviceId ?? "nothing"}, so the presented credential is from an "
+            + "earlier pairing and cannot be verified",
+
+        ProofOutcome.WrongProof =>
+            $"device {deviceId} is the paired phone, but its proof did not match the stored secret "
+            + $"for installation {_identity.PcInstanceId} — the phone's copy of the credential "
+            + "differs from this PC's",
+
+        _ => $"invalid proof for device {deviceId}",
+    };
+
     private CapabilityException Failed(string internalReason)
     {
         // One opaque message for every failure: telling an unauthenticated caller *why* it failed
         // would let it probe which device ids and challenges exist.
-        _logger.LogWarning("Device authentication failed: {Reason}.", internalReason);
+        Report(internalReason);
         return new CapabilityException(ErrorCodes.AuthenticationFailed, "Authentication failed.");
+    }
+
+    /// <summary>
+    /// Logs a failure once, then collapses identical repeats.
+    /// <para>
+    /// A phone that cannot authenticate reconnects on a backoff, so the same sentence would
+    /// otherwise be written to the owner's log every few seconds until they noticed — which buries
+    /// the first occurrence, and everything else that happened afterwards, under a wall of one
+    /// repeated line. The information in the tenth copy is the count, not the sentence, so that is
+    /// what gets written.
+    /// </para>
+    /// <para>
+    /// A <em>different</em> reason is always reported immediately: the change is the news.
+    /// </para>
+    /// </summary>
+    private void Report(string reason)
+    {
+        string? summary = null;
+        var announce = false;
+
+        lock (_reportGate)
+        {
+            var now = DateTimeOffset.UtcNow;
+
+            if (!string.Equals(reason, _lastReason, StringComparison.Ordinal))
+            {
+                // Flush what the previous reason accumulated, so a run of failures is never lost
+                // silently just because the last one happened to be different.
+                if (_repeats > 0)
+                {
+                    summary = $"The previous authentication failure repeated {_repeats} more time(s).";
+                }
+
+                _lastReason = reason;
+                _repeats = 0;
+                _lastReportedUtc = now;
+                announce = true;
+            }
+            else if (now - _lastReportedUtc >= RepeatSummaryInterval)
+            {
+                _repeats++;
+                summary = $"Device authentication failed: {reason}. "
+                    + $"(repeated {_repeats} time(s) since the first)";
+                _lastReportedUtc = now;
+            }
+            else
+            {
+                _repeats++;
+            }
+        }
+
+        if (summary is not null)
+        {
+            _logger.LogWarning("{Summary}", summary);
+        }
+
+        if (announce)
+        {
+            _logger.LogWarning("Device authentication failed: {Reason}.", reason);
+        }
     }
 
     private void PruneExpired()

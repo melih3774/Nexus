@@ -41,3 +41,7 @@ android/**/.cxx/
 *.jks
 *.keystore
 captures/
+
+# Local diagnostic capture, never committed.
+.nexus-repro.log
+.escape-probe.txt

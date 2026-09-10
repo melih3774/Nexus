@@ -63,6 +63,18 @@ class NexusRepository(
     fun disconnect() = connection.disconnect()
 
     /**
+     * The owner asking again after PC Core refused this phone's credential.
+     *
+     * Separate from [connect] on purpose: everything else that reconnects does so because a
+     * lifecycle event happened, and none of those are a reason to re-ask a question already
+     * answered. This one is a person pressing a button.
+     */
+    fun retryAfterRefusal() {
+        connection.allowAuthenticationRetry()
+        connect()
+    }
+
+    /**
      * Completes pairing: enroll over the tailnet, store what comes back, connect.
      *
      * The credential is sealed before the connection is attempted. If the app died between those

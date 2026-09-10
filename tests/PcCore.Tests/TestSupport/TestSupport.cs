@@ -107,6 +107,51 @@ public static class TestLog
     public static ILogger Null => NullLogger.Instance;
 }
 
+/// <summary>
+/// A logger that keeps what it was told, for the few cases where the log <em>is</em> the behaviour.
+/// <para>
+/// Used sparingly and deliberately. Asserting on log text usually pins wording that should be free
+/// to change — but a diagnostic whose whole job is to tell the owner which of three things went
+/// wrong, and one that must stop repeating itself, are both only observable here.
+/// </para>
+/// </summary>
+public sealed class CapturingLogger<T> : ILogger<T>
+{
+    private readonly List<(LogLevel Level, string Message)> _entries = [];
+    private readonly Lock _gate = new();
+
+    public IReadOnlyList<(LogLevel Level, string Message)> Entries
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return [.. _entries];
+            }
+        }
+    }
+
+    public IEnumerable<string> Warnings =>
+        Entries.Where(e => e.Level == LogLevel.Warning).Select(e => e.Message);
+
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+    public bool IsEnabled(LogLevel logLevel) => true;
+
+    public void Log<TState>(
+        LogLevel logLevel,
+        EventId eventId,
+        TState state,
+        Exception? exception,
+        Func<TState, Exception?, string> formatter)
+    {
+        lock (_gate)
+        {
+            _entries.Add((logLevel, formatter(state, exception)));
+        }
+    }
+}
+
 public static class TestSecurity
 {
     /// <summary>Builds a real authorizer (Win32 resolver included) bound to the given roots.</summary>

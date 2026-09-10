@@ -135,9 +135,33 @@ class PcConnectionManager(
 
     private var sessionJob: Job? = null
 
+    /**
+     * The device id of a credential PC Core has already rejected.
+     *
+     * Retrying a refused credential cannot succeed — the PC checked it against the secret it holds
+     * and said no — but `connect()` is called on every foreground, by the alert service, and by
+     * anything else that wants a session, so without this the app opens a socket, gets refused, and
+     * does it again on the next trigger, writing the same warning to the owner's PC log each time.
+     *
+     * Cleared by [allowAuthenticationRetry], which is an owner action, and irrelevant after
+     * pairing, because a new pairing means a new device id.
+     */
+    @Volatile
+    private var refusedDeviceId: String? = null
+
     /** Starts, or restarts, the connection. Safe to call when already connected. */
     fun connect(credential: NexusCredential) {
         connectTo(credential.endpoint(), credential)
+    }
+
+    /**
+     * Forgets that PC Core refused this phone, so the next [connect] tries again.
+     *
+     * For the Retry button and nothing else. The owner may know something the app does not — that
+     * they have just re-paired at the PC, or restarted PC Core — and the app should not argue.
+     */
+    fun allowAuthenticationRetry() {
+        refusedDeviceId = null
     }
 
     /**
@@ -151,6 +175,17 @@ class PcConnectionManager(
      */
     internal fun connectTo(endpoint: Result<NexusEndpoint>, credential: NexusCredential) {
         if (sessionJob?.isActive == true && _state.value.isConnected) return
+
+        if (refusedDeviceId == credential.deviceId) {
+            // Already answered, by the only party that can answer it. Say so again — the state may
+            // have been reset by whatever called back in — but open nothing.
+            _state.value = ConnectionState.Failed(
+                FailureReason.AuthenticationFailed,
+                willRetry = false,
+                attempt = 0,
+            )
+            return
+        }
 
         sessionJob?.cancel()
         sessionJob = scope.launch { maintainConnection(endpoint, credential) }
@@ -242,6 +277,12 @@ class PcConnectionManager(
             val outcome = runSession(endpoint, credential)
 
             if (outcome == FailureReason.AuthenticationFailed) {
+                // Remembered, not just reported: this loop returning is not enough, because the
+                // next foreground calls connect() again and would start the whole thing over.
+                refusedDeviceId = credential.deviceId
+
+                Log.w(TAG, "PC Core refused this phone's credential; not retrying until asked")
+
                 _state.value = ConnectionState.Failed(outcome, willRetry = false, attempt)
                 return
             }
@@ -262,6 +303,21 @@ class PcConnectionManager(
     private suspend fun runSession(endpoint: NexusEndpoint, credential: NexusCredential): FailureReason? {
         val incoming = Channel<String>(Channel.BUFFERED)
         val closed = CompletableDeferred<Unit>()
+
+        /**
+         * Set when PC Core closes with a policy violation.
+         *
+         * PC Core answers a bad credential and then closes the socket immediately. If that answer
+         * loses the race with the close — which it does whenever the close frame is processed
+         * first — the handshake sees nothing but a socket that went away, which is indistinguishable
+         * from the PC going to sleep, so the app backs off and tries again, forever, against a
+         * credential that will never be accepted. The close code is the same rejection stated a
+         * second way, and it does not race.
+         *
+         * Atomic because it is written on OkHttp's callback thread and read on this one; a captured
+         * `var` would be a data race whose symptom is the same infinite retry, only intermittent.
+         */
+        val refusedByPc = java.util.concurrent.atomic.AtomicBoolean(false)
 
         val request = Request.Builder()
             .url(endpoint.webSocketUrl)
@@ -303,12 +359,16 @@ class PcConnectionManager(
                 }
 
                 override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    if (code == POLICY_VIOLATION) refusedByPc.set(true)
+
                     webSocket.close(NORMAL_CLOSURE, null)
                     incoming.close()
                     closed.complete(Unit)
                 }
 
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    if (code == POLICY_VIOLATION) refusedByPc.set(true)
+
                     incoming.close()
                     closed.complete(Unit)
                 }
@@ -319,7 +379,7 @@ class PcConnectionManager(
 
         try {
             val challenge = withTimeoutOrNull(HANDSHAKE_TIMEOUT_MS) { readChallenge(incoming) }
-                ?: return null
+                ?: return handshakeOutcome(refusedByPc)
 
             _state.value = ConnectionState.Authenticating
 
@@ -340,12 +400,12 @@ class PcConnectionManager(
             )
 
             if (!live.send(NexusJson.encodeToString(RequestEnvelope.serializer(), authRequest))) {
-                return null
+                return handshakeOutcome(refusedByPc)
             }
 
             val reply = withTimeoutOrNull(HANDSHAKE_TIMEOUT_MS) {
                 readResponse(incoming, authRequest.id)
-            } ?: return null
+            } ?: return handshakeOutcome(refusedByPc)
 
             if (!reply.success) {
                 return if (reply.error?.code == NexusProtocol.Errors.AUTHENTICATION_FAILED) {
@@ -458,6 +518,17 @@ class PcConnectionManager(
     }
 
     /**
+     * What a handshake that ended without an answer actually means.
+     *
+     * `null` is "the socket went away", which is retried. A policy-violation close is PC Core
+     * saying no — the same answer as an `authentication_failed` response, arriving as a close frame
+     * because the socket was shut immediately after the reply. Reporting it as an ordinary drop is
+     * what turned one rejection into an endless reconnect loop.
+     */
+    private fun handshakeOutcome(refusedByPc: java.util.concurrent.atomic.AtomicBoolean): FailureReason? =
+        if (refusedByPc.get()) FailureReason.AuthenticationFailed else null
+
+    /**
      * Turns "the socket did not come up" into something specific, by asking what the phone itself
      * can see. Ordering matters: no network at all explains everything after it.
      */
@@ -480,6 +551,12 @@ class PcConnectionManager(
     companion object {
         private const val TAG = "NexusConnection"
         private const val NORMAL_CLOSURE = 1000
+
+        /**
+         * RFC 6455 close code 1008. PC Core uses it for every refusal in the handshake: a bad
+         * proof, a request sent before authenticating, or a failed enrollment.
+         */
+        private const val POLICY_VIOLATION = 1008
 
         const val DEFAULT_REQUEST_TIMEOUT_MS = 20_000L
         const val HANDSHAKE_TIMEOUT_MS = 15_000L

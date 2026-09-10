@@ -23,6 +23,29 @@ public sealed record PrimaryPhone(
 /// <summary>Returned exactly once, at pairing time, so the phone can store its copy.</summary>
 public sealed record PairedCredential(PrimaryPhone Phone, string SharedSecret);
 
+/// <summary>
+/// Why a device proof did or did not verify. Diagnostic detail for the owner's own log; never
+/// anything a caller is told.
+/// </summary>
+public enum ProofOutcome
+{
+    /// <summary>The proof is correct for the paired phone.</summary>
+    Verified,
+
+    /// <summary>No phone is paired, or its stored credential could not be read.</summary>
+    NotPaired,
+
+    /// <summary>
+    /// A phone is paired, but under a different device id — so there is no secret to check against.
+    /// In practice this means the phone holds a credential from an earlier pairing that the PC has
+    /// since replaced.
+    /// </summary>
+    DifferentDevice,
+
+    /// <summary>The right device id, but the proof does not match the stored secret.</summary>
+    WrongProof,
+}
+
 /// <summary>On-disk shape. The secret is a DPAPI blob, never plaintext.</summary>
 public sealed record PrimaryPhoneRecord
 {
@@ -80,6 +103,19 @@ public interface IPrimaryPhoneRegistry
     /// <paramref name="message"/> under the stored secret for <paramref name="deviceId"/>.
     /// </summary>
     bool VerifyProof(string deviceId, ReadOnlySpan<byte> message, ReadOnlySpan<byte> proof);
+
+    /// <summary>
+    /// The same check, but saying which of the three ways it failed.
+    /// <para>
+    /// <b>For the local log only.</b> The distinction must never reach the caller — telling an
+    /// unauthenticated peer "that device id is not the paired one" lets it enumerate device ids —
+    /// which is why <see cref="IDeviceAuthenticator.Verify"/> still throws one opaque error for
+    /// every outcome. The owner reading their own PC's console is in a different position: without
+    /// this, "a phone whose pairing record was replaced" and "a phone presenting the wrong secret"
+    /// look identical, and the only offered remedy is to re-pair, which destroys the evidence.
+    /// </para>
+    /// </summary>
+    ProofOutcome CheckProof(string deviceId, ReadOnlySpan<byte> message, ReadOnlySpan<byte> proof);
 
     /// <summary>
     /// Records the phone's owner-authentication public key.
@@ -214,7 +250,10 @@ public sealed class PrimaryPhoneRegistry : IPrimaryPhoneRegistry
         }
     }
 
-    public bool VerifyProof(string deviceId, ReadOnlySpan<byte> message, ReadOnlySpan<byte> proof)
+    public bool VerifyProof(string deviceId, ReadOnlySpan<byte> message, ReadOnlySpan<byte> proof) =>
+        CheckProof(deviceId, message, proof) == ProofOutcome.Verified;
+
+    public ProofOutcome CheckProof(string deviceId, ReadOnlySpan<byte> message, ReadOnlySpan<byte> proof)
     {
         byte[] expected;
 
@@ -224,20 +263,22 @@ public sealed class PrimaryPhoneRegistry : IPrimaryPhoneRegistry
 
             if (_phone is null || _secret is null)
             {
-                return false;
+                return ProofOutcome.NotPaired;
             }
 
             // The device id is an identifier, never a credential: matching it proves nothing on its
             // own, and failing to match simply means there is no secret to check against.
             if (!string.Equals(_phone.DeviceId, deviceId, StringComparison.Ordinal))
             {
-                return false;
+                return ProofOutcome.DifferentDevice;
             }
 
             expected = HMACSHA256.HashData(_secret, message);
         }
 
-        return CryptographicOperations.FixedTimeEquals(expected, proof);
+        return CryptographicOperations.FixedTimeEquals(expected, proof)
+            ? ProofOutcome.Verified
+            : ProofOutcome.WrongProof;
     }
 
     public bool RegisterOwnerKey(string deviceId, string publicKeySpki)
