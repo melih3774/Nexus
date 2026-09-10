@@ -395,7 +395,12 @@ class PcConnectionManager(
                 action = NexusProtocol.Actions.AUTHENTICATE,
                 params = NexusJson.encodeToJsonElement(
                     AuthenticateParams.serializer(),
-                    AuthenticateParams(challenge.challengeId, credential.deviceId, proof),
+                    AuthenticateParams(
+                        challengeId = challenge.challengeId,
+                        deviceId = credential.deviceId,
+                        proof = proof,
+                        pcInstanceId = credential.pcInstanceId,
+                    ),
                 ),
             )
 
@@ -546,6 +551,14 @@ class PcConnectionManager(
         @kotlinx.serialization.SerialName("challenge_id") val challengeId: String,
         @kotlinx.serialization.SerialName("device_id") val deviceId: String,
         val proof: String,
+
+        /**
+         * Which installation this phone believes it is signing for. Diagnostic only — PC Core never
+         * verifies against it, because a caller does not get to choose the message it is checked
+         * against. It is here so a phone whose stored installation id has drifted says so, instead
+         * of producing a failure that looks identical to a wrong secret and has a different cause.
+         */
+        @kotlinx.serialization.SerialName("pc_instance_id") val pcInstanceId: String,
     )
 
     companion object {

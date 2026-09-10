@@ -198,6 +198,46 @@ public sealed class PairingSurvivesRestartTests : IDisposable
     }
 
     /// <summary>
+    /// The installation id the caller sends is a label, never an input to verification.
+    /// <para>
+    /// It exists so a phone paired to a different PC Core says so in the log rather than failing
+    /// indistinguishably from a wrong secret. If it ever reached the signed message, a caller could
+    /// choose the message it is checked against — so this pins that a wrong one changes nothing and
+    /// a right one grants nothing.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheInstallationIdAClientClaimsDoesNotAffectWhetherItAuthenticates()
+    {
+        var token = TestContext.Current.CancellationToken;
+
+        await using var instance = await Instance.StartAsync(_state.Directory);
+        var enrollment = await instance.EnrollAsync("Owner Phone", token);
+
+        // A correct credential still works while claiming to be signing for something else: the
+        // claim is ignored, and the proof is what counts.
+        await using (var honest = new RemotePhoneClient(enrollment.DeviceId, enrollment.SharedSecret))
+        {
+            await honest.ConnectAsync(instance.Uri, token);
+
+            var authenticated = await honest.AuthenticateAsync(instance.Identity.PcInstanceId, token);
+            Assert.True(authenticated.Success);
+        }
+
+        // And claiming the right installation does not rescue a wrong secret.
+        var wrongSecret = global::System.Buffers.Text.Base64Url.EncodeToString(
+            System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+
+        await using var impostor = new RemotePhoneClient(enrollment.DeviceId, wrongSecret);
+        await impostor.ConnectAsync(instance.Uri, token);
+
+        var refused = await impostor.AuthenticateAsync(instance.Identity.PcInstanceId, token);
+
+        Assert.False(refused.Success);
+        Assert.Equal(ErrorCodes.AuthenticationFailed, refused.Error!.Code);
+    }
+
+    /// <summary>
     /// The protector that actually runs in production, round-tripped.
     /// <para>
     /// Every other test in the suite substitutes <c>PassThroughSecretProtector</c>, so DPAPI itself

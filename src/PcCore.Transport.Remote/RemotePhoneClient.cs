@@ -107,6 +107,11 @@ public sealed class RemotePhoneClient : IAsyncDisposable
                 challenge_id = challengeId,
                 device_id = _deviceId,
                 proof = Sign(pcInstanceId, challenge),
+
+                // Diagnostic, and sent for the same reason the Android client sends it: the server
+                // can then say "you are signing for a different installation" instead of leaving
+                // that indistinguishable from a wrong secret.
+                pc_instance_id = pcInstanceId,
             },
             cancellationToken).ConfigureAwait(false);
 

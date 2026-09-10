@@ -267,6 +267,20 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
                 _connectionId,
                 parameters.DeviceId);
 
+            // The one thing the authenticator cannot see, because it is not part of verification:
+            // what the caller thinks it is signing for. Reported only when it disagrees, and only
+            // as the caller's own claim — this is an unauthenticated peer's assertion, not a fact.
+            if (!string.IsNullOrEmpty(parameters.PcInstanceId)
+                && !string.Equals(parameters.PcInstanceId, _identity.PcInstanceId, StringComparison.Ordinal))
+            {
+                _logger.LogWarning(
+                    "That caller says it is signing for installation {ClaimedInstance}, but this is "
+                    + "installation {ActualInstance}. Its stored pairing is for a different PC Core, "
+                    + "so no proof it makes can verify here.",
+                    parameters.PcInstanceId,
+                    _identity.PcInstanceId);
+            }
+
             await SendAsync(FailureResponse(request.Id, ex.Code), cancellationToken).ConfigureAwait(false);
             await CloseAsync(WebSocketCloseStatus.PolicyViolation, "authentication failed", CancellationToken.None)
                 .ConfigureAwait(false);
@@ -854,6 +868,19 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
         public string? ChallengeId { get; init; }
         public string? DeviceId { get; init; }
         public string? Proof { get; init; }
+
+        /// <summary>
+        /// Which installation the caller believes it is signing for. <b>Diagnostic only.</b>
+        /// <para>
+        /// Never used to verify anything: the signed message is always built from this PC's own
+        /// identity, because taking the caller's word for it would let anyone choose the message
+        /// they are checked against. It exists because a phone whose stored installation id has
+        /// drifted produces a proof that fails for a reason indistinguishable from a wrong secret,
+        /// and the two have completely different causes. Absent from older clients, which is fine —
+        /// it changes nothing about whether they authenticate.
+        /// </para>
+        /// </summary>
+        public string? PcInstanceId { get; init; }
     }
 
     /// <summary>
