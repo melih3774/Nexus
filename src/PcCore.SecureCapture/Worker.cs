@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.IO.Pipes;
 using System.Text;
 
@@ -40,7 +41,26 @@ internal static class Worker
         // GetSystemMetrics answers in logical pixels: on a display at 125% that is a 1536x864
         // picture of a 1920x1080 screen, upscaled by Windows and blurry by the time it reaches the
         // phone. PC Core does the same thing at its own start, for the same reason.
-        SetProcessDpiAwarenessContext(PerMonitorAwareV2);
+        //
+        // The result is checked, and a failure is written to the log, because the symptom is
+        // otherwise invisible: a virtualised frame is a correct-looking picture at the wrong
+        // resolution, and nothing downstream can tell it from a small display. The one time this
+        // was actually observed at 1536x864 the cause was a *stale installed service* rather than a
+        // failing call — the helper runs from %ProgramFiles% and had not been reinstalled since this
+        // line was added — which is exactly the kind of thing a silent call cannot tell you.
+        if (!SetProcessDpiAwarenessContext(PerMonitorAwareV2))
+        {
+            var error = Marshal.GetLastWin32Error();
+
+            // ERROR_ACCESS_DENIED here means awareness was already set for this process — by a
+            // manifest, or by an earlier call — and cannot be changed. The older per-process API is
+            // tried next because it is the one that works on a process the newer one refuses.
+            if (!SetProcessDpiAware())
+            {
+                SecureCaptureService.Log(
+                    $"Per-monitor DPI awareness was refused ({error}); frames may be DPI-virtualised.");
+            }
+        }
 
         using var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.None);
 
@@ -111,7 +131,19 @@ internal static class Worker
     private const nint PerMonitorAwareV2 = -4;
 
     [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetProcessDpiAwarenessContext(nint context);
+
+    /// <summary>
+    /// The Windows Vista-era per-process call. Kept as the fallback because it succeeds in the one
+    /// case the modern one refuses outright, and a system-wide-aware capture is still the right
+    /// number of pixels on a single-display machine.
+    /// </summary>
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetProcessDPIAware();
+
+    private static bool SetProcessDpiAware() => SetProcessDPIAware();
 
     private static void Answer(BinaryWriter writer, DesktopCapture capture)
     {
