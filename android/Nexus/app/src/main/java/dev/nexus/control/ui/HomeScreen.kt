@@ -67,6 +67,14 @@ fun HomeScreen(
             // a credential: it is sent in the clear on every connection attempt.
             state.pairedPc?.deviceId?.let { DetailRow("This phone", it) }
 
+            // Which credential this phone holds, and which installation it signs for. Both are
+            // printed by PC Core when it refuses a phone, and neither is a secret, so a refusal
+            // becomes two comparisons instead of a claim about invisible values.
+            state.pairedPc?.let {
+                DetailRow("Credential", it.credentialFingerprint)
+                DetailRow("Signs for", it.pcInstanceId)
+            }
+
             if (state.connection is ConnectionState.Connected) {
                 DetailRow("Link", "Tailscale · ${state.pairedPc?.endpoint ?: "—"}")
             }

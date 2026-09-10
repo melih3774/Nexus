@@ -187,7 +187,7 @@ fun NexusApp(
                     gateState,
                     state.connection,
                     unlock,
-                    deviceId = state.pairedPc?.deviceId,
+                    pairing = state.pairedPc,
                 )
             }
         }

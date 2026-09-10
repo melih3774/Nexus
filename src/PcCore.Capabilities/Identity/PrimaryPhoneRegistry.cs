@@ -130,6 +130,44 @@ public interface IPrimaryPhoneRegistry
 
     /// <summary>Forgets the registered owner key, so the phone may register a new one. Local-only.</summary>
     bool ClearOwnerKey();
+
+    /// <summary>
+    /// A short, one-way fingerprint of the stored shared secret, or null when nothing is paired.
+    /// <para>
+    /// <b>Not the secret, and not enough to attack it.</b> Thirty-two bits of a domain-separated
+    /// SHA-256 over a 256-bit random value: it identifies which credential this is, and reveals
+    /// nothing that helps produce a proof. It exists because "the phone's copy differs from this
+    /// PC's" is a claim the owner cannot check — both halves are invisible to them — and the phone
+    /// computes the same fingerprint from its own copy, so the two can simply be compared.
+    /// </para>
+    /// </summary>
+    string? CredentialFingerprint { get; }
+}
+
+/// <summary>The one definition of a credential fingerprint, shared by the PC and the phone.</summary>
+public static class CredentialFingerprint
+{
+    /// <summary>
+    /// Domain separation, so this value can never collide with a proof, a challenge, or any other
+    /// hash in the system — and so nothing that consumes one of those can be fed this instead.
+    /// </summary>
+    private const string Context = "nexus-credential-fingerprint";
+
+    /// <summary>Four bytes as lowercase hex. Long enough to compare, short enough to read aloud.</summary>
+    public static string Of(ReadOnlySpan<byte> secret)
+    {
+        // Fully qualified: PcCore.Capabilities.System shadows the framework's System here.
+        var prefix = global::System.Text.Encoding.UTF8.GetBytes(Context + "\0");
+        var buffer = new byte[prefix.Length + secret.Length];
+
+        prefix.CopyTo(buffer, 0);
+        secret.CopyTo(buffer.AsSpan(prefix.Length));
+
+        var digest = SHA256.HashData(buffer);
+        CryptographicOperations.ZeroMemory(buffer);
+
+        return Convert.ToHexStringLower(digest.AsSpan(0, 4));
+    }
 }
 
 public sealed class PrimaryPhoneRegistry : IPrimaryPhoneRegistry
@@ -175,6 +213,18 @@ public sealed class PrimaryPhoneRegistry : IPrimaryPhoneRegistry
             {
                 EnsureLoaded();
                 return _phone;
+            }
+        }
+    }
+
+    public string? CredentialFingerprint
+    {
+        get
+        {
+            lock (_gate)
+            {
+                EnsureLoaded();
+                return _secret is null ? null : Identity.CredentialFingerprint.Of(_secret);
             }
         }
     }

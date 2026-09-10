@@ -40,6 +40,11 @@
     "signed_message_hex": "6e657875732d617574682d76310038663134653435662d656139632d346432622d396133342d306637633662316435653230006259574f62577a55366b5139554d4d5a54336b436f6700f09f90ab48656c6c6f2d4e657875732d4368616c6c656e67652d303030312121",
     "proof_b64url": "W2Ka1uKcxgtF80oMPxxPWTBt8kNfbt6tX1WKTrn6LNE"
   },
+  "credential_fingerprint": {
+    "context": "nexus-credential-fingerprint",
+    "shared_secret_b64url": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+    "fingerprint": "24c760aa"
+  },
   "owner_session": {
     "context": "nexus.owner-session.v1",
     "pc_instance_id": "8f14e45f-ea9c-4d2b-9a34-0f7c6b1d5e20",

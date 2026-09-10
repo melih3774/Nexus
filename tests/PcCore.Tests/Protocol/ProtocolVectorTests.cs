@@ -86,6 +86,23 @@ public sealed class ProtocolVectorTests
             Convert.ToHexStringLower(message));
     }
 
+    [Fact]
+    public void TheCredentialFingerprintVectorMatchesTheRealImplementation()
+    {
+        var fingerprint = CredentialFingerprint.Of(Base64Url.DecodeFromChars(SharedSecret.AsSpan()));
+
+        Assert.Equal(Vector("credential_fingerprint")["fingerprint"]!.GetValue<string>(), fingerprint);
+
+        // Eight lowercase hex characters: short enough to read out, and derived rather than
+        // guessable. It must never be the secret, nor long enough to be mistaken for one.
+        Assert.Equal(8, fingerprint.Length);
+        Assert.DoesNotContain(SharedSecret, fingerprint, StringComparison.Ordinal);
+        Assert.Matches("^[0-9a-f]{8}$", fingerprint);
+
+        // A different secret gives a different label; that is the whole job.
+        Assert.NotEqual(fingerprint, CredentialFingerprint.Of(new byte[32]));
+    }
+
     /// <summary>
     /// The owner-session message the phone has to reproduce byte for byte, and a signature over it
     /// verified by the same code that will verify the phone's.
@@ -450,6 +467,19 @@ public sealed class ProtocolVectorTests
                 ["signed_message_hex"] = Convert.ToHexStringLower(authMessage),
                 ["proof_b64url"] = Base64Url.EncodeToString(
                     HMACSHA256.HashData(Base64Url.DecodeFromChars(SharedSecret.AsSpan()), authMessage)),
+            },
+
+            // --- credential fingerprint ---------------------------------------------------------
+            // Not a proof: a short, one-way label for "which credential is this". Pinned here for
+            // the same reason as the proofs — the PC prints one when it refuses a phone and the
+            // phone prints its own, and two implementations that disagree would turn a comparison
+            // meant to end an argument into the argument.
+            ["credential_fingerprint"] = new JsonObject
+            {
+                ["context"] = "nexus-credential-fingerprint",
+                ["shared_secret_b64url"] = SharedSecret,
+                ["fingerprint"] = CredentialFingerprint.Of(
+                    Base64Url.DecodeFromChars(SharedSecret.AsSpan())),
             },
 
             // --- owner-session challenge --------------------------------------------------------

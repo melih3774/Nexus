@@ -101,6 +101,29 @@ object NexusCrypto {
         ),
     )
 
+    /**
+     * A short, one-way fingerprint of the shared secret. Mirrors `PcCore.Capabilities.Identity`.
+     *
+     * **Not the secret.** Thirty-two bits of a domain-separated SHA-256 over a 256-bit random
+     * value: it says *which* credential this phone holds and nothing that helps forge a proof. It
+     * exists so "the phone's copy differs from this PC's" — a claim about two values the owner
+     * cannot see — becomes two short strings they can compare.
+     */
+    fun fingerprint(sharedSecretB64Url: String): String = try {
+        val secret = Base64Url.decode(sharedSecretB64Url)
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest((FINGERPRINT_CONTEXT + NUL).toByteArray(Charsets.UTF_8) + secret)
+
+        secret.fill(0)
+        digest.take(4).joinToString("") { "%02x".format(it) }
+    } catch (_: IllegalArgumentException) {
+        // A credential that will not even decode cannot authenticate either; saying so is more
+        // use than throwing inside a screen that is already reporting a failure.
+        "unreadable"
+    }
+
+    private const val FINGERPRINT_CONTEXT = "nexus-credential-fingerprint"
+
     fun hmacSha256(key: ByteArray, message: ByteArray): ByteArray =
         Mac.getInstance("HmacSHA256").run {
             init(SecretKeySpec(key, "HmacSHA256"))

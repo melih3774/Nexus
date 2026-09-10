@@ -246,10 +246,15 @@ public sealed class DeviceAuthenticator : IDeviceAuthenticator
             + $"{_registry.Current?.DeviceId ?? "nothing"}, so the presented credential is from an "
             + "earlier pairing and cannot be verified",
 
+        // The fingerprint is what makes this checkable. "The phone's copy differs from this PC's"
+        // is otherwise a claim about two things the owner cannot see, and the phone prints the same
+        // value from its own copy: equal fingerprints mean the credentials agree and the signed
+        // message is what differs, which points at the installation id rather than the secret.
         ProofOutcome.WrongProof =>
             $"device {deviceId} is the paired phone, but its proof did not match the stored secret "
             + $"for installation {_identity.PcInstanceId} — the phone's copy of the credential "
-            + "differs from this PC's",
+            + $"differs from this PC's (this PC holds credential {_registry.CredentialFingerprint}; "
+            + "the phone shows its own on the home screen)",
 
         _ => $"invalid proof for device {deviceId}",
     };

@@ -16,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import dev.nexus.control.data.PairedPc
 import dev.nexus.control.net.ConnectionState
 import dev.nexus.control.net.FailureReason
 import dev.nexus.control.security.LockReason
@@ -39,8 +40,8 @@ fun LockScreen(
     connection: ConnectionState,
     onUnlock: () -> Unit,
     modifier: Modifier = Modifier,
-    /** This phone's paired device id, so a refusal can be checked against the PC's log. */
-    deviceId: String? = null,
+    /** How this phone identifies itself, so a refusal can be checked against the PC's log. */
+    pairing: PairedPc? = null,
 ) {
     Column(
         modifier = modifier
@@ -61,7 +62,7 @@ fun LockScreen(
         Spacer(Modifier.height(10.dp))
 
         Text(
-            explanation(state, connection, deviceId),
+            explanation(state, connection, pairing),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
@@ -95,7 +96,7 @@ private fun headline(state: SessionGateState): String = when (state) {
 private fun explanation(
     state: SessionGateState,
     connection: ConnectionState,
-    deviceId: String? = null,
+    pairing: PairedPc? = null,
 ): String {
     (state as? SessionGateState.Locked)?.message?.let { return it }
 
@@ -109,8 +110,10 @@ private fun explanation(
     if (connection is ConnectionState.Failed
         && connection.reason == FailureReason.AuthenticationFailed
     ) {
-        val identifies = deviceId?.let {
-            " This phone identifies itself as $it; your PC's log names the phone it is paired with."
+        val identifies = pairing?.let {
+            " This phone is ${it.deviceId}, holding credential ${it.credentialFingerprint}, " +
+                "signing for installation ${it.pcInstanceId}. Your PC's log prints the same three " +
+                "values; whichever pair disagrees is the problem."
         }.orEmpty()
 
         return "Your PC answered but did not accept this phone's saved credential, so it is not " +

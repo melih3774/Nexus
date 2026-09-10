@@ -34,7 +34,13 @@ data class NexusCredential(
     fun endpoint(): Result<NexusEndpoint> = NexusEndpoint.parse(host, port)
 
     /** The safe projection: everything the UI may know about the pairing, and nothing more. */
-    fun describe(): PairedPc = PairedPc(pcInstanceId, deviceId, "$host:$port", pairedAt)
+    fun describe(): PairedPc = PairedPc(
+        pcInstanceId,
+        deviceId,
+        "$host:$port",
+        pairedAt,
+        dev.nexus.control.protocol.NexusCrypto.fingerprint(sharedSecret),
+    )
 
     /** Deliberately overridden: an accidental `Log.d("$credential")` must not print the secret. */
     override fun toString(): String = "NexusCredential(device=$deviceId, pc=$pcInstanceId, endpoint=$host:$port)"
@@ -46,6 +52,12 @@ data class PairedPc(
     val deviceId: String,
     val endpoint: String,
     val pairedAt: String,
+
+    /**
+     * Identifies which credential this phone holds, without being the credential. Safe for UI
+     * state and for reading out loud; see `NexusCrypto.fingerprint`.
+     */
+    val credentialFingerprint: String,
 )
 
 /**

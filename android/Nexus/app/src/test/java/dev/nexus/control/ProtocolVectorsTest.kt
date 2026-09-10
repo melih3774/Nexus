@@ -38,6 +38,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -126,6 +127,34 @@ class ProtocolVectorsTest {
                 challengeB64Url = v["challenge_b64url"]!!.jsonPrimitive.content,
             ),
         )
+    }
+
+    /**
+     * The label the two ends compare when a phone is refused.
+     *
+     * It is not used to authenticate anything, which is exactly why it needs a vector: nothing else
+     * would ever notice the two implementations drifting apart, and the moment anyone looks at it is
+     * the moment they are trying to work out why authentication failed. A fingerprint that disagreed
+     * would send them chasing a mismatch that did not exist.
+     */
+    @Test
+    fun `the credential fingerprint matches PC Core`() {
+        val v = vector("credential_fingerprint")
+
+        val fingerprint = NexusCrypto.fingerprint(v["shared_secret_b64url"]!!.jsonPrimitive.content)
+
+        assertEquals(v["fingerprint"]!!.jsonPrimitive.content, fingerprint)
+
+        // Never the secret, and never long enough to be mistaken for it.
+        assertEquals(8, fingerprint.length)
+        assertTrue(fingerprint.all { it in "0123456789abcdef" })
+        assertNotEquals(v["shared_secret_b64url"]!!.jsonPrimitive.content, fingerprint)
+    }
+
+    /** A credential that cannot even be decoded says so rather than throwing into a failure screen. */
+    @Test
+    fun `an unusable credential fingerprints as unreadable`() {
+        assertEquals("unreadable", NexusCrypto.fingerprint("not base64url!!"))
     }
 
     /**
