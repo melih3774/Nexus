@@ -38,12 +38,23 @@ class SecurityIncidentClient(private val connection: NexusCommandChannel) {
         return NexusJson.decodeFromJsonElement(GetSessionResult.serializer(), result)
     }
 
-    suspend fun getEvidence(sessionId: String, evidenceId: String): GetEvidenceResult {
+    /**
+     * One chunk of one piece of evidence.
+     *
+     * [offset] and [maxBytes] make this a ranged read. A still image is one call; a camera clip is
+     * a handful, appended to a file on the way past rather than assembled in memory.
+     */
+    suspend fun getEvidence(
+        sessionId: String,
+        evidenceId: String,
+        offset: Long = 0,
+        maxBytes: Int? = null,
+    ): GetEvidenceResult {
         val result = connection.request(
             NexusProtocol.Actions.SECURITY_EVIDENCE_GET,
             NexusJson.encodeToJsonElement(
                 GetEvidenceParams.serializer(),
-                GetEvidenceParams(sessionId, evidenceId),
+                GetEvidenceParams(sessionId, evidenceId, offset, maxBytes),
             ),
         ) ?: throw IllegalStateException("The PC returned no evidence.")
 

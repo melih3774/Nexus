@@ -1,7 +1,6 @@
 package dev.nexus.control.security
 
 import android.graphics.BitmapFactory
-import android.util.Base64
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.ViewModel
@@ -18,10 +17,13 @@ import dev.nexus.control.protocol.SecuritySessionSummary
 import dev.nexus.control.protocol.SecurityState
 import dev.nexus.control.protocol.SessionDetail
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 data class SecurityIncidentUiState(
     val loading: Boolean = false,
@@ -36,11 +38,30 @@ data class SecurityIncidentUiState(
     val confirmationMessage: String? = null,
 )
 
-/** One decoded piece of evidence, held only while it is on screen. */
+/**
+ * One piece of evidence, on screen.
+ *
+ * An image arrives decoded; a clip arrives as a file for the player. Both go through the same cache,
+ * so opening the same item twice costs one download.
+ */
 data class ViewedEvidence(
     val summary: EvidenceSummary,
     val image: ImageBitmap? = null,
+
+    /** The cached file, for video and audio. Null for images and for anything that failed. */
+    val file: File? = null,
+
     val loading: Boolean = false,
+
+    /** 0f..1f while bytes are arriving. */
+    val progress: Float = 0f,
+
+    /**
+     * The PC no longer has this file. Held apart from [error] because "deleted or expired" is a
+     * fact about the incident rather than a failure that retrying would fix.
+     */
+    val missing: Boolean = false,
+
     val error: String? = null,
 )
 
@@ -59,6 +80,7 @@ data class ViewedEvidence(
 class SecurityIncidentViewModel(
     private val repository: NexusRepository,
     private val incidents: SecurityIncidentClient,
+    private val evidenceCache: EvidenceCache,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SecurityIncidentUiState())
@@ -192,51 +214,75 @@ class SecurityIncidentViewModel(
     }
 
     /**
-     * Fetches and decodes one piece of evidence.
+     * Fetches one piece of evidence and prepares it for display.
      *
-     * Held one at a time. A session can hold dozens of images and keeping them all decoded would put
+     * Everything goes through the cache, which writes the bytes to a file and checks them against
+     * the digest the PC recorded. Images are then decoded; video and audio are handed to the player
+     * as a file, because `MediaPlayer` reads from a file descriptor and there is no local server to
+     * point it at.
+     *
+     * Held one at a time. A session can hold dozens of items and keeping them all decoded would put
      * tens of megabytes of the owner's home on the heap for no reason.
+     *
+     * The session id is passed in by the caller rather than read from state, so an incident opened
+     * from history works exactly as the active one does — resolving an incident decides what
+     * happened, not whether its evidence can still be looked at.
      */
     fun viewEvidence(sessionId: String, summary: EvidenceSummary) {
         _evidence.value = ViewedEvidence(summary, loading = true)
 
         viewModelScope.launch {
             try {
-                val result = incidents.getEvidence(sessionId, summary.evidenceId)
-
-                if (result.data == null) {
-                    _evidence.value = ViewedEvidence(
-                        summary,
-                        error = result.unavailable ?: "This evidence could not be loaded.",
-                    )
-                    return@launch
+                val fetched = evidenceCache.fetch(sessionId, summary) { progress ->
+                    // Only while this item is still the one on screen: a slow clip that the owner
+                    // closed must not overwrite whatever they opened next.
+                    _evidence.value?.let { current ->
+                        if (current.summary.evidenceId == summary.evidenceId && current.loading) {
+                            _evidence.value = current.copy(progress = progress)
+                        }
+                    }
                 }
 
-                if (!summary.kind.isViewableImage) {
-                    // v0.7 shows images. Video and audio have their metadata and their digest, and
-                    // playback is a later milestone rather than a half-working player now.
-                    _evidence.value = ViewedEvidence(
-                        summary,
-                        error = "${summary.kind.label} playback is not available in this version. " +
-                            "The file is on the PC.",
-                    )
-                    return@launch
+                if (_evidence.value?.summary?.evidenceId != summary.evidenceId) return@launch
+
+                _evidence.value = when (fetched) {
+                    is EvidenceFetch.Missing ->
+                        ViewedEvidence(summary, missing = true, error = fetched.reason)
+
+                    is EvidenceFetch.Failed ->
+                        ViewedEvidence(summary, error = fetched.reason)
+
+                    is EvidenceFetch.Ready -> present(summary, fetched.file)
                 }
-
-                val bytes = Base64.decode(result.data, Base64.DEFAULT)
-                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-
-                _evidence.value = ViewedEvidence(
-                    summary,
-                    image = bitmap?.asImageBitmap(),
-                    error = if (bitmap == null) "The image could not be decoded." else null,
-                )
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 _evidence.value = ViewedEvidence(summary, error = describe(e))
             }
         }
+    }
+
+    /** Decodes an image, or hands a clip through as a file. */
+    private suspend fun present(summary: EvidenceSummary, file: File): ViewedEvidence {
+        if (summary.kind.isPlayable) {
+            return ViewedEvidence(summary, file = file, progress = 1f)
+        }
+
+        val bitmap = withContext(Dispatchers.IO) {
+            try {
+                BitmapFactory.decodeFile(file.absolutePath)
+            } catch (e: OutOfMemoryError) {
+                null
+            }
+        }
+
+        return ViewedEvidence(
+            summary,
+            image = bitmap?.asImageBitmap(),
+            file = file,
+            progress = 1f,
+            error = if (bitmap == null) "The image could not be decoded." else null,
+        )
     }
 
     fun closeEvidence() {
@@ -268,7 +314,8 @@ class SecurityIncidentViewModel(
                 val container = this.nexusContainer
                 SecurityIncidentViewModel(
                     container.repository,
-                    SecurityIncidentClient(container.connection),
+                    container.incidents,
+                    container.evidenceCache,
                 )
             }
         }

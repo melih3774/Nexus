@@ -43,8 +43,17 @@ enum class EvidenceKind {
     AUDIO,
     ;
 
-    /** True for the kinds this version can actually display. See SPEC 82. */
+    /** Rendered as a bitmap. */
     val isViewableImage: Boolean get() = this == SCREENSHOT || this == CAMERA_IMAGE
+
+    /** Played with a surface: a moving picture with optional sound. */
+    val isVideo: Boolean get() = this == CAMERA_VIDEO || this == SCREEN_RECORDING
+
+    /** Played without a surface. */
+    val isAudio: Boolean get() = this == AUDIO
+
+    /** Anything that goes through the player rather than the bitmap decoder. */
+    val isPlayable: Boolean get() = isVideo || isAudio
 
     val label: String
         get() = when (this) {
@@ -166,6 +175,27 @@ data class GetSessionResult(
     val securityState: SecurityState? get() = SecurityState.fromWire(state)
 }
 
+/** Whether the bytes are actually on the PC. */
+@Serializable
+enum class EvidenceAvailability {
+    @SerialName("AVAILABLE")
+    AVAILABLE,
+
+    /** Listed by the incident, but the file is gone — deleted, or past retention. */
+    @SerialName("MISSING")
+    MISSING,
+
+    @SerialName("UNREADABLE")
+    UNREADABLE,
+}
+
+/**
+ * One chunk of one piece of evidence.
+ *
+ * Ranged, because a camera clip is megabytes: the phone asks for a window at a time and appends it
+ * to a file rather than holding a whole recording as a base64 string, a byte array and a decoded
+ * buffer at once.
+ */
 @Serializable
 data class GetEvidenceResult(
     @SerialName("evidence_id") val evidenceId: String = "",
@@ -174,6 +204,10 @@ data class GetEvidenceResult(
     val encoding: String = "base64",
     @SerialName("size_bytes") val sizeBytes: Long = 0,
     val sha256: String = "",
+    val availability: EvidenceAvailability = EvidenceAvailability.AVAILABLE,
+    val offset: Long = 0,
+    @SerialName("chunk_bytes") val chunkBytes: Int = 0,
+    @SerialName("end_of_file") val endOfFile: Boolean = true,
     val data: String? = null,
     val unavailable: String? = null,
 )
@@ -194,4 +228,6 @@ data class SessionIdParams(@SerialName("session_id") val sessionId: String)
 data class GetEvidenceParams(
     @SerialName("session_id") val sessionId: String,
     @SerialName("evidence_id") val evidenceId: String,
+    val offset: Long = 0,
+    @SerialName("max_bytes") val maxBytes: Int? = null,
 )

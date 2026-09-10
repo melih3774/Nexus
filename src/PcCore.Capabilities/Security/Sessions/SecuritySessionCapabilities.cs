@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 using PcCore.Capabilities.Abstractions;
 using PcCore.Capabilities.Security.Detection;
 using PcCore.Capabilities.Security.Evidence;
@@ -178,6 +180,41 @@ public sealed record GetEvidenceParameters
 {
     public string? SessionId { get; init; }
     public string? EvidenceId { get; init; }
+
+    /// <summary>
+    /// Where in the file to start. Zero for the whole thing, which is what a still image asks for.
+    /// <para>
+    /// Ranged rather than all-or-nothing because a camera clip is megabytes and a phone holding a
+    /// whole one as a base64 string, a byte array and a decoded buffer at the same time is three
+    /// copies of the owner's living room on a heap that has other work to do.
+    /// </para>
+    /// </summary>
+    public long Offset { get; init; }
+
+    /// <summary>Most bytes to return in this chunk. Clamped; null takes the default.</summary>
+    public int? MaxBytes { get; init; }
+}
+
+/// <summary>Whether the bytes are actually there.</summary>
+public enum EvidenceAvailability
+{
+    /// <summary>The file is present and the requested range was returned.</summary>
+    [JsonStringEnumMemberName("AVAILABLE")]
+    Available,
+
+    /// <summary>
+    /// The session still lists it, but the file is gone — deleted, or past its retention period.
+    /// <para>
+    /// A distinct state rather than an error, because it is not a failure and the owner should be
+    /// told which of "something went wrong" and "this no longer exists" is true.
+    /// </para>
+    /// </summary>
+    [JsonStringEnumMemberName("MISSING")]
+    Missing,
+
+    /// <summary>The file is there and could not be read.</summary>
+    [JsonStringEnumMemberName("UNREADABLE")]
+    Unreadable,
 }
 
 public sealed record GetEvidenceResult
@@ -189,10 +226,22 @@ public sealed record GetEvidenceResult
     public required long SizeBytes { get; init; }
     public required string Sha256 { get; init; }
 
-    /// <summary>Base64 of the file. Absent when the file is too large to inline.</summary>
+    /// <summary>Whether the bytes exist at all.</summary>
+    public EvidenceAvailability Availability { get; init; } = EvidenceAvailability.Available;
+
+    /// <summary>Where this chunk starts in the file.</summary>
+    public long Offset { get; init; }
+
+    /// <summary>How many bytes this chunk carries, before base64.</summary>
+    public int ChunkBytes { get; init; }
+
+    /// <summary>True when this chunk reaches the end. A single-chunk fetch sets it immediately.</summary>
+    public bool EndOfFile { get; init; } = true;
+
+    /// <summary>Base64 of this chunk. Absent when there is nothing to send.</summary>
     public string? Data { get; init; }
 
-    /// <summary>Set when the file exists but was not inlined, saying why.</summary>
+    /// <summary>Why there are no bytes, in words the owner can read.</summary>
     public string? Unavailable { get; init; }
 }
 
@@ -208,10 +257,24 @@ public sealed record GetEvidenceResult
 public sealed class GetSecurityEvidenceAction : CapabilityAction<GetEvidenceParameters, GetEvidenceResult>
 {
     /// <summary>
-    /// Largest file returned inline. A still or a short clip fits; a long recording does not, and
-    /// sending megabytes inside a JSON string would block the connection carrying it.
+    /// Largest chunk returned in one response, whatever the caller asks for.
+    /// <para>
+    /// A ceiling rather than a wall: a file bigger than this used to be refused outright, which is
+    /// why camera clips were unreachable from the phone. Now it bounds one message and the caller
+    /// asks again from the next offset.
+    /// </para>
     /// </summary>
-    private const long MaxInlineBytes = 12 * 1024 * 1024;
+    private const int MaxChunkBytes = 4 * 1024 * 1024;
+
+    /// <summary>
+    /// What one request returns when the caller does not say.
+    /// <para>
+    /// Half a megabyte of file is about 700 KB of base64 on the wire. Small enough that a phone can
+    /// hold one while writing it to disk, large enough that a six-second clip is a handful of round
+    /// trips rather than a hundred.
+    /// </para>
+    /// </summary>
+    private const int DefaultChunkBytes = 512 * 1024;
 
     private readonly ISecuritySessionStore _store;
 
@@ -226,16 +289,14 @@ public sealed class GetSecurityEvidenceAction : CapabilityAction<GetEvidencePara
         CapabilityContext context,
         CancellationToken cancellationToken)
     {
+        // A resolved incident answers exactly as an open one does. Find() searches every session the
+        // store holds regardless of resolution, and that is deliberate: acknowledging an incident
+        // decides what happened, not whether the owner may still look at what was recorded.
         var session = _store.Find(parameters.SessionId ?? string.Empty)
             ?? throw new CapabilityException(ErrorCodes.NotFound, "No such security session.");
 
         var evidence = session.Evidence.FirstOrDefault(e => e.EvidenceId == parameters.EvidenceId)
             ?? throw new CapabilityException(ErrorCodes.NotFound, "No such evidence.");
-
-        // The file name comes from the session record, not the request, and is re-checked for
-        // containment on the way out anyway.
-        var path = _store.ResolveEvidence(session.SessionId, evidence.FileName)
-            ?? throw new CapabilityException(ErrorCodes.NotFound, "The evidence file is missing.");
 
         var result = new GetEvidenceResult
         {
@@ -245,16 +306,76 @@ public sealed class GetSecurityEvidenceAction : CapabilityAction<GetEvidencePara
             Encoding = "base64",
             SizeBytes = evidence.SizeBytes,
             Sha256 = evidence.Sha256,
+            Offset = parameters.Offset,
         };
 
-        if (evidence.SizeBytes > MaxInlineBytes)
+        // The file name comes from the session record, not the request, and is re-checked for
+        // containment on the way out anyway.
+        var path = _store.ResolveEvidence(session.SessionId, evidence.FileName);
+
+        if (path is null)
         {
-            return result with { Unavailable = "This file is too large to send inline." };
+            // Listed but gone: deleted by the owner, or removed by retention. Reported as a state
+            // rather than thrown as an error, so the phone can say which and still show what the
+            // record knows about it.
+            return result with
+            {
+                Availability = EvidenceAvailability.Missing,
+                EndOfFile = true,
+                Unavailable = "This evidence is no longer on the PC. It was deleted or passed its "
+                    + "retention period.",
+            };
         }
 
-        var bytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+        var offset = Math.Max(0, parameters.Offset);
+        var wanted = Math.Clamp(parameters.MaxBytes ?? DefaultChunkBytes, 1, MaxChunkBytes);
 
-        return result with { Data = Convert.ToBase64String(bytes) };
+        try
+        {
+            await using var file = new FileStream(
+                path, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 64 * 1024, useAsync: true);
+
+            var length = file.Length;
+
+            if (offset >= length)
+            {
+                // A caller that has already read to the end asks once more and is told so, rather
+                // than being handed an empty chunk it has to interpret.
+                return result with
+                {
+                    SizeBytes = length,
+                    Offset = offset,
+                    ChunkBytes = 0,
+                    EndOfFile = true,
+                };
+            }
+
+            var count = (int)Math.Min(wanted, length - offset);
+            var buffer = new byte[count];
+
+            file.Seek(offset, SeekOrigin.Begin);
+            await file.ReadExactlyAsync(buffer, cancellationToken).ConfigureAwait(false);
+
+            return result with
+            {
+                // The record's size is what was captured; the file's is what is there now. The
+                // second is the one a caller reading ranges has to trust.
+                SizeBytes = length,
+                Offset = offset,
+                ChunkBytes = count,
+                EndOfFile = offset + count >= length,
+                Data = Convert.ToBase64String(buffer),
+            };
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return result with
+            {
+                Availability = EvidenceAvailability.Unreadable,
+                EndOfFile = true,
+                Unavailable = "This evidence could not be read from disk.",
+            };
+        }
     }
 }
 

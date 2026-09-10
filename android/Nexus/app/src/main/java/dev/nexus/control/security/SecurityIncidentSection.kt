@@ -18,6 +18,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -292,8 +293,9 @@ fun SessionDetailDialog(
 /**
  * One piece of evidence, shown.
  *
- * Images render. Video and audio show their metadata and digest and say plainly that playback is not
- * in this version — a half-working player would be worse than an honest gap.
+ * Images render as bitmaps; camera clips and audio go through [EvidencePlayer]. Evidence the PC no
+ * longer holds is said so plainly and distinguished from a failure — "deleted or expired" is a fact
+ * about the incident, and offering to retry it would be a lie.
  */
 @Composable
 fun EvidenceDialog(viewed: ViewedEvidence, onClose: () -> Unit) {
@@ -304,7 +306,12 @@ fun EvidenceDialog(viewed: ViewedEvidence, onClose: () -> Unit) {
         text = {
             Column {
                 Text(
-                    "${shortDateTime(viewed.summary.createdAtUtc)} · ${viewed.summary.sizeLabel}",
+                    "${shortDateTime(viewed.summary.createdAtUtc)} · ${viewed.summary.sizeLabel}" +
+                        if (viewed.summary.durationMs > 0) {
+                            " · ${viewed.summary.durationMs / 1000}s"
+                        } else {
+                            ""
+                        },
                     style = MaterialTheme.typography.bodySmall,
                 )
 
@@ -313,10 +320,45 @@ fun EvidenceDialog(viewed: ViewedEvidence, onClose: () -> Unit) {
                     style = MaterialTheme.typography.labelSmall,
                 )
 
+                viewed.summary.note?.let {
+                    Text(it, style = MaterialTheme.typography.labelSmall)
+                }
+
                 Spacer(Modifier.height(12.dp))
 
                 when {
-                    viewed.loading -> CircularProgressIndicator(Modifier.size(28.dp))
+                    viewed.loading -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        // Determinate once the first chunk has landed: a six-megabyte clip over a
+                        // tunnel takes long enough that a spinner alone reads as a hang.
+                        if (viewed.progress > 0f) {
+                            LinearProgressIndicator(
+                                progress = { viewed.progress },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                "Fetching from the PC — ${(viewed.progress * 100).toInt()}%",
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        } else {
+                            CircularProgressIndicator(Modifier.size(28.dp))
+                        }
+                    }
+
+                    // Missing is not an error state: the record is intact and the file is gone.
+                    viewed.missing -> Column {
+                        Text(
+                            "No longer on the PC",
+                            style = MaterialTheme.typography.titleSmall,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            viewed.error
+                                ?: "This evidence was deleted or passed its retention period.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
 
                     viewed.error != null -> Text(
                         viewed.error,
@@ -329,6 +371,12 @@ fun EvidenceDialog(viewed: ViewedEvidence, onClose: () -> Unit) {
                         contentDescription = viewed.summary.kind.label,
                         modifier = Modifier.fillMaxWidth().heightIn(max = 380.dp),
                         contentScale = ContentScale.Fit,
+                    )
+
+                    viewed.file != null && viewed.summary.kind.isPlayable -> EvidencePlayer(
+                        file = viewed.file,
+                        isVideo = viewed.summary.kind.isVideo,
+                        modifier = Modifier.fillMaxWidth(),
                     )
                 }
             }

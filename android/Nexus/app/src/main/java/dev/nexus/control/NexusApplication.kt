@@ -12,8 +12,10 @@ import dev.nexus.control.data.NexusRepository
 import dev.nexus.control.net.AndroidPrivateNetworkProbe
 import dev.nexus.control.net.PcConnectionManager
 import dev.nexus.control.net.PcEnrollmentClient
+import dev.nexus.control.security.EvidenceCache
 import dev.nexus.control.security.OwnerKeyStore
 import dev.nexus.control.security.OwnerSessionClient
+import dev.nexus.control.security.SecurityIncidentClient
 import dev.nexus.control.security.SessionGate
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -50,6 +52,17 @@ class NexusContainer(context: Context) {
      * turned sideways.
      */
     val gate = SessionGate(scope, connection.state, OwnerSessionClient(connection, ownerKeys))
+
+    /** One client, so the incident screen and the evidence cache speak through the same channel. */
+    val incidents = SecurityIncidentClient(connection)
+
+    /**
+     * Evidence files, on the way to being looked at.
+     *
+     * In `cacheDir` rather than `filesDir`: these are recordings of the owner's home, and the right
+     * place for them is the one Android is allowed to empty without asking.
+     */
+    val evidenceCache = EvidenceCache(java.io.File(context.cacheDir, "nexus-evidence"), incidents)
 }
 
 class NexusApplication : Application() {
