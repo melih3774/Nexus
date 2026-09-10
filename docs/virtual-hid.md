@@ -203,7 +203,7 @@ because it is injected as characters. The honest position is to report the hybri
 Android client keeps decoding `input.status` — and its `Json { ignoreUnknownKeys = true }` is there
 for exactly this. The protocol vectors were regenerated and grew by nine lines with no deletions.
 
-## 5. Security attribution under virtual HID — designed, not yet implemented
+## 5. Security attribution under virtual HID — implemented and running
 
 This is the invariant that decides whether virtual HID can ship at all:
 
@@ -230,7 +230,18 @@ detector is a `WH_MOUSE_LL` / `WH_KEYBOARD_LL` hook and **a low-level hook does 
 identity**. So the detector needs a Raw Input listener alongside the hooks, and the two need
 correlating. That is real work and it is not done.
 
-**Marked: designed / pending implementation and real installed-device verification.**
+**Status: implemented.** `RawInputListener` runs alongside the low-level hooks and resolves every
+`WM_INPUT` to a device path; `RawInputAttributionService` correlates the two. Attribution is a hard
+gate on routing rather than a preference — `VirtualHidEligibility` refuses to route through HID at
+all unless the listener is healthy *and* the security monitor is actually subscribed to the ledger,
+because HID input is indistinguishable from a person's at the detector if it is not. Verified on
+this machine: with the driver connected, PC Core logs
+`Raw Input Mouse from a trusted Nexus device: \\?\HID#HID_DEVICE_SYSTEM_VHF#...`, and the three
+published devices resolve to distinct paths recorded at publish time.
+
+Timing is no longer the signal. The 400 ms ledger remains, but as corroboration for the one case
+device identity cannot settle — a machine with a real digitizer, where a person's touch produces the
+same promoted mouse messages Nexus's own does. PC Core says so at start-up when it applies.
 
 ## 6. Secure Desktop under virtual HID
 
@@ -239,6 +250,15 @@ the device handle — the same reasoning as v0.8, only more so: a HID source is 
 than `SendInput`, so the gate matters more, not less. `InputDesktop.Current()` already fails closed
 on `Unknown`. Nexus does not switch desktops, open the Secure Desktop, automate `consent.exe`, or
 touch UAC policy.
+
+**v1.0 adds visibility, not automation.** A HID device produces reports Windows delivers to whichever
+desktop has focus, so an owner-authenticated session can *drive* the Secure Desktop — but until v1.0
+it could not *see* it, because Desktop Duplication stops there. `PcCore.SecureCapture`, a LocalSystem
+service, starts a capture process in the console session and returns frames; no frame is produced
+without a live owner-authenticated session, checked per frame. UAC is not disabled, Secure Desktop is
+not disabled, no policy is changed and consent is never automated. Where Windows requires a local
+confirmation, that requirement is preserved and reported as a platform limitation. See the
+"Secure Desktop" section of [../README.md](../README.md).
 
 ## 7. Virtual display — researched only, and not recommended yet
 

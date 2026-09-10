@@ -1,4 +1,4 @@
-# Nexus v0.8
+# Nexus v1.0
 
 A user-level Windows process that exposes a **small, explicit set of capabilities** over a structured request/response/event protocol — locally over loopback, and remotely to one paired phone over Tailscale.
 
@@ -12,8 +12,10 @@ A user-level Windows process that exposes a **small, explicit set of capabilitie
 - **v0.6 — Live Screen and Remote Input:** Desktop Duplication streaming, pointer and keyboard injection, an on-screen indicator while it is happening.
 - **v0.7 — Security Detection, Evidence, Notifications, Owner Verification:** arming the PC, noticing a person at it, recording evidence, and answering the alert from the phone.
 - **v0.8 — Native Windows Input:** input reaches ordinary Administrator windows, Direct mode sends real Windows touch, and the security detector can still tell Nexus's own input from a person's.
+- **v0.9 — Virtual HID:** a signed UMDF2 source driver publishes a Nexus mouse, keyboard and touch screen through the Windows Virtual HID Framework. Input arrives from a device rather than an injection call, so it reaches elevated windows without an elevated broker — and Raw Input can still tell those devices apart from the ones on the desk.
+- **v1.0 — Owner-Authenticated Sessions, Secure Desktop, Real Cursors:** the phone app opens locked and unlocks with Android's own `BiometricPrompt`, backed by a hardware Keystore key the platform will not use without a real prompt. Remote control now requires proving *who* is holding the phone, not just *which* phone it is. A LocalSystem helper makes the UAC consent prompt visible remotely without weakening it, and the screen stream composites the actual Windows pointer shape instead of forcing an arrow.
 
-Still deliberately absent: no AI, no live screen streaming, no remote input, no activity detection, no recording, no internet exposure. See [SPEC.md](SPEC.md) (§38–48 cover v0.5) and [PLAN.md](PLAN.md).
+Still deliberately absent: no AI integration, no virtual display (IDD), no multi-user support, no internet exposure — the remote path is Tailscale only. See [SPEC.md](SPEC.md) and [PLAN.md](PLAN.md).
 
 > **The rule:** external controllers interact with the computer *through capabilities*, never through arbitrary Windows functionality. If PC Core does not expose it, a caller cannot do it.
 
@@ -634,6 +636,116 @@ PcCore.Host.exe --selftest-native-input
 Creates a window, types into it, reads the text back, injects touch, arms a sandboxed security state
 and proves that Nexus's own input does not raise a session. Add `--foreground` to test whatever
 window you have focused, which is how you check an Administrator window.
+
+## Owner-authenticated sessions (v1.0)
+
+Pairing proves *which phone* is calling. It is a 256-bit secret stored on the phone, and a stored
+secret is on the phone whoever happens to be holding it. v1.0 adds the second question: **is the
+owner the one holding it right now?**
+
+The app opens locked. Unlocking runs Android's own `BiometricPrompt`, configured for
+`BIOMETRIC_STRONG` with device-credential fallback. Nexus asks a yes-or-no question and receives a
+yes or a no — it never sees a fingerprint, a face or a PIN, never stores a template, and has no code
+that could.
+
+What makes that mean something on the PC side is a key, not a boolean. The phone generates a
+hardware-backed EC key in the Android Keystore with `setUserAuthenticationRequired`, so the platform
+refuses to sign with it unless the owner has authenticated within the last fifteen minutes. PC Core
+verifies that signature. A signature is therefore evidence that a real system prompt succeeded,
+produced by the part of the system that actually saw it happen — not a claim the app is making about
+itself.
+
+The key is also created with `setInvalidatedByBiometricEnrollment`, so enrolling a new fingerprint
+destroys it. That is deliberate: enrolling a finger is exactly what someone who has taken the phone
+and learned its PIN would do. The replacement key is refused until the owner clears the old one
+**at the PC**, which is somewhere a thief holding the phone is not.
+
+### When it asks again
+
+| Trigger | Behaviour |
+|---|---|
+| App launched, or Android recreated the process | Ask |
+| Phone screen turned off | Ask — putting the phone down ends the session |
+| Backgrounded longer than 15 minutes | Ask |
+| One session older than 12 hours | Ask |
+| Reboot | Ask (process is new; the Keystore window has lapsed) |
+| Short background/foreground flick | **Do not ask** |
+
+The last row is a security decision, not a convenience one. A prompt forty times a day is how you
+train someone to tap past prompts without reading them. The Keystore key enforces the same fifteen
+minutes independently, so a bug in the app's own timer cannot quietly extend the window.
+
+### Fail closed
+
+Every remote action now requires `RemoteAuthority.FullRemote`. A phone that has authenticated as the
+Primary Phone but whose owner has not authenticated gets a deliberately tiny allowlist —
+`system.get_info`, `security.get_state`, and the `session.*` calls it needs in order to authenticate.
+No screen, no input, no files, no evidence, and no standing down a security incident.
+
+An older Android build never calls `session.authorize`, so it never acquires that authority and is
+refused everything else. **The upgrade path fails closed rather than inheriting access.** Existing
+pairing data is preserved across the upgrade; the owner does not re-pair.
+
+## The Secure Desktop (v1.0)
+
+Desktop Duplication stops working the instant Windows switches to the Secure Desktop, and it is
+supposed to — isolating the consent prompt from everything in the interactive session is the
+property that makes UAC worth having. Nexus does not weaken it. UAC is not disabled, Secure Desktop
+is not disabled, no security policy is changed, and consent is never automated.
+
+What v1.0 adds is *visibility*, the way every legitimate remote-support product does it: a
+LocalSystem service starts a capture process inside the console session, where the Winlogon
+desktop's DACL actually admits it, and that process hands back pixels.
+
+```
+PC Core (standard user)            creates the frame pipe, chooses its name and a 32-byte nonce
+      |                            asks: "start a worker for the console session"
+Nexus Secure Desktop Capture       LocalSystem service; DACL admits SYSTEM, Administrators,
+      |                            interactive users; rejects remote clients outright
+capture worker                     SYSTEM, in the console session, on the Winlogon desktop
+      |                            connects outward to PC Core's pipe and proves the nonce
+PC Core                            verifies the peer really is SYSTEM before asking for a frame
+```
+
+The service accepts exactly one request and returns a yes or a no. It cannot run anything, read a
+file, or inject input, and the pixels never pass through it. **No frame is captured off the Secure
+Desktop without a live owner-authenticated session**, and that is checked per frame rather than once
+when the stream opened — so an authorisation that lapses while a prompt is up stops the picture at
+the same moment it stops the input.
+
+Installed once, from an elevated terminal:
+
+```bash
+PcCore.SecureCapture.exe --install
+```
+
+It installs to `%ProgramFiles%\Nexus\SecureCapture`, not to the build directory. A LocalSystem
+service whose image a standard user can replace is a standing offer of SYSTEM to anyone who takes it.
+
+### What remains a platform limitation
+
+Answering a UAC prompt still requires the owner at the machine when Windows demands a local
+confirmation. Nexus shows the prompt and, on a machine carrying input through Nexus HID devices, can
+deliver input to it — because a HID device produces reports Windows routes to whichever desktop has
+focus. It does not and will not bypass a consent requirement, capture credentials, or automate an
+approval. Where Windows insists on local presence, that boundary is preserved and reported rather
+than worked around.
+
+## Cursors in the screen stream (v1.0)
+
+Desktop Duplication deliberately leaves the pointer out of the frame and reports its shape
+separately, so something has to put it back. Until v1.0 that was `DrawIconEx` on whatever
+`GetCursorInfo` returned — which draws an arrow correctly and gets the interesting shapes wrong.
+
+The I-beam was the visible failure: it is a **monochrome AND/XOR mask** with no colour of its own,
+and one of its four states means *invert what is underneath*. That inversion is exactly how a text
+cursor stays readable over both black text and a white page. Rendered as a plain icon it vanished
+over text.
+
+All three documented shape types are now composited directly — monochrome, colour, and masked
+colour — so arrow, text, hand, resize and wait cursors all render as themselves, at the hotspot
+Windows reports. The client is told the pointer is already drawn, so the phone never paints its own
+arrow on top of a PC showing a spinner.
 
 ## Protocol vectors
 

@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Diagnostics;
 using PcCore.Capabilities.Abstractions;
 using PcCore.Capabilities.Screen;
@@ -42,6 +43,16 @@ public sealed class SystemCapabilityTests
 
     // --- Real Windows providers ---------------------------------------------------------------
 
+    /// <summary>
+    /// What <c>Directory.Build.props</c> stamped onto the assembly that reports it, read the same
+    /// way the provider reads it.
+    /// </summary>
+    private static string ExpectedVersion =>
+        typeof(WindowsSystemInfoProvider).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion.Split('+')[0]
+        ?? "0.0.0";
+
     [Fact]
     public void WindowsSystemInfo_ReportsUsableValues()
     {
@@ -50,7 +61,15 @@ public sealed class SystemCapabilityTests
         Assert.False(string.IsNullOrWhiteSpace(info.MachineName));
         Assert.False(string.IsNullOrWhiteSpace(info.OsDescription));
         Assert.False(string.IsNullOrWhiteSpace(info.RuntimeVersion));
-        Assert.Equal("0.9.0", info.PcCoreVersion);
+        // Against the assembly rather than a literal. Directory.Build.props is the single source of
+        // truth for this value, and a test that restates it is not checking anything except that
+        // somebody edited two files — it just fails on every release until they do.
+        Assert.Equal(ExpectedVersion, info.PcCoreVersion);
+
+        // Still asserted to be a real three-part version, which is the part that has any content:
+        // the fallback when the attribute is missing is "0.0.0".
+        Assert.Matches(@"^\d+\.\d+\.\d+$", info.PcCoreVersion);
+        Assert.NotEqual("0.0.0", info.PcCoreVersion);
         Assert.True(info.ProcessorCount > 0);
         Assert.True(info.UptimeSeconds > 0);
         Assert.True(info.TimestampUtc > DateTimeOffset.UnixEpoch);

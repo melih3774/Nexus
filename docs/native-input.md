@@ -3,6 +3,14 @@
 This is the record behind the v0.8 input work. It exists so that the next person to ask "why isn't
 this a driver?" gets an answer with measurements in it rather than an opinion.
 
+> **Superseded as the primary path by v0.9.** The answer to "why isn't this a driver?" turned out to
+> be "it can be one" — a UMDF2 source driver on the Windows Virtual HID Framework runs in user mode,
+> so it needs no kernel-mode signing and does not interact with HVCI. Nexus now carries mouse,
+> keyboard and touch over its own HID devices, and the elevated broker described below is the
+> **fallback**, not the chosen path. It remains supported and accurately reported: `input.status`
+> names the backend actually carrying each kind. See [virtual-hid.md](virtual-hid.md) for the driver,
+> and read §3 and §5 here as the reasoning that was true before it existed.
+
 Everything here was measured on **this machine**: Windows 11 Pro 26100.x (build 26200), x64,
 one 1920×1080 display at 125% scale, Synaptics precision touchpad, no touchscreen.
 
@@ -21,9 +29,9 @@ supported ways around it costs least.
 | Option | Cost |
 |---|---|
 | Run PC Core elevated | Every capability — files, screen, processes — gains administrator reach. Rejected outright. |
-| A kernel-mode virtual HID device | Needs a signed driver. See §3. |
+| A kernel-mode virtual HID device | Needs a signed driver. See §3. **A *user-mode* one does not — that is what v0.9 built.** |
 | `uiAccess="true"` manifest | Needs an Authenticode signature trusted by the machine **and** installation under `%ProgramFiles%`. See §5. |
-| A small elevated broker process | Needs one-time administrator consent. Nothing else changes. **Chosen.** |
+| A small elevated broker process | Needs one-time administrator consent. Nothing else changes. **Chosen in v0.8; now the fallback.** |
 
 ---
 
