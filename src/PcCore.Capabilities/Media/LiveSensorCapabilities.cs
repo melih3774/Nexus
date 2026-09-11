@@ -79,11 +79,10 @@ public sealed class StartLiveSensorAction : CapabilityAction<LiveSensorParameter
     {
         var kind = LiveSensorParsing.Parse(parameters.Sensor);
 
-        // The connection is the unit of authorisation: a stream belongs to the session that asked
-        // for it and dies with it.
-        var connectionId = context.Caller.ConnectionId;
-
-        var outcome = await _live.StartAsync(kind, connectionId, cancellationToken).ConfigureAwait(false);
+        // The caller the dispatcher authorised, passed through whole. Handing down only the
+        // connection id meant the service had to rebuild an identity to check authority against,
+        // and a rebuilt one has no device id — which is the single thing authority is keyed to.
+        var outcome = await _live.StartAsync(kind, context.Caller, cancellationToken).ConfigureAwait(false);
 
         var state = _live.TrayState;
 

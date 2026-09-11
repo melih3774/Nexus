@@ -1,4 +1,4 @@
-# Nexus v1.1.1
+# Nexus v1.1.2
 
 A user-level Windows process that exposes a **small, explicit set of capabilities** over a structured request/response/event protocol — locally over loopback, and remotely to one paired phone over Tailscale.
 
@@ -17,6 +17,8 @@ A user-level Windows process that exposes a **small, explicit set of capabilitie
 - **v1.1 — Evidence Playback, a Windows Shell, and Live Monitoring:** camera clips and audio from a security incident play on the phone instead of saying they cannot; Nexus has a tray icon, a Start Menu entry and one authoritative version; and the owner can watch or listen to the room their PC is in, over the authenticated session, with the PC saying so on its own screen the whole time.
 
 - **v1.1.1 — Why a phone was refused:** every failed device authentication used to print one sentence, "invalid proof for device X", for three different problems with three different remedies. It now names which one, using identifiers only, in the PC's own log — while the answer sent back over the wire stays a single opaque `authentication_failed`, so the detail cannot be used to enumerate device ids. Repeats are collapsed instead of filling the log, the phone stops retrying a credential the PC has already refused, and both ends print the device id, the installation id and a one-way credential fingerprint, so the three values that make up the signed message can actually be compared. PC Core also keeps a log on disk now (`%LOCALAPPDATA%\Nexus\pccore.log`, one previous generation kept, reachable from the tray) - started from the Start Menu or at sign-in it has no console, so every diagnostic it wrote used to go nowhere.
+
+- **v1.1.2 — Live monitoring could never start:** the host handed the live-sensor service an authorisation predicate that rebuilt a caller identity from a connection id. A rebuilt caller has no device id, and authority is keyed to the device, so it answered "not authorised" for every session that ever asked — while the same phone on the same socket drove remote control and evidence fine. The caller is now passed through whole, and the predicate is a named function the tests exercise instead of a lambda in the composition root.
 
 Still deliberately absent: no AI integration, no virtual display (IDD), no multi-user support, no internet exposure — the remote path is Tailscale only. See [SPEC.md](SPEC.md) and [PLAN.md](PLAN.md).
 

@@ -182,6 +182,24 @@ public sealed class DeviceAuthenticator : IDeviceAuthenticator
 
         if (outcome != ProofOutcome.Verified)
         {
+            // Debug only, and only for a failure: the exact bytes that were compared.
+            //
+            // Neither value is secret. The challenge was sent in the clear a moment ago, and the
+            // proof is an HMAC over a nonce that has just been spent — single-use, so it cannot be
+            // replayed even by whoever reads this. What they are is the only way to test a
+            // hypothesis about *why* a proof did not match without the phone in hand: a candidate
+            // secret, or a candidate message, can be checked against them offline.
+            //
+            // Off unless the owner turns this category up, because a log that records every refused
+            // handshake by default is a log nobody reads.
+            _logger.LogDebug(
+                "Refused proof detail — challenge {Challenge}, presented {Proof}, device {DeviceId}, "
+                + "installation {Instance}.",
+                Base64Url.EncodeToString(pending.Challenge),
+                proof,
+                deviceId,
+                _identity.PcInstanceId);
+
             // The caller is still told nothing (see Failed). The owner's own log, though, gets the
             // one sentence that separates "this phone is no longer the paired one" from "this
             // phone's secret is wrong" — a distinction that otherwise costs an afternoon, because

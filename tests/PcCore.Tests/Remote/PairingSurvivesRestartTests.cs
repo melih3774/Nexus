@@ -84,6 +84,49 @@ public sealed class PairingSurvivesRestartTests : IDisposable
     }
 
     /// <summary>
+    /// The same journey, through DPAPI rather than a stand-in.
+    /// <para>
+    /// Every other test here substitutes <c>PassThroughSecretProtector</c>, which means the one step
+    /// between "the secret the phone was handed" and "the secret a restarted PC Core compares
+    /// against" is the only step never exercised. If DPAPI were not a faithful round trip for this
+    /// blob on this machine, the symptom would be precisely the reported one: a phone that
+    /// authenticates immediately after pairing and is refused after a restart, with the right device
+    /// id and a proof that does not match.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task APairedPhoneReconnectsAfterARestartWithTheRealProtector()
+    {
+        var token = TestContext.Current.CancellationToken;
+
+        string pcInstanceId;
+        RemotePhoneClient.Enrollment enrollment;
+
+        await using (var first = await Instance.StartAsync(_state.Directory, RealProtection))
+        {
+            enrollment = await first.EnrollAsync("samsung SM-S948B", token);
+            pcInstanceId = first.Identity.PcInstanceId;
+
+            await using var phone = new RemotePhoneClient(enrollment.DeviceId, enrollment.SharedSecret);
+            await phone.ConnectAsync(first.Uri, token);
+
+            Assert.True((await phone.AuthenticateAsync(pcInstanceId, token)).Success);
+        }
+
+        await using var second = await Instance.StartAsync(_state.Directory, RealProtection);
+
+        await using var returning = new RemotePhoneClient(enrollment.DeviceId, enrollment.SharedSecret);
+        await returning.ConnectAsync(second.Uri, token);
+
+        var reconnected = await returning.AuthenticateAsync(pcInstanceId, token);
+
+        Assert.True(
+            reconnected.Success,
+            "the DPAPI round trip did not return the secret the phone was given: "
+            + $"{reconnected.Error?.Code} {reconnected.Error?.Message}");
+    }
+
+    /// <summary>
     /// The same phone, across many restarts. Once would pass if a secret happened to survive one
     /// round trip through the protector; this fails if any restart mutates or re-derives it.
     /// </summary>
@@ -265,6 +308,11 @@ public sealed class PairingSurvivesRestartTests : IDisposable
         Assert.Equal(original, recovered);
     }
 
+    /// <summary>The protector PC Core actually composes in, for the tests that mean to use it.</summary>
+    private static ISecretProtector RealProtection() =>
+        new WindowsSecretProtector(
+            LoggerFactory.Create(b => b.ClearProviders()).CreateLogger<WindowsSecretProtector>());
+
     private static string Sign(
         IDeviceAuthenticator authenticator,
         string deviceId,
@@ -301,16 +349,17 @@ public sealed class PairingSurvivesRestartTests : IDisposable
 
         public Uri Uri { get; private set; } = null!;
 
-        public static async Task<Instance> StartAsync(StateDirectory directory)
+        public static async Task<Instance> StartAsync(
+            StateDirectory directory,
+            Func<ISecretProtector>? protector = null)
         {
             var services = new ServiceCollection();
             services.AddLogging(b => b.ClearProviders());
             services.AddSingleton(directory);
 
-            // The one substitution left in place: DPAPI blobs are bound to this Windows account,
-            // which is fine here but would make the fixture unrunnable anywhere else. The real
-            // protector gets its own round-trip test above.
-            services.AddSingleton<ISecretProtector, PassThroughSecretProtector>();
+            // Pass-through by default, so the fixture says nothing about DPAPI; the real protector
+            // is used by the test that exists to exercise exactly that step.
+            services.AddSingleton(protector is null ? new PassThroughSecretProtector() : protector());
 
             services.AddSingleton(new PairingOptions());
             services.AddSingleton<IPcIdentityProvider, PcIdentityProvider>();

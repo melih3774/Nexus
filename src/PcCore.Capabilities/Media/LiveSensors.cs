@@ -3,6 +3,8 @@ using System.Threading.Channels;
 
 using Microsoft.Extensions.Logging;
 
+using PcCore.Capabilities.Abstractions;
+using PcCore.Capabilities.Identity;
 using PcCore.Protocol;
 
 namespace PcCore.Capabilities.Media;
@@ -105,10 +107,10 @@ public sealed class LiveSensorSession
 {
     private readonly Channel<byte[]> _frames;
 
-    internal LiveSensorSession(LiveSensorKind kind, string connectionId)
+    internal LiveSensorSession(LiveSensorKind kind, CallerDescriptor caller)
     {
         Kind = kind;
-        ConnectionId = connectionId;
+        Caller = caller;
 
         _frames = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(1)
         {
@@ -120,14 +122,49 @@ public sealed class LiveSensorSession
 
     public LiveSensorKind Kind { get; }
 
+    /// <summary>
+    /// Who asked for this stream — the whole authenticated identity, not just a socket.
+    /// <para>
+    /// Kept in full because authority is re-checked for the life of the stream, and the check needs
+    /// the same identity the dispatcher authorised. A connection id alone cannot be turned back
+    /// into a caller: rebuilding one loses the device id, and a caller without a device id has no
+    /// authority at all.
+    /// </para>
+    /// </summary>
+    public CallerDescriptor Caller { get; }
+
     /// <summary>The connection this belongs to. A stream never outlives its connection.</summary>
-    public string ConnectionId { get; }
+    public string ConnectionId => Caller.ConnectionId;
 
     public ChannelReader<byte[]> Frames => _frames.Reader;
 
     internal void Publish(byte[] message) => _frames.Writer.TryWrite(message);
 
     internal void Complete() => _frames.Writer.TryComplete();
+}
+
+/// <summary>
+/// The one predicate that decides whether a caller may open a live camera or microphone.
+/// <para>
+/// It exists as a named function rather than a lambda in the composition root because it is a
+/// security decision, and a security decision written inline where it is wired is a security
+/// decision no test can reach. The first version of it was wrong in a way that made live monitoring
+/// impossible for everybody — it rebuilt a <see cref="CallerDescriptor"/> from a connection id,
+/// which produced a caller with no device id, and authority is keyed to the device — and every test
+/// passed, because they all substituted the predicate they were meant to be checking.
+/// </para>
+/// </summary>
+public static class LiveSensorAuthority
+{
+    /// <summary>
+    /// Full Remote, and nothing less: the owner must have satisfied Android's own prompt in the
+    /// session making the request. The caller is passed through whole and never reconstructed.
+    /// </summary>
+    public static Func<CallerDescriptor, bool> For(IOwnerSessionService sessions)
+    {
+        ArgumentNullException.ThrowIfNull(sessions);
+        return caller => sessions.AuthorityOf(caller) == RemoteAuthority.FullRemote;
+    }
 }
 
 /// <summary>Where live frames are handed to whichever connection asked for them.</summary>
@@ -181,7 +218,7 @@ public sealed class LiveSensorService : IAsyncDisposable
     private readonly Dictionary<LiveSensorKind, Running> _running = [];
 
     private ILiveSensorSink _sink = NullLiveSensorSink.Instance;
-    private Func<string, bool> _isAuthorized = _ => false;
+    private Func<CallerDescriptor, bool> _isAuthorized = _ => false;
     private Action<LiveSensorState>? _onChanged;
     private Timer? _authorityWatch;
     private bool _disposed;
@@ -220,7 +257,7 @@ public sealed class LiveSensorService : IAsyncDisposable
     /// </summary>
     public void Connect(
         ILiveSensorSink sink,
-        Func<string, bool> isAuthorized,
+        Func<CallerDescriptor, bool> isAuthorized,
         Action<LiveSensorState> onChanged)
     {
         lock (_gate)
@@ -242,15 +279,19 @@ public sealed class LiveSensorService : IAsyncDisposable
 
     public async ValueTask<LiveStartOutcome> StartAsync(
         LiveSensorKind kind,
-        string connectionId,
+        CallerDescriptor caller,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(caller);
+
+        var connectionId = caller.ConnectionId;
+
         if (kind is not (LiveSensorKind.Camera or LiveSensorKind.Microphone))
         {
             return new LiveStartOutcome(false, LiveStartFailure.NoDevice, "Unknown sensor.");
         }
 
-        if (!_isAuthorized(connectionId))
+        if (!_isAuthorized(caller))
         {
             // Belt and braces: the capability policy already refuses this action without Full
             // Remote. Checking again here means the service is safe to call from anywhere, and that
@@ -277,7 +318,7 @@ public sealed class LiveSensorService : IAsyncDisposable
                     false, LiveStartFailure.AlreadyRunning, $"The {Describe(kind)} is already live.");
             }
 
-            session = new LiveSensorSession(kind, connectionId);
+            session = new LiveSensorSession(kind, caller);
             var stopping = new CancellationTokenSource();
             var running = new Running(session, stopping);
             _running[kind] = running;
@@ -384,10 +425,14 @@ public sealed class LiveSensorService : IAsyncDisposable
 
             lock (_gate)
             {
+                // Re-checked with the caller that started the stream, for the same reason the start
+                // check uses it: authority belongs to an authenticated device, and an identity
+                // reconstructed from a connection id is not that device.
                 lapsed = [.. _running.Values
-                    .Select(r => r.Session.ConnectionId)
-                    .Distinct(StringComparer.Ordinal)
-                    .Where(id => !_isAuthorized(id))];
+                    .Select(r => r.Session.Caller)
+                    .DistinctBy(c => c.ConnectionId, StringComparer.Ordinal)
+                    .Where(c => !_isAuthorized(c))
+                    .Select(c => c.ConnectionId)];
             }
 
             foreach (var connectionId in lapsed)

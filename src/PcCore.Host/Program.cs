@@ -658,8 +658,11 @@ public static class Program
 
         live.Connect(
             sink: coordinator,
-            isAuthorized: connectionId => sessions.AuthorityOf(
-                new CallerDescriptor("remote", connectionId, ActorType.Device)) == RemoteAuthority.FullRemote,
+            // Named rather than inline, so the rule this wiring depends on is the same object a
+            // test can exercise. The previous version was a lambda here, rebuilt a caller from a
+            // connection id, lost the device id, and refused everyone — invisibly, because nothing
+            // outside this file could reach it.
+            isAuthorized: LiveSensorAuthority.For(sessions),
             onChanged: state =>
             {
                 indicator.SetLiveSensors(state);

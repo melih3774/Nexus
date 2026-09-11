@@ -88,11 +88,18 @@ public sealed class LiveSensorTests
 {
     private const string Connection = "conn-1";
 
+    /// <summary>
+    /// A caller shaped like the one the remote transport mints after a successful handshake:
+    /// the real transport name, and — crucially — a device id, because authority is keyed to it.
+    /// </summary>
+    private static CallerDescriptor Caller(string connectionId = Connection, string device = "device-1") =>
+        new("tailscale-remote", connectionId, ActorType.Device, device);
+
     private static LiveSensorService Build(
         FakeLiveSource camera,
         FakeLiveSource audio,
         RecordingSink sink,
-        Func<string, bool> authorized,
+        Func<CallerDescriptor, bool> authorized,
         Action<LiveSensorState>? onChanged = null)
     {
         var service = new LiveSensorService(camera, audio, TestLog.For<LiveSensorService>());
@@ -114,12 +121,18 @@ public sealed class LiveSensorTests
     private static async Task<LiveStartOutcome> StartAndSettleAsync(
         LiveSensorService service,
         LiveSensorKind kind,
-        string connectionId)
+        CallerDescriptor caller)
     {
-        var outcome = await service.StartAsync(kind, connectionId, TestContext.Current.CancellationToken);
+        var outcome = await service.StartAsync(kind, caller, TestContext.Current.CancellationToken);
         await SettleAsync();
         return outcome;
     }
+
+    private static Task<LiveStartOutcome> StartAndSettleAsync(
+        LiveSensorService service,
+        LiveSensorKind kind,
+        string connectionId) =>
+        StartAndSettleAsync(service, kind, Caller(connectionId));
 
     // --- Authorisation -----------------------------------------------------------------------------
 
@@ -132,7 +145,7 @@ public sealed class LiveSensorTests
         await using var service = Build(camera, new FakeLiveSource("mic"), sink, _ => false);
 
         var outcome = await service.StartAsync(
-            LiveSensorKind.Camera, Connection, TestContext.Current.CancellationToken);
+            LiveSensorKind.Camera, Caller(), TestContext.Current.CancellationToken);
 
         Assert.False(outcome.Started);
         Assert.Equal(LiveStartFailure.NotAuthorized, outcome.Failure);
@@ -153,7 +166,7 @@ public sealed class LiveSensorTests
         await using var service = Build(camera, new FakeLiveSource("mic"), sink, _ => true);
 
         var outcome = await service.StartAsync(
-            LiveSensorKind.Camera, Connection, TestContext.Current.CancellationToken);
+            LiveSensorKind.Camera, Caller(), TestContext.Current.CancellationToken);
 
         Assert.True(outcome.Started);
         Assert.True(service.TrayState.Camera);
@@ -170,7 +183,7 @@ public sealed class LiveSensorTests
         await using var service = Build(camera, new FakeLiveSource("mic"), new RecordingSink(), _ => true);
 
         var outcome = await service.StartAsync(
-            LiveSensorKind.Camera, Connection, TestContext.Current.CancellationToken);
+            LiveSensorKind.Camera, Caller(), TestContext.Current.CancellationToken);
 
         Assert.False(outcome.Started);
         Assert.Equal(LiveStartFailure.NoDevice, outcome.Failure);
@@ -185,8 +198,8 @@ public sealed class LiveSensorTests
 
         await using var service = Build(camera, mic, new RecordingSink(), _ => true);
 
-        await service.StartAsync(LiveSensorKind.Camera, Connection, TestContext.Current.CancellationToken);
-        await service.StartAsync(LiveSensorKind.Microphone, Connection, TestContext.Current.CancellationToken);
+        await service.StartAsync(LiveSensorKind.Camera, Caller(Connection), TestContext.Current.CancellationToken);
+        await service.StartAsync(LiveSensorKind.Microphone, Caller(Connection), TestContext.Current.CancellationToken);
 
         Assert.True(service.TrayState.Camera);
         Assert.True(service.TrayState.Microphone);
@@ -252,8 +265,8 @@ public sealed class LiveSensorTests
 
         await using var service = Build(camera, mic, new RecordingSink(), _ => true);
 
-        await service.StartAsync(LiveSensorKind.Camera, "conn-a", TestContext.Current.CancellationToken);
-        await service.StartAsync(LiveSensorKind.Microphone, "conn-b", TestContext.Current.CancellationToken);
+        await service.StartAsync(LiveSensorKind.Camera, Caller("conn-a"), TestContext.Current.CancellationToken);
+        await service.StartAsync(LiveSensorKind.Microphone, Caller("conn-b"), TestContext.Current.CancellationToken);
 
         service.StopForConnection("conn-a", "gone");
 
@@ -303,7 +316,7 @@ public sealed class LiveSensorTests
 
         await StartAndSettleAsync(service, LiveSensorKind.Camera, Connection);
         var second = await service.StartAsync(
-            LiveSensorKind.Camera, Connection, TestContext.Current.CancellationToken);
+            LiveSensorKind.Camera, Caller(), TestContext.Current.CancellationToken);
 
         Assert.False(second.Started);
         Assert.Equal(LiveStartFailure.AlreadyRunning, second.Failure);
