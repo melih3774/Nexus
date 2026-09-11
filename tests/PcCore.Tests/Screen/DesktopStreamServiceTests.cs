@@ -17,6 +17,15 @@ namespace PcCore.Tests.Screen;
 /// </summary>
 public sealed class DesktopStreamServiceTests
 {
+    /// <summary>
+    /// A service with no video encoder, which is the still-frame fallback path.
+    /// <para>
+    /// Most of what these tests are about — reopening a lost capture, refusing a second viewer,
+    /// surviving an encoder that throws — is the same on both paths, and the still path is the one
+    /// where every frame is independent and therefore easiest to assert against. The video path has
+    /// its own tests next door.
+    /// </para>
+    /// </summary>
     private static DesktopStreamService Build(
         FakeDesktopStream capture,
         out FakeFrameEncoder encoder,
@@ -27,7 +36,9 @@ public sealed class DesktopStreamServiceTests
         return new DesktopStreamService(
             capture,
             encoder,
-            options ?? new StreamOptions { MaxFps = 60, FrameTimeoutMs = 20, DiagnosticsIntervalSeconds = 0 },
+            new FakeVideoEncoderFactory(available: false),
+            TestMediaQuality.Store(),
+            options ?? new StreamOptions { FallbackFps = 60, FrameTimeoutMs = 20, DiagnosticsIntervalSeconds = 0 },
             TestLog.For<DesktopStreamService>());
     }
 
@@ -89,12 +100,26 @@ public sealed class DesktopStreamServiceTests
     }
 
     [Fact]
-    public async Task ASlowReaderGetsTheNewestFrameAndTheRestAreDropped()
+    public async Task ASlowReaderStopsTheLoopCapturingRatherThanFillingTheQueue()
     {
-        // The backpressure policy, observed. A reader that stops reading must not cause frames to
-        // pile up: the channel holds one, and the count of dropped frames is what grows instead.
+        // The backpressure policy, observed, and it is the opposite of what it used to be. When
+        // every frame was an independent JPEG, the answer to a reader that had stopped reading was
+        // to keep the newest frame and discard the rest. With an interframe codec that answer
+        // corrupts the picture for as long as it takes a keyframe to arrive, so the loop stops
+        // capturing instead: nothing queued is thrown away, and the count that grows is captures
+        // that never happened.
         var capture = new FakeDesktopStream();
-        await using var service = Build(capture, out _);
+
+        await using var service = Build(
+            capture,
+            out _,
+            new StreamOptions
+            {
+                FallbackFps = 60,
+                FrameTimeoutMs = 20,
+                DiagnosticsIntervalSeconds = 0,
+                MaxBacklog = 1,
+            });
 
         var session = service.Start("conn-1", null);
 
@@ -102,15 +127,28 @@ public sealed class DesktopStreamServiceTests
         await Task.Delay(400, TestContext.Current.CancellationToken);
 
         var stats = session.Statistics();
-        Assert.True(stats.FramesEncoded > 3, $"only {stats.FramesEncoded} frames were encoded");
-        Assert.True(stats.FramesDropped > 0, "nothing was dropped despite nobody reading");
 
-        // Exactly one frame is waiting, and it is a recent one rather than the first.
-        Assert.True(session.Frames.TryRead(out var message));
-        Assert.False(session.Frames.TryRead(out _));
+        Assert.True(
+            stats.FramesSkipped > 0,
+            "the loop kept capturing even though nothing was being read");
 
-        Assert.True(StreamFrameHeader.TryParse(message!, out var header));
-        Assert.True(header.Sequence > 1, "the frame kept was the oldest rather than the newest");
+        Assert.Equal(0, stats.FramesDropped);
+
+        // What is waiting is a short, complete run rather than one survivor of many.
+        var sequences = new List<ulong>();
+
+        while (session.Frames.TryRead(out var queued))
+        {
+            Assert.True(StreamFrameHeader.TryParse(queued!, out var header));
+            sequences.Add(header.Sequence);
+        }
+
+        Assert.NotEmpty(sequences);
+
+        for (var i = 1; i < sequences.Count; i++)
+        {
+            Assert.Equal(sequences[i - 1] + 1, sequences[i]);
+        }
 
         await service.StopAsync("conn-1");
     }
@@ -225,7 +263,7 @@ public sealed class DesktopStreamServiceTests
         await using var service = Build(
             capture,
             out _,
-            new StreamOptions { MaxConcurrentStreams = 1, MaxFps = 60, DiagnosticsIntervalSeconds = 0 });
+            new StreamOptions { MaxConcurrentStreams = 1, FallbackFps = 60, DiagnosticsIntervalSeconds = 0 });
 
         service.Start("conn-1", null);
 

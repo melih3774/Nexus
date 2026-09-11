@@ -78,7 +78,7 @@ public static class RemoteControlSelfTest
             MaxWidth = ParseInt(args, "--width", new StreamOptions().MaxWidth),
             MaxHeight = ParseInt(args, "--height", new StreamOptions().MaxHeight),
             Quality = ParseInt(args, "--quality", new StreamOptions().Quality),
-            MaxFps = ParseInt(args, "--fps", new StreamOptions().MaxFps),
+            FallbackFps = ParseInt(args, "--fps", new StreamOptions().FallbackFps),
         };
 
         IDesktopCaptureSource? source = null;
@@ -107,11 +107,11 @@ public static class RemoteControlSelfTest
         var deadline = TimeSpan.FromSeconds(seconds);
 
         Console.WriteLine();
-        Console.WriteLine($"  Capturing for {seconds}s at up to {options.MaxFps} fps, quality {options.Quality}, "
+        Console.WriteLine($"  Capturing for {seconds}s at up to {options.FallbackFps} fps, quality {options.Quality}, "
             + $"max {options.MaxWidth}x{options.MaxHeight}...");
 
         // Paced exactly as the real capture loop is, so the numbers mean something.
-        var interval = TimeSpan.FromMilliseconds(1000.0 / options.MaxFps);
+        var interval = TimeSpan.FromMilliseconds(1000.0 / options.FallbackFps);
 
         while (clock.Elapsed < deadline)
         {

@@ -69,6 +69,16 @@ public sealed class DefaultCapabilityPolicy : ICapabilityPolicy
         "screen.stream.start",
         "screen.stream.stop",
 
+        // v1.2 — the video pipeline. Every one of these is about the picture the phone is already
+        // allowed to see: ask for a keyframe, report what it measured, read or change how much
+        // bandwidth and CPU its own stream may use, and read the clock those measurements are in.
+        // None of them reaches anything the phone could not already reach.
+        "screen.stream.keyframe",
+        "screen.stream.report",
+        "media.quality.get",
+        "media.quality.set",
+        "media.time",
+
         // v0.6 — remote input. input.begin is what actually turns typing on; the rest do nothing
         // without it (SPEC.md 57).
         "input.begin",

@@ -8,8 +8,26 @@ public enum FrameEncoding : byte
     /// <summary>Reserved: a header with no image, used to signal stream state.</summary>
     None = 0,
 
-    /// <summary>Baseline JPEG. See SPEC.md 51 for why this rather than a video codec.</summary>
+    /// <summary>
+    /// Baseline JPEG, one independent image per frame.
+    /// <para>
+    /// No longer the normal path. It is kept because it is the only encoding that works on a PC with
+    /// no H.264 encoder, and because a codec fault has to degrade to something rather than to
+    /// nothing — a desktop at four frames a second is worth having when the alternative is a black
+    /// screen and an error.
+    /// </para>
+    /// </summary>
     Jpeg = 1,
+
+    /// <summary>
+    /// H.264 in Annex-B form: one access unit per frame, start codes and all.
+    /// <para>
+    /// Annex-B rather than length-prefixed AVCC because it is what Android's <c>MediaCodec</c> takes
+    /// directly, and because parameter sets can travel inline with a keyframe, which makes every IDR
+    /// a valid place to start decoding without a side channel.
+    /// </para>
+    /// </summary>
+    H264 = 2,
 }
 
 [Flags]
@@ -23,8 +41,27 @@ public enum FrameFlags : byte
     /// </summary>
     CursorBakedIn = 1,
 
-    /// <summary>A complete image rather than a partial update. Every v0.6 frame is one.</summary>
+    /// <summary>A complete image rather than a partial update. Every JPEG frame is one.</summary>
     Complete = 2,
+
+    /// <summary>
+    /// An IDR: decodable on its own, and a valid place for a client to start.
+    /// <para>
+    /// The client needs this to know when it may begin, and to know that a gap it noticed is now
+    /// behind it. Nothing infers it from the payload, because working it out means parsing NAL
+    /// headers on the phone to learn something the encoder already knew.
+    /// </para>
+    /// </summary>
+    Keyframe = 4,
+
+    /// <summary>
+    /// Parameter sets only — SPS and PPS, no picture.
+    /// <para>
+    /// Sent when a stream starts and whenever its shape changes, so a decoder can be configured
+    /// before the first picture rather than from it. A client must not try to display one.
+    /// </para>
+    /// </summary>
+    CodecConfig = 8,
 }
 
 /// <summary>
@@ -159,7 +196,7 @@ public readonly record struct StreamFrameHeader
         }
 
         var encoding = source[5];
-        if (encoding > (byte)FrameEncoding.Jpeg)
+        if (encoding > (byte)FrameEncoding.H264)
         {
             return false;
         }

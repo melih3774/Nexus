@@ -608,9 +608,11 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
     /// <summary>
     /// Starts pumping a live stream to this peer.
     /// <para>
-    /// One task per stream, reading a channel that holds a single frame. There is no queue to grow
-    /// and nothing to flush: if this task is busy sending when a newer frame is captured, the older
-    /// one is discarded before it is ever offered here.
+    /// One task per stream, reading a short channel. Each frame that reaches the socket is reported
+    /// back to the session, and that report is the whole feedback loop: the capture side counts what
+    /// is still outstanding and stops capturing when too much is, which is how latency is kept down
+    /// now that frames cannot simply be discarded. Without the report the queue looks permanently
+    /// full and the stream throttles itself to nothing.
     /// </para>
     /// </summary>
     public void Attach(DesktopStreamSession session)
@@ -630,6 +632,8 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
                     {
                         break;
                     }
+
+                    session.ReportSent();
                 }
             }
             catch (OperationCanceledException)
@@ -743,10 +747,12 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
             return false;
         }
 
-        // Control traffic goes first. A short bounded wait is enough: responses are small and the
-        // gate is held briefly, so under normal load this yields once at most. The bound matters
-        // more than the delay - a frame must never wait indefinitely and stall the stream.
-        for (var i = 0; i < 50 && Volatile.Read(ref _controlPending) > 0; i++)
+        // Control traffic goes first, because the control traffic is the pointer: an input event
+        // queued behind a video frame is a cursor that lags the finger, which is the one thing worth
+        // sacrificing picture for. The wait is bounded and short — ten milliseconds at most, against
+        // the fifty the still-image version allowed, because a video frame delayed past its
+        // successor now costs a skipped capture rather than a discarded picture.
+        for (var i = 0; i < 10 && Volatile.Read(ref _controlPending) > 0; i++)
         {
             await Task.Delay(1, cancellationToken).ConfigureAwait(false);
         }

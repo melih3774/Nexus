@@ -534,8 +534,17 @@ public sealed class RemoteTransportTests : IAsyncLifetime
                 "media.live.start",
                 "media.live.status",
                 "media.live.stop",
+
+                // The video pipeline. Reading and changing how the phone's own stream is encoded,
+                // asking for a keyframe, reporting what it measured, and reading the clock those
+                // measurements are against. None of it reaches anything new.
+                "media.quality.get",
+                "media.quality.set",
+                "media.time",
                 "screen.capture",
                 "screen.list_displays",
+                "screen.stream.keyframe",
+                "screen.stream.report",
                 "screen.stream.start",
                 "screen.stream.stop",
                 "security.arm",

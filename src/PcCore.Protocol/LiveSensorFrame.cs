@@ -7,7 +7,7 @@ public enum LiveSensorKind : byte
 {
     None = 0,
 
-    /// <summary>A JPEG still from the webcam. One per frame.</summary>
+    /// <summary>The webcam. The payload's encoding is stated separately.</summary>
     Camera = 1,
 
     /// <summary>Signed 16-bit little-endian PCM from the microphone.</summary>
@@ -46,6 +46,25 @@ public readonly record struct LiveSensorFrameHeader
 
     public required LiveSensorKind Kind { get; init; }
 
+    /// <summary>
+    /// How the payload is encoded, in two bytes that were previously reserved zeroes.
+    /// <para>
+    /// Widening the header rather than adding a sensor kind for each codec. "Which device" and "in
+    /// what format" are two different questions, and folding them into one enum means every future
+    /// codec doubles the kinds — and means a client switching on the kind to decide where to route a
+    /// frame has to know about codecs to do it.
+    /// </para>
+    /// <para>
+    /// Zero keeps its old meaning exactly: JPEG for the camera, signed 16-bit PCM for the
+    /// microphone — and zero is also what a default-constructed header has, so an omission reads as
+    /// the old behaviour rather than as a broken frame.
+    /// </para>
+    /// </summary>
+    public FrameEncoding Encoding { get; init; }
+
+    /// <summary>Keyframe and codec-config flags, meaningful only for a video-encoded payload.</summary>
+    public FrameFlags Flags { get; init; }
+
     /// <summary>Monotonic per sensor, so a client can notice a gap.</summary>
     public required ulong Sequence { get; init; }
 
@@ -68,8 +87,8 @@ public readonly record struct LiveSensorFrameHeader
         Magic.CopyTo(span);
         span[4] = Version;
         span[5] = (byte)Kind;
-        span[6] = 0;
-        span[7] = 0;
+        span[6] = (byte)Encoding;
+        span[7] = (byte)Flags;
 
         BinaryPrimitives.WriteUInt64LittleEndian(span[8..], Sequence);
         BinaryPrimitives.WriteInt64LittleEndian(span[16..], TimestampUnixMs);
@@ -106,10 +125,19 @@ public readonly record struct LiveSensorFrameHeader
             return null;
         }
 
+        var encoding = (FrameEncoding)message[6];
+
+        if (encoding > FrameEncoding.H264)
+        {
+            return null;
+        }
+
         return new LiveSensorFrameHeader
         {
             Version = version,
             Kind = kind,
+            Encoding = encoding,
+            Flags = (FrameFlags)message[7],
             Sequence = BinaryPrimitives.ReadUInt64LittleEndian(message[8..]),
             TimestampUnixMs = BinaryPrimitives.ReadInt64LittleEndian(message[16..]),
             WidthOrSampleRate = BinaryPrimitives.ReadInt32LittleEndian(message[24..]),

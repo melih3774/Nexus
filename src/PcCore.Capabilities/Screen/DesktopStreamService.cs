@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using PcCore.Capabilities.Abstractions;
+using PcCore.Capabilities.Media;
 using PcCore.Protocol;
 
 namespace PcCore.Capabilities.Screen;
@@ -11,38 +12,19 @@ public sealed class StreamOptions
     public const string SectionName = "PcCore:Stream";
 
     /// <summary>
-    /// Frames per second the capture loop aims for.
+    /// JPEG quality for the fallback path.
     /// <para>
-    /// Fifteen. This is a personal remote-control tool over a WireGuard tunnel, not a game stream:
-    /// at 15 the pointer feels attached to your finger, and doubling the rate would double both the
-    /// bandwidth and the CPU cost to make text that is already readable arrive slightly sooner.
-    /// </para>
-    /// </summary>
-    public int MaxFps { get; set; } = 15;
-
-    /// <summary>
-    /// JPEG quality.
-    /// <para>
-    /// The defaults below were measured on this machine rather than guessed, against a
-    /// continuously-changing 1920x1080 desktop — the worst case, since a still desktop produces no
-    /// frames at all:
-    /// </para>
-    /// <code>
-    /// 1600 wide, q70   101 KB/frame   10.7 Mbit/s   12.9 ms encode
-    /// 1280 wide, q70    73 KB/frame    7.7 Mbit/s    9.6 ms encode
-    /// 1280 wide, q65    68 KB/frame    7.2 Mbit/s    9.5 ms encode
-    /// 1024 wide, q65    47 KB/frame    5.0 Mbit/s    8.1 ms encode
-    /// </code>
-    /// <para>
-    /// 1280x720 at 65 is the chosen point: ten megabits to a phone is more than a tunnel over
-    /// mobile data should be asked for, and 1280 is already more pixels than a phone screen shows.
-    /// Dropping to 1024 saves another two megabits at a visible cost to small text, which is the
-    /// thing a remote desktop is usually being read for.
+    /// Only reached on a PC with no H.264 encoder, or after one has failed mid-stream. It is a
+    /// degraded mode and it is meant to look like one — a desktop at a few frames a second is still
+    /// worth having when the alternative is a black screen and an error message.
     /// </para>
     /// </summary>
     public int Quality { get; set; } = 65;
 
-    /// <summary>Frames are downscaled to fit these bounds. A phone cannot show 4K, and sending it wastes the link.</summary>
+    /// <summary>Frames a second for the fallback path. The video path takes its rate from the plan.</summary>
+    public int FallbackFps { get; set; } = 12;
+
+    /// <summary>Bounds for the fallback path, which has no plan to take a size from.</summary>
     public int MaxWidth { get; set; } = 1280;
 
     public int MaxHeight { get; set; } = 1280;
@@ -58,26 +40,59 @@ public sealed class StreamOptions
 
     /// <summary>How often the capture loop logs its counters. Zero disables it.</summary>
     public int DiagnosticsIntervalSeconds { get; set; } = 30;
+
+    /// <summary>
+    /// Encoded frames allowed to be waiting for the socket before a capture is abandoned.
+    /// <para>
+    /// This is the whole backpressure policy for the video path, and it has to sit here rather than
+    /// in the channel. With independent JPEG frames, dropping a queued frame cost one repaint. With
+    /// H.264 it costs every frame until the next keyframe, because each picture is coded against the
+    /// last. So nothing queued is ever thrown away; instead, when the queue is already this deep, the
+    /// next capture simply does not happen. The frame that would have been stale is never encoded,
+    /// which is cheaper than encoding it and better than sending it late.
+    /// </para>
+    /// </summary>
+    public int MaxBacklog { get; set; } = 2;
 }
+
+/// <summary>What the phone reports about what it did with the frames it was sent.</summary>
+/// <param name="LatencyMs">
+/// Capture to render, measured against a clock offset the two ends agreed on. The only number in
+/// this system that describes the thing the owner actually experiences.
+/// </param>
+public readonly record struct ClientPlayback(double LatencyMs, double DecodeMs, double RenderedFps, long Dropped);
 
 /// <summary>What the stream did. Local diagnostics only — never sent anywhere but the log and the owner's own UI.</summary>
 public sealed record StreamStatistics(
     long FramesCaptured,
     long FramesEncoded,
     long FramesDropped,
+    long FramesSkipped,
     long BytesEncoded,
     long CaptureLosses,
     double AverageFrameBytes,
     double CaptureFps,
-    TimeSpan Elapsed);
+    double DeliveredFps,
+    double BitrateKbps,
+    double EncodeMs,
+    TimeSpan Elapsed,
+    string Encoder,
+    MediaPlan Plan,
+    int AdaptiveLevel,
+    string AdaptiveReason,
+    ClientPlayback Client);
 
 /// <summary>
 /// One live stream.
 /// <para>
-/// The frame channel holds exactly one message and drops the older one when a new frame arrives.
-/// That single line is the whole backpressure policy: if the network or the phone falls behind, what
-/// they miss is desktop content that has already been superseded. Queueing instead would spend
-/// memory to deliver a stale desktop late, which is worse than not delivering it at all.
+/// <b>The queue is short, and it never discards.</b> It holds a few frames rather than one, because
+/// an H.264 picture is only meaningful after the pictures before it: throwing a queued frame away
+/// corrupts everything the phone draws until the next keyframe, which is exactly the "sometimes it
+/// goes to mush" failure that a naive latest-frame-wins policy produces once there is a codec in the
+/// path. Staleness is controlled upstream instead — see <see cref="StreamOptions.MaxBacklog"/> — by
+/// not capturing a frame that would arrive late rather than by dropping it afterwards. A drop here
+/// is a last resort, and when it happens the encoder is asked for a keyframe so the damage lasts one
+/// frame instead of two seconds.
 /// </para>
 /// </summary>
 public sealed class DesktopStreamSession : IAsyncDisposable
@@ -86,32 +101,52 @@ public sealed class DesktopStreamSession : IAsyncDisposable
     private readonly CancellationTokenSource _stopping = new();
     private readonly Stopwatch _clock = Stopwatch.StartNew();
     private readonly Action<DesktopStreamSession> _onDisposed;
+    private readonly Lock _gate = new();
 
     private long _captured;
     private long _encoded;
     private long _dropped;
+    private long _skipped;
     private long _bytes;
     private long _losses;
+    private long _delivered;
+    private double _encodeMs;
+    private int _backlog;
+    private int _keyframeWanted = 1;
+    private ClientPlayback _client = new(-1, -1, 0, 0);
 
     internal DesktopStreamSession(
         uint streamId,
         string ownerId,
         DisplayInfo display,
+        MediaPlan plan,
+        string encoder,
+        int queueDepth,
         Action<DesktopStreamSession> onDisposed)
     {
         StreamId = streamId;
         OwnerId = ownerId;
         Display = display;
+        Plan = plan;
+        Encoder = encoder;
         _onDisposed = onDisposed;
 
         _frames = Channel.CreateBounded<byte[]>(
-            new BoundedChannelOptions(1)
+            new BoundedChannelOptions(Math.Max(2, queueDepth))
             {
                 FullMode = BoundedChannelFullMode.DropOldest,
                 SingleReader = true,
                 SingleWriter = true,
             },
-            itemDropped: _ => Interlocked.Increment(ref _dropped));
+            itemDropped: _ =>
+            {
+                Interlocked.Increment(ref _dropped);
+                Interlocked.Decrement(ref _backlog);
+
+                // A dropped picture breaks every picture coded against it. Asking for a keyframe
+                // turns an indefinite smear into one bad frame.
+                RequestKeyframe();
+            });
     }
 
     public uint StreamId { get; }
@@ -121,40 +156,116 @@ public sealed class DesktopStreamSession : IAsyncDisposable
 
     public DisplayInfo Display { get; }
 
-    /// <summary>Encoded frames, newest only. The transport reads from here.</summary>
+    /// <summary>What the encoder is currently set to. Changes when the adaptive controller moves.</summary>
+    public MediaPlan Plan { get; internal set; }
+
+    /// <summary>Which encoder is behind this, named rather than described as "hardware".</summary>
+    public string Encoder { get; internal set; }
+
+    /// <summary>Encoded frames in order. The transport reads from here.</summary>
     public ChannelReader<byte[]> Frames => _frames.Reader;
+
+    /// <summary>Frames written but not yet handed to the socket.</summary>
+    public int Backlog => Volatile.Read(ref _backlog);
 
     internal CancellationToken Stopping => _stopping.Token;
 
     internal Task? Pump { get; set; }
 
+    internal int AdaptiveLevel { get; set; }
+
+    internal string AdaptiveReason { get; set; } = "";
+
+    /// <summary>Asks the capture loop to make the next frame a keyframe.</summary>
+    public void RequestKeyframe() => Interlocked.Exchange(ref _keyframeWanted, 1);
+
+    internal bool TakeKeyframeRequest() => Interlocked.Exchange(ref _keyframeWanted, 0) == 1;
+
+    /// <summary>Records what the phone says it is experiencing. Feeds the adaptive controller.</summary>
+    public void ReportClient(ClientPlayback playback)
+    {
+        lock (_gate)
+        {
+            _client = playback;
+        }
+    }
+
+    public ClientPlayback Client
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _client;
+            }
+        }
+    }
+
     internal void Publish(byte[] message, int payloadBytes)
     {
         Interlocked.Increment(ref _encoded);
         Interlocked.Add(ref _bytes, payloadBytes);
+        Interlocked.Increment(ref _backlog);
 
-        // Always succeeds: the channel drops the previous frame rather than refusing this one.
+        // Always succeeds: the channel drops the oldest rather than refusing this one, and the drop
+        // callback above corrects the backlog and asks for a keyframe.
         _frames.Writer.TryWrite(message);
+    }
+
+    /// <summary>Called by the transport once a frame is actually on the socket.</summary>
+    public void ReportSent()
+    {
+        Interlocked.Decrement(ref _backlog);
+        Interlocked.Increment(ref _delivered);
     }
 
     internal void CountCapture() => Interlocked.Increment(ref _captured);
 
     internal void CountLoss() => Interlocked.Increment(ref _losses);
 
+    internal void CountSkip() => Interlocked.Increment(ref _skipped);
+
+    internal void CountEncodeTime(double milliseconds)
+    {
+        lock (_gate)
+        {
+            _encodeMs += milliseconds;
+        }
+    }
+
     public StreamStatistics Statistics()
     {
         var encoded = Interlocked.Read(ref _encoded);
+        var delivered = Interlocked.Read(ref _delivered);
+        var bytes = Interlocked.Read(ref _bytes);
         var elapsed = _clock.Elapsed;
+        var seconds = Math.Max(0.001, elapsed.TotalSeconds);
+
+        double encodeMs;
+
+        lock (_gate)
+        {
+            encodeMs = encoded == 0 ? 0 : _encodeMs / encoded;
+        }
 
         return new StreamStatistics(
             Interlocked.Read(ref _captured),
             encoded,
             Interlocked.Read(ref _dropped),
-            Interlocked.Read(ref _bytes),
+            Interlocked.Read(ref _skipped),
+            bytes,
             Interlocked.Read(ref _losses),
-            encoded == 0 ? 0 : (double)Interlocked.Read(ref _bytes) / encoded,
-            elapsed.TotalSeconds <= 0 ? 0 : Interlocked.Read(ref _captured) / elapsed.TotalSeconds,
-            elapsed);
+            encoded == 0 ? 0 : (double)bytes / encoded,
+            Interlocked.Read(ref _captured) / seconds,
+            delivered / seconds,
+            bytes * 8 / seconds / 1000,
+            encodeMs,
+            elapsed,
+            Encoder,
+            Plan,
+            AdaptiveLevel,
+            AdaptiveReason,
+            Client);
     }
 
     public async ValueTask DisposeAsync()
@@ -168,7 +279,7 @@ public sealed class DesktopStreamSession : IAsyncDisposable
             {
                 await Pump.ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is OperationCanceledException)
+            catch (OperationCanceledException)
             {
                 // Expected: the loop is being stopped.
             }
@@ -180,18 +291,26 @@ public sealed class DesktopStreamSession : IAsyncDisposable
 }
 
 /// <summary>
-/// Owns live desktop streams: their capture loops, their encoding, and their lifetime.
+/// Owns live desktop streams: their capture, their encoding, and their lifetime.
 /// <para>
-/// It knows nothing about sockets. A stream produces encoded frames into a one-slot channel and the
+/// It knows nothing about sockets. A stream produces encoded frames into a short channel and the
 /// transport takes them from there — which is what lets the stream be tested end to end against a
-/// fake capture source with no network involved, and what keeps "somebody is watching" from being
-/// the same fact as "somebody may type".
+/// fake capture source and a fake encoder with no network and no GPU involved, and what keeps
+/// "somebody is watching" from being the same fact as "somebody may type".
+/// </para>
+/// <para>
+/// <b>Two encoders, one loop.</b> The normal path is H.264 from whatever transform Windows has.
+/// Behind it, unchanged, is the original still-image path, used when a PC has no video encoder and
+/// when one fails while running. The loop does not branch on which: it asks for packets and sends
+/// whatever it gets, so the fallback is a different encoder rather than a different design.
 /// </para>
 /// </summary>
 public sealed class DesktopStreamService : IAsyncDisposable
 {
     private readonly IDesktopStream _capture;
-    private readonly IFrameEncoder _encoder;
+    private readonly IFrameEncoder _stillEncoder;
+    private readonly IVideoEncoderFactory _videoEncoders;
+    private readonly MediaQualityStore _quality;
     private readonly StreamOptions _options;
     private readonly ILogger<DesktopStreamService> _logger;
     private readonly Lock _gate = new();
@@ -201,12 +320,16 @@ public sealed class DesktopStreamService : IAsyncDisposable
 
     public DesktopStreamService(
         IDesktopStream capture,
-        IFrameEncoder encoder,
+        IFrameEncoder stillEncoder,
+        IVideoEncoderFactory videoEncoders,
+        MediaQualityStore quality,
         StreamOptions options,
         ILogger<DesktopStreamService> logger)
     {
         _capture = capture;
-        _encoder = encoder;
+        _stillEncoder = stillEncoder;
+        _videoEncoders = videoEncoders;
+        _quality = quality;
         _options = options;
         _logger = logger;
     }
@@ -220,6 +343,18 @@ public sealed class DesktopStreamService : IAsyncDisposable
             lock (_gate)
             {
                 return _sessions.Count;
+            }
+        }
+    }
+
+    /// <summary>Every running stream, so a settings change can be applied to what is already live.</summary>
+    public IReadOnlyList<DesktopStreamSession> Sessions
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return [.. _sessions];
             }
         }
     }
@@ -246,6 +381,9 @@ public sealed class DesktopStreamService : IAsyncDisposable
             : displays.FirstOrDefault(d => d.Index == displayIndex.Value)
               ?? throw new CapabilityException(ErrorCodes.InvalidParameters, "No such display.");
 
+        var plan = MediaPlanner.Resolve(
+            _quality.Current.Screen, MediaTarget.Screen, display.Width, display.Height);
+
         DesktopStreamSession[] superseded;
         DesktopStreamSession session;
 
@@ -264,6 +402,9 @@ public sealed class DesktopStreamService : IAsyncDisposable
                 ++_nextStreamId,
                 ownerId,
                 display,
+                plan,
+                _videoEncoders.IsAvailable ? _videoEncoders.Describe() : "JPEG still frames",
+                _options.MaxBacklog + 2,
                 Forget);
 
             _sessions.Add(session);
@@ -277,14 +418,17 @@ public sealed class DesktopStreamService : IAsyncDisposable
         session.Pump = Task.Run(() => CaptureLoopAsync(session));
 
         _logger.LogInformation(
-            "Live stream {StreamId} started on {Display} for {Owner} ({Fps} fps, quality {Quality}, max {MaxWidth}x{MaxHeight}).",
+            "Live stream {StreamId} started on {Display} for {Owner}: {Plan} at {Width}x{Height}, "
+            + "{Fps} fps, {Bitrate} kbit/s, via {Encoder}.",
             session.StreamId,
             display,
             ownerId,
-            _options.MaxFps,
-            _options.Quality,
-            _options.MaxWidth,
-            _options.MaxHeight);
+            plan.Label,
+            plan.Width,
+            plan.Height,
+            plan.Fps,
+            plan.BitrateKbps,
+            session.Encoder);
 
         return session;
     }
@@ -315,14 +459,17 @@ public sealed class DesktopStreamService : IAsyncDisposable
             await session.DisposeAsync().ConfigureAwait(false);
 
             _logger.LogInformation(
-                "Live stream {StreamId} stopped after {Elapsed:g}: {Encoded} frames sent, {Dropped} dropped, "
-                + "{Fps:F1} fps captured, {Average:F0} bytes/frame, {Losses} capture loss(es).",
+                "Live stream {StreamId} stopped after {Elapsed:g}: {Delivered:F1} fps delivered, "
+                + "{Bitrate:F0} kbit/s, {Encoded} frames, {Skipped} captures skipped, {Dropped} dropped, "
+                + "{Encode:F1} ms/frame to encode, {Losses} capture loss(es).",
                 session.StreamId,
                 stats.Elapsed,
+                stats.DeliveredFps,
+                stats.BitrateKbps,
                 stats.FramesEncoded,
+                stats.FramesSkipped,
                 stats.FramesDropped,
-                stats.CaptureFps,
-                stats.AverageFrameBytes,
+                stats.EncodeMs,
                 stats.CaptureLosses);
         }
 
@@ -343,18 +490,30 @@ public sealed class DesktopStreamService : IAsyncDisposable
     private async Task CaptureLoopAsync(DesktopStreamSession session)
     {
         var token = session.Stopping;
-        var interval = TimeSpan.FromMilliseconds(1000.0 / Math.Clamp(_options.MaxFps, 1, 60));
-        var timeout = TimeSpan.FromMilliseconds(Math.Clamp(_options.FrameTimeoutMs, 20, 2000));
+        var adaptive = new AdaptiveStreamController();
+        var packets = new List<VideoPacket>();
 
         IDesktopCaptureSource? source = null;
+        IVideoEncoder? video = null;
+        byte[]? codecConfig = null;
+
         var sequence = 0UL;
+        var plan = session.Plan;
         var nextDiagnostics = DateTimeOffset.UtcNow.AddSeconds(_options.DiagnosticsIntervalSeconds);
+        var nextHealthCheck = DateTimeOffset.UtcNow.AddSeconds(1);
+        var deliveredAtLastCheck = 0L;
+        var settingsChanged = 0;
+
+        void OnSettingsChanged(MediaQualitySettings _) => Interlocked.Exchange(ref settingsChanged, 1);
+
+        _quality.Changed += OnSettingsChanged;
 
         try
         {
             while (!token.IsCancellationRequested)
             {
                 var frameStarted = DateTimeOffset.UtcNow;
+                var interval = TimeSpan.FromMilliseconds(1000.0 / Math.Clamp(plan.Fps, 1, 60));
 
                 if (source is null)
                 {
@@ -367,19 +526,47 @@ public sealed class DesktopStreamService : IAsyncDisposable
                         // The display may be mid-recreation. Back off and try again rather than
                         // killing a stream the owner is still watching.
                         session.CountLoss();
-                        _logger.LogWarning("Stream {StreamId} could not open capture: {Reason}", session.StreamId, ex.Message);
+                        _logger.LogWarning(
+                            "Stream {StreamId} could not open capture: {Reason}", session.StreamId, ex.Message);
                         await Task.Delay(TimeSpan.FromSeconds(1), token).ConfigureAwait(false);
                         continue;
                     }
                 }
 
-                var result = source.TryGetFrame(timeout);
+                // Re-plan before capturing, so a new encoder is built against the next frame rather
+                // than in the middle of one.
+                if (Interlocked.Exchange(ref settingsChanged, 0) == 1)
+                {
+                    var wanted = MediaPlanner.Resolve(
+                        _quality.Current.Screen,
+                        MediaTarget.Screen,
+                        session.Display.Width,
+                        session.Display.Height,
+                        adaptive.Level);
+
+                    if (Rebuild(session, wanted, ref plan, ref video, ref codecConfig))
+                    {
+                        adaptive.Reset();
+                    }
+                }
+
+                // Nothing queued may be thrown away once there is a codec in the path, so the way to
+                // keep the stream current is not to capture what would arrive late.
+                if (session.Backlog > _options.MaxBacklog)
+                {
+                    session.CountSkip();
+                    await PaceAsync(frameStarted, interval, token).ConfigureAwait(false);
+                    continue;
+                }
+
+                var result = source.TryGetFrame(TimeSpan.FromMilliseconds(
+                    Math.Clamp(_options.FrameTimeoutMs, 20, 2000)));
 
                 switch (result.Status)
                 {
                     case CaptureStatus.Frame:
                         session.CountCapture();
-                        Encode(session, result.Frame!, ref sequence);
+                        Encode(session, result.Frame!, ref sequence, ref video, ref codecConfig, plan, packets);
                         break;
 
                     case CaptureStatus.Timeout:
@@ -390,42 +577,97 @@ public sealed class DesktopStreamService : IAsyncDisposable
                     case CaptureStatus.Lost:
                         session.CountLoss();
                         _logger.LogInformation(
-                            "Stream {StreamId} capture lost ({Reason}); reopening.", session.StreamId, result.Diagnostic);
+                            "Stream {StreamId} capture lost ({Reason}); reopening.",
+                            session.StreamId, result.Diagnostic);
                         source.Dispose();
                         source = null;
+
+                        // A new capture may be a new size, so the encoder is rebuilt from the
+                        // display as it is now and the client is told with a fresh configuration.
+                        video?.Dispose();
+                        video = null;
+                        codecConfig = null;
+                        session.RequestKeyframe();
                         break;
 
                     case CaptureStatus.Unavailable:
                         session.CountLoss();
                         _logger.LogInformation(
-                            "Stream {StreamId} capture unavailable ({Reason}); retrying.", session.StreamId, result.Diagnostic);
+                            "Stream {StreamId} capture unavailable ({Reason}); retrying.",
+                            session.StreamId, result.Diagnostic);
                         source.Dispose();
                         source = null;
                         await Task.Delay(TimeSpan.FromSeconds(1), token).ConfigureAwait(false);
                         break;
                 }
 
-                if (_options.DiagnosticsIntervalSeconds > 0 && DateTimeOffset.UtcNow >= nextDiagnostics)
+                var now = DateTimeOffset.UtcNow;
+
+                if (now >= nextHealthCheck)
                 {
                     var stats = session.Statistics();
-                    _logger.LogInformation(
-                        "Stream {StreamId}: {Fps:F1} fps captured, {Encoded} encoded, {Dropped} dropped, {Average:F0} bytes/frame.",
-                        session.StreamId,
-                        stats.CaptureFps,
-                        stats.FramesEncoded,
-                        stats.FramesDropped,
-                        stats.AverageFrameBytes);
+                    var deliveredNow = stats.FramesEncoded - session.Backlog;
 
-                    nextDiagnostics = DateTimeOffset.UtcNow.AddSeconds(_options.DiagnosticsIntervalSeconds);
+                    var health = new StreamHealth(
+                        session.Backlog,
+                        stats.FramesSkipped,
+                        Math.Max(0, deliveredNow - deliveredAtLastCheck),
+                        plan.Fps,
+                        stats.Client.LatencyMs,
+                        stats.Client.DecodeMs);
+
+                    deliveredAtLastCheck = deliveredNow;
+                    nextHealthCheck = now.AddSeconds(1);
+
+                    if (adaptive.Observe(health) && _quality.Current.Screen.Profile == StreamingProfile.Auto)
+                    {
+                        var wanted = MediaPlanner.Resolve(
+                            _quality.Current.Screen,
+                            MediaTarget.Screen,
+                            session.Display.Width,
+                            session.Display.Height,
+                            adaptive.Level);
+
+                        session.AdaptiveLevel = adaptive.Level;
+                        session.AdaptiveReason = adaptive.Reason;
+
+                        _logger.LogInformation(
+                            "Stream {StreamId} moved to {Plan} ({Width}x{Height}, {Fps} fps, {Bitrate} kbit/s) "
+                            + "because {Reason}.",
+                            session.StreamId,
+                            wanted.Label,
+                            wanted.Width,
+                            wanted.Height,
+                            wanted.Fps,
+                            wanted.BitrateKbps,
+                            adaptive.Reason);
+
+                        Rebuild(session, wanted, ref plan, ref video, ref codecConfig);
+                    }
                 }
 
-                // Pace to the target rate. Capture can be much faster than this and there is no
-                // point encoding frames nobody asked for.
-                var spent = DateTimeOffset.UtcNow - frameStarted;
-                if (spent < interval)
+                if (_options.DiagnosticsIntervalSeconds > 0 && now >= nextDiagnostics)
                 {
-                    await Task.Delay(interval - spent, token).ConfigureAwait(false);
+                    var stats = session.Statistics();
+
+                    _logger.LogInformation(
+                        "Stream {StreamId}: {Delivered:F1} fps delivered of {Planned} planned, "
+                        + "{Bitrate:F0} kbit/s, {Encode:F1} ms/frame, backlog {Backlog}, "
+                        + "{Skipped} skipped, {Dropped} dropped, phone {Latency}.",
+                        session.StreamId,
+                        stats.DeliveredFps,
+                        plan.Fps,
+                        stats.BitrateKbps,
+                        stats.EncodeMs,
+                        session.Backlog,
+                        stats.FramesSkipped,
+                        stats.FramesDropped,
+                        stats.Client.LatencyMs < 0 ? "not reporting" : $"{stats.Client.LatencyMs:F0} ms");
+
+                    nextDiagnostics = now.AddSeconds(_options.DiagnosticsIntervalSeconds);
                 }
+
+                await PaceAsync(frameStarted, interval, token).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)
@@ -440,17 +682,177 @@ public sealed class DesktopStreamService : IAsyncDisposable
         }
         finally
         {
+            _quality.Changed -= OnSettingsChanged;
             source?.Dispose();
+            video?.Dispose();
         }
     }
 
-    private void Encode(DesktopStreamSession session, RawFrame frame, ref ulong sequence)
+    private static async Task PaceAsync(DateTimeOffset started, TimeSpan interval, CancellationToken token)
+    {
+        // Pace to the target rate. Capture can be much faster than this and there is no point
+        // encoding frames nobody asked for.
+        var spent = DateTimeOffset.UtcNow - started;
+
+        if (spent < interval)
+        {
+            await Task.Delay(interval - spent, token).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Swaps the encoder for a new plan. Returns true when anything actually changed.</summary>
+    private bool Rebuild(
+        DesktopStreamSession session,
+        MediaPlan wanted,
+        ref MediaPlan plan,
+        ref IVideoEncoder? video,
+        ref byte[]? codecConfig)
+    {
+        if (video is not null && !wanted.NeedsNewEncoder(plan) && wanted.BitrateKbps == plan.BitrateKbps)
+        {
+            return false;
+        }
+
+        plan = wanted;
+        session.Plan = wanted;
+
+        video?.Dispose();
+        video = null;
+        codecConfig = null;
+
+        // Not built here: the loop builds it on the next frame, which keeps every encoder creation
+        // on one path with one set of failure handling.
+        session.RequestKeyframe();
+        return true;
+    }
+
+    private void Encode(
+        DesktopStreamSession session,
+        RawFrame frame,
+        ref ulong sequence,
+        ref IVideoEncoder? video,
+        ref byte[]? codecConfig,
+        MediaPlan plan,
+        List<VideoPacket> packets)
+    {
+        var started = Stopwatch.GetTimestamp();
+
+        if (video is null && _videoEncoders.IsAvailable)
+        {
+            try
+            {
+                video = _videoEncoders.Create(plan.ToEncoderSettings());
+                session.Encoder = $"{video.BackendName} ({(video.IsHardware ? "hardware" : "software")})";
+                session.RequestKeyframe();
+            }
+            catch (Exception ex) when (ex is NotSupportedException or InvalidOperationException)
+            {
+                _logger.LogWarning(
+                    "Stream {StreamId} could not start an H.264 encoder ({Reason}); falling back to still frames.",
+                    session.StreamId,
+                    ex.Message);
+
+                session.Encoder = "JPEG still frames";
+            }
+        }
+
+        if (video is null)
+        {
+            EncodeStill(session, frame, ref sequence);
+            session.CountEncodeTime(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+            return;
+        }
+
+        if (session.TakeKeyframeRequest())
+        {
+            video.RequestKeyframe();
+        }
+
+        packets.Clear();
+
+        try
+        {
+            video.Encode(
+                frame.Pixels,
+                frame.Width,
+                frame.Height,
+                frame.Stride,
+                frame.CapturedAtUtc.ToUnixTimeMilliseconds(),
+                packets);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex, "Stream {StreamId} could not encode a frame; falling back to still frames.", session.StreamId);
+
+            video.Dispose();
+            video = null;
+            codecConfig = null;
+            session.Encoder = "JPEG still frames";
+            return;
+        }
+
+        // The parameter sets go out as their own frame the first time they are known, and again
+        // whenever they change. A client that has them can start on any keyframe; one that does not
+        // cannot start at all, and has no way to ask.
+        if (video.CodecConfig is { Length: > 0 } sets && !sets.AsSpan().SequenceEqual(codecConfig))
+        {
+            codecConfig = sets;
+            PublishVideo(session, sets, FrameFlags.CodecConfig, frame, plan, ref sequence);
+        }
+
+        foreach (var packet in packets)
+        {
+            var flags = FrameFlags.Complete
+                | (packet.Flags.HasFlag(VideoPacketFlags.Keyframe) ? FrameFlags.Keyframe : FrameFlags.None)
+                | (frame.CursorVisible ? FrameFlags.CursorBakedIn : FrameFlags.None);
+
+            PublishVideo(session, packet.Bytes, flags, frame, plan, ref sequence, packet.CaptureUnixMs);
+        }
+
+        session.CountEncodeTime(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+    }
+
+    private static void PublishVideo(
+        DesktopStreamSession session,
+        byte[] payload,
+        FrameFlags flags,
+        RawFrame frame,
+        MediaPlan plan,
+        ref ulong sequence,
+        long? capturedUnixMs = null)
+    {
+        var header = new StreamFrameHeader
+        {
+            Version = StreamFrameHeader.CurrentVersion,
+            Encoding = FrameEncoding.H264,
+            Flags = flags,
+            DisplayIndex = (byte)Math.Clamp(session.Display.Index, 0, 255),
+            StreamId = session.StreamId,
+            Sequence = ++sequence,
+            TimestampUnixMs = capturedUnixMs ?? frame.CapturedAtUtc.ToUnixTimeMilliseconds(),
+            Width = (ushort)plan.Width,
+            Height = (ushort)plan.Height,
+            DesktopLeft = session.Display.Left,
+            DesktopTop = session.Display.Top,
+            DesktopWidth = session.Display.Width,
+            DesktopHeight = session.Display.Height,
+            CursorX = frame.CursorX,
+            CursorY = frame.CursorY,
+            CursorVisible = frame.CursorVisible,
+            PayloadLength = payload.Length,
+        };
+
+        session.Publish(header.ToMessage(payload), payload.Length);
+    }
+
+    private void EncodeStill(DesktopStreamSession session, RawFrame frame, ref ulong sequence)
     {
         EncodedFrame encoded;
 
         try
         {
-            encoded = _encoder.Encode(frame, _options.MaxWidth, _options.MaxHeight, _options.Quality);
+            encoded = _stillEncoder.Encode(frame, _options.MaxWidth, _options.MaxHeight, _options.Quality);
         }
         catch (Exception ex)
         {
@@ -461,8 +863,10 @@ public sealed class DesktopStreamService : IAsyncDisposable
         var header = new StreamFrameHeader
         {
             Version = StreamFrameHeader.CurrentVersion,
-            Encoding = _encoder.Encoding,
-            Flags = FrameFlags.Complete | (frame.CursorVisible ? FrameFlags.CursorBakedIn : FrameFlags.None),
+            Encoding = _stillEncoder.Encoding,
+            Flags = FrameFlags.Complete
+                | FrameFlags.Keyframe
+                | (frame.CursorVisible ? FrameFlags.CursorBakedIn : FrameFlags.None),
             DisplayIndex = (byte)Math.Clamp(session.Display.Index, 0, 255),
             StreamId = session.StreamId,
             Sequence = ++sequence,

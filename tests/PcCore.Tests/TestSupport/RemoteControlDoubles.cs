@@ -4,6 +4,7 @@ using PcCore.Capabilities.Abstractions;
 using PcCore.Capabilities.Indicator;
 using PcCore.Capabilities.Identity;
 using PcCore.Capabilities.Input;
+using PcCore.Capabilities.Media;
 using PcCore.Capabilities.Screen;
 using PcCore.Capabilities.Security.Detection;
 using PcCore.Capabilities.Storage;
@@ -229,7 +230,14 @@ public static class RemoteControlTestServices
         services.AddSingleton<IDesktopStream>(p => p.GetRequiredService<FakeDesktopStream>());
         services.AddSingleton<IDisplayCatalog>(p => p.GetRequiredService<FakeDesktopStream>());
         services.AddSingleton<IFrameEncoder, FakeFrameEncoder>();
-        services.AddSingleton(new StreamOptions { MaxFps = 30, DiagnosticsIntervalSeconds = 0 });
+
+        // No video encoder in the transport fixtures: they are about who may stream and what happens
+        // to a stream when a connection ends, and a still frame is a frame for those purposes. The
+        // codec's own behaviour is tested where it belongs, against a fake encoder that models it.
+        services.AddSingleton<IVideoEncoderFactory>(new FakeVideoEncoderFactory(available: false));
+        services.AddSingleton<IMediaSourceSizes>(new FakeMediaSourceSizes());
+        services.AddSingleton(TestMediaQuality.Store());
+        services.AddSingleton(new StreamOptions { FallbackFps = 30, DiagnosticsIntervalSeconds = 0 });
         services.AddSingleton<DesktopStreamService>();
 
         services.AddSingleton<RecordingInputController>();

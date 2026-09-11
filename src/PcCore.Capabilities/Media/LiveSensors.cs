@@ -34,10 +34,20 @@ public readonly record struct LiveSensorState(bool Camera, bool Microphone)
 }
 
 /// <summary>One captured frame on its way to the phone, before it is framed for the wire.</summary>
-/// <param name="Payload">JPEG bytes, or signed 16-bit little-endian PCM.</param>
+/// <param name="Payload">An H.264 access unit, JPEG bytes, or signed 16-bit little-endian PCM.</param>
 /// <param name="WidthOrSampleRate">Pixel width, or samples per second.</param>
 /// <param name="HeightOrChannels">Pixel height, or channel count.</param>
-public sealed record LiveFrame(byte[] Payload, int WidthOrSampleRate, int HeightOrChannels);
+/// <param name="Encoding">
+/// How to read the payload. <see cref="FrameEncoding.None"/> keeps the original meaning — JPEG for
+/// the camera, PCM for the microphone — so a source that does not care never has to say.
+/// </param>
+/// <param name="Flags">Keyframe and codec-configuration markers, meaningful only for video.</param>
+public sealed record LiveFrame(
+    byte[] Payload,
+    int WidthOrSampleRate,
+    int HeightOrChannels,
+    FrameEncoding Encoding = FrameEncoding.None,
+    FrameFlags Flags = FrameFlags.None);
 
 /// <summary>
 /// A source of live frames.
@@ -466,6 +476,8 @@ public sealed class LiveSensorService : IAsyncDisposable
                 {
                     Version = LiveSensorFrameHeader.CurrentVersion,
                     Kind = kind,
+                    Encoding = frame.Encoding,
+                    Flags = frame.Flags,
                     Sequence = ++sequence,
                     TimestampUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     WidthOrSampleRate = frame.WidthOrSampleRate,

@@ -4,6 +4,8 @@ using System.Runtime.Versioning;
 using Microsoft.Extensions.Logging;
 
 using PcCore.Capabilities.Media;
+using PcCore.Capabilities.Storage;
+using PcCore.Windows;
 using PcCore.Windows.Media;
 
 namespace PcCore.Host;
@@ -39,7 +41,18 @@ internal static class LiveSensorSelfTest
         Console.WriteLine("  Windows should show its own camera and microphone in-use indicators.");
         Console.WriteLine();
 
-        var camera = new WindowsLiveCamera(loggers.CreateLogger<WindowsLiveCamera>());
+        // The camera is a video source now, so it needs the same encoder and settings the real
+        // service gives it. Built here rather than resolved from a container because this self-test
+        // deliberately does not start a host.
+        var quality = new MediaQualityStore(
+            StateDirectory.ForCurrentUser(), loggers.CreateLogger<MediaQualityStore>());
+
+        var camera = new WindowsLiveCamera(
+            loggers.CreateLogger<WindowsLiveCamera>(),
+            new MediaFoundationVideoEncoderFactory(loggers.CreateLogger<MediaFoundationVideoEncoderFactory>()),
+            new JpegFrameEncoder(),
+            quality);
+
         var microphone = new WindowsLiveMicrophone(loggers.CreateLogger<WindowsLiveMicrophone>());
 
         var cameraOk = await MeasureAsync("camera", camera, seconds, Describe.Camera).ConfigureAwait(false);

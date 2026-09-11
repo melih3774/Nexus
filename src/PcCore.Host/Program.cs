@@ -90,6 +90,15 @@ public static class Program
             return await LiveSensorSelfTest.RunAsync(args, liveLogs).ConfigureAwait(false);
         }
 
+        // Which H.264 encoder this machine has, and what it actually achieves at each streaming
+        // plan. Only real hardware answers that, and every performance claim depends on it.
+        if (args.Contains("--selftest-video"))
+        {
+            DpiAwareness.TryEnablePerMonitorV2();
+            using var videoLogs = LoggerFactory.Create(b => b.AddSimpleConsole(c => c.SingleLine = true));
+            return await VideoSelfTest.RunAsync(args, videoLogs).ConfigureAwait(false);
+        }
+
         // A local diagnostic for the three v0.6 pieces that only exist against real Windows.
         if (args.Contains("--selftest-remote-control"))
         {
@@ -323,6 +332,13 @@ public static class Program
             p.GetRequiredService<ILoggerFactory>()));
         services.AddSingleton<IDisplayCatalog>(p => p.GetRequiredService<IDesktopStream>());
         services.AddSingleton<IFrameEncoder, JpegFrameEncoder>();
+
+        // The video path. The factory probes once for a hardware H.264 transform and reports what it
+        // found; everything downstream asks it rather than assuming, so a PC without one degrades to
+        // still frames instead of failing to stream.
+        services.AddSingleton<IVideoEncoderFactory, MediaFoundationVideoEncoderFactory>();
+        services.AddSingleton<MediaQualityStore>();
+        services.AddSingleton<IMediaSourceSizes, WindowsMediaSourceSizes>();
         // The input path. WindowsInputController is PC Core injecting for itself; BrokerInputChannel
         // is the pipe to the elevated Nexus Input Broker; NativeInputRouter picks between them on
         // every event. Only the router is registered as IInputController, so nothing above this line
@@ -511,8 +527,8 @@ public static class Program
         // Live camera and microphone monitoring. The sources are registered as their own interfaces
         // rather than reusing the evidence ones: same devices, deliberately different code paths,
         // because one writes to disk and the other must never be able to.
-        services.AddSingleton<ILiveCameraSource>(p =>
-            new WindowsLiveCamera(p.GetRequiredService<ILogger<WindowsLiveCamera>>()));
+        services.AddSingleton<WindowsLiveCamera>();
+        services.AddSingleton<ILiveCameraSource>(p => p.GetRequiredService<WindowsLiveCamera>());
         services.AddSingleton<ILiveAudioSource>(p =>
             new WindowsLiveMicrophone(p.GetRequiredService<ILogger<WindowsLiveMicrophone>>()));
         services.AddSingleton<LiveSensorService>();
@@ -538,6 +554,14 @@ public static class Program
         services.AddSingleton<ICapabilityAction, ListDisplaysAction>();
         services.AddSingleton<ICapabilityAction, StartStreamAction>();
         services.AddSingleton<ICapabilityAction, StopStreamAction>();
+
+        // The video pipeline's own small surface: ask for a keyframe, say what you are seeing, read
+        // and change the quality settings, and read the clock the timestamps are in.
+        services.AddSingleton<ICapabilityAction, RequestKeyframeAction>();
+        services.AddSingleton<ICapabilityAction, StreamReportAction>();
+        services.AddSingleton<ICapabilityAction, GetMediaQualityAction>();
+        services.AddSingleton<ICapabilityAction, SetMediaQualityAction>();
+        services.AddSingleton<ICapabilityAction, MediaTimeAction>();
 
         services.AddSingleton<ICapabilityAction, BeginInputAction>();
         services.AddSingleton<ICapabilityAction, EndInputAction>();

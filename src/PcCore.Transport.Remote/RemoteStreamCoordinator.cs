@@ -169,6 +169,22 @@ public sealed class RemoteStreamCoordinator : IStreamCoordinator, IIndicatorActi
         StopForConnectionAsync(caller.ConnectionId);
 
     /// <summary>
+    /// The stream this caller is watching, or null.
+    /// <para>
+    /// Matched on the connection rather than the device: a stream belongs to a socket, and a second
+    /// connection from the same phone is a different viewer with its own queue and its own decoder
+    /// state. Keyframe requests and playback reports have to reach the one that asked.
+    /// </para>
+    /// </summary>
+    public DesktopStreamSession? Find(CallerDescriptor caller)
+    {
+        ArgumentNullException.ThrowIfNull(caller);
+
+        return _streams.Sessions.FirstOrDefault(s =>
+            string.Equals(s.OwnerId, caller.ConnectionId, StringComparison.Ordinal));
+    }
+
+    /// <summary>
     /// Stops whatever a connection was streaming.
     /// <para>
     /// Called by <c>screen.stream.stop</c> and — more importantly — whenever a connection ends,
