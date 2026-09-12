@@ -37,6 +37,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
@@ -337,14 +338,14 @@ class LiveMonitorViewModel(
                     synchronized(statsLock) { windowRendered++ }
                     renderedTotal++
 
-                    _state.value = _state.value.copy(
+                    _state.update { it.copy(
                         image = bitmap.asImageBitmap(),
                         framesReceived = received,
                         framesRendered = renderedTotal,
                         cameraWidth = bitmap.width,
                         cameraHeight = bitmap.height,
                         cameraVideo = false,
-                    )
+                    ) }
                 }
             }
         }
@@ -374,12 +375,12 @@ class LiveMonitorViewModel(
                     _state.value.cameraHeight != header.heightOrChannels ||
                     !_state.value.cameraVideo
                 ) {
-                    _state.value = _state.value.copy(
+                    _state.update { it.copy(
                         cameraWidth = header.widthOrSampleRate,
                         cameraHeight = header.heightOrChannels,
                         cameraVideo = true,
                         image = null,
-                    )
+                    ) }
                 }
 
                 decoder.submit(
@@ -412,7 +413,7 @@ class LiveMonitorViewModel(
         }
 
         if (stats.rendered == 1L) {
-            _state.value = _state.value.copy(framesRendered = 1)
+            _state.update { it.copy(framesRendered = 1) }
         }
     }
 
@@ -452,11 +453,11 @@ class LiveMonitorViewModel(
 
         val latency = if (latencyMs >= 0) "%.0f ms".format(latencyMs) else "— ms"
 
-        _state.value = _state.value.copy(
+        _state.update { it.copy(
             framesReceived = received,
             framesRendered = renderedTotal,
             cameraStats = "%.0f fps shown · %.0f received · %.2f Mbit/s · %s".format(fps, arrived, mbit, latency),
-        )
+        ) }
     }
 
     private fun requestCameraKeyframe() {

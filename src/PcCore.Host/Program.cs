@@ -254,6 +254,12 @@ public static class Program
         // warned that elevated windows were out of reach on every single start.
         app.Lifetime.ApplicationStarted.Register(() => ReportNativeInput(app.Services, logger));
 
+        // Probe for the H.264 encoder once, in the background, right after start. The probe builds and
+        // discards a small hardware encoder, which takes a couple of seconds on this machine; paying
+        // that here means the phone's first stream or settings read does not.
+        app.Lifetime.ApplicationStarted.Register(() => _ = Task.Run(() =>
+            app.Services.GetRequiredService<IVideoEncoderFactory>().IsAvailable));
+
         // The tray, once there is something for it to report. It is started after the host so its
         // first status is the real one, and it is disposed on shutdown so the icon goes away with
         // the process rather than lingering until someone hovers over it.
