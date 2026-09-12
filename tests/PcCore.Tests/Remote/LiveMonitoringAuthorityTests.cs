@@ -245,6 +245,12 @@ public sealed class LiveMonitoringAuthorityTests : IAsyncLifetime
         await WaitUntil(() => !_live.TrayState.Any, TimeSpan.FromSeconds(10));
 
         Assert.False(_live.TrayState.Any, "a live stream outlived the connection that started it");
+
+        // Released a moment after the state clears, not at the same instant: stopping cancels the
+        // capture loop, and the device is let go when that cancellation reaches it. Asserting both at
+        // once was a race this test lost about one run in twenty on a busy machine.
+        await WaitUntil(() => _camera.Released && _microphone.Released, TimeSpan.FromSeconds(5));
+
         Assert.True(_camera.Released, "the camera was not released when the phone disconnected");
         Assert.True(_microphone.Released, "the microphone was not released when the phone disconnected");
     }

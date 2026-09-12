@@ -105,8 +105,14 @@ public sealed class LiveVideoBackpressureTests
         var outcome = await service.StartAsync(LiveSensorKind.Camera, Caller, TestContext.Current.CancellationToken);
         Assert.True(outcome.Started);
 
-        // Nobody reads: the transport is stalled.
-        await Task.Delay(300, TestContext.Current.CancellationToken);
+        // Nobody reads: the transport is stalled. Waited for rather than slept through, because on a
+        // loaded build machine the fake camera's frame interval is whatever the scheduler allows.
+        for (var i = 0; i < 500 && camera.Congestion == 0; i++)
+        {
+            await Task.Delay(10, TestContext.Current.CancellationToken);
+        }
+
+        await Task.Delay(100, TestContext.Current.CancellationToken);
 
         var session = Assert.IsType<LiveSensorSession>(sink.Session);
 
@@ -128,7 +134,7 @@ public sealed class LiveVideoBackpressureTests
 
         LiveSensorFrameHeader? next = null;
 
-        for (var i = 0; i < 100 && next is null; i++)
+        for (var i = 0; i < 500 && next is null; i++)
         {
             await Task.Delay(10, TestContext.Current.CancellationToken);
 
