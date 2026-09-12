@@ -279,6 +279,7 @@ public sealed class LiveSensorService : IAsyncDisposable
     private readonly Dictionary<LiveSensorKind, Running> _running = [];
 
     private ILiveSensorSink _sink = NullLiveSensorSink.Instance;
+    private Screen.ClientPlayback _cameraPlayback = new(-1, -1, 0, 0);
     private Func<CallerDescriptor, bool> _isAuthorized = _ => false;
     private Action<LiveSensorState>? _onChanged;
     private Timer? _authorityWatch;
@@ -344,6 +345,8 @@ public sealed class LiveSensorService : IAsyncDisposable
     /// </summary>
     internal const int MaxVideoBacklog = 4;
 
+    private static readonly TimeSpan CameraLogInterval = TimeSpan.FromSeconds(5);
+
     public async ValueTask<LiveStartOutcome> StartAsync(
         LiveSensorKind kind,
         CallerDescriptor caller,
@@ -402,6 +405,15 @@ public sealed class LiveSensorService : IAsyncDisposable
 
         Notify();
         return new LiveStartOutcome(true, LiveStartFailure.None, null);
+    }
+
+    /// <summary>Records what the phone says it is seeing of the live camera, for the log.</summary>
+    public void ReportCameraPlayback(Screen.ClientPlayback playback)
+    {
+        lock (_gate)
+        {
+            _cameraPlayback = playback;
+        }
     }
 
     /// <summary>
@@ -547,6 +559,11 @@ public sealed class LiveSensorService : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         ulong sequence = 0;
+        var windowStarted = DateTimeOffset.UtcNow;
+        var windowFrames = 0;
+        var windowBytes = 0L;
+        var windowSkipped = 0;
+        var windowKeyframes = 0;
         var skippingToKeyframe = false;
         var keyframeAsked = false;
         var control = source as ILiveVideoControl;
@@ -559,6 +576,11 @@ public sealed class LiveSensorService : IAsyncDisposable
                 {
                     var keyframe = frame.Flags.HasFlag(FrameFlags.Keyframe);
                     var behind = session.Backlog > MaxVideoBacklog;
+
+                    if (skippingToKeyframe || behind)
+                    {
+                        windowSkipped++;
+                    }
 
                     if (!skippingToKeyframe && behind)
                     {
@@ -609,6 +631,50 @@ public sealed class LiveSensorService : IAsyncDisposable
                 };
 
                 session.Publish(header.ToMessage(frame.Payload));
+
+                if (kind == LiveSensorKind.Camera && !frame.Flags.HasFlag(FrameFlags.CodecConfig))
+                {
+                    windowFrames++;
+                    windowBytes += frame.Payload.Length;
+
+                    if (frame.Flags.HasFlag(FrameFlags.Keyframe))
+                    {
+                        windowKeyframes++;
+                    }
+
+                    var elapsed = DateTimeOffset.UtcNow - windowStarted;
+
+                    if (elapsed >= CameraLogInterval)
+                    {
+                        Screen.ClientPlayback phone;
+
+                        lock (_gate)
+                        {
+                            phone = _cameraPlayback;
+                        }
+
+                        _logger.LogInformation(
+                            "Live camera [{Encoding} {Width}x{Height}]: {Fps:F1} fps sent, {Kbps:F0} kbit/s, "
+                            + "{Keyframes} keyframe(s), {Skipped} held back for a slow link, backlog {Backlog} | "
+                            + "phone: {Latency}, {Rendered:F1} fps shown.",
+                            frame.Encoding == FrameEncoding.H264 ? "H.264" : "JPEG",
+                            frame.WidthOrSampleRate,
+                            frame.HeightOrChannels,
+                            windowFrames / elapsed.TotalSeconds,
+                            windowBytes * 8 / elapsed.TotalSeconds / 1000,
+                            windowKeyframes,
+                            windowSkipped,
+                            session.Backlog,
+                            phone.LatencyMs < 0 ? "latency not reported" : $"{phone.LatencyMs:F0} ms capture-to-render",
+                            phone.RenderedFps);
+
+                        windowStarted = DateTimeOffset.UtcNow;
+                        windowFrames = 0;
+                        windowBytes = 0;
+                        windowSkipped = 0;
+                        windowKeyframes = 0;
+                    }
+                }
             }
         }
         catch (OperationCanceledException)

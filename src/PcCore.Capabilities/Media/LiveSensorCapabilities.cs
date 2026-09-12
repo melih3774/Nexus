@@ -201,6 +201,35 @@ public sealed record KeyframeRequestResult
     public required bool Requested { get; init; }
 }
 
+/// <summary>
+/// What the phone measures of the live camera: capture-to-render latency and the rate it is
+/// actually drawing. Recorded for the log; it authorises nothing and changes nothing.
+/// </summary>
+public sealed class ReportLivePlaybackAction : CapabilityAction<Screen.StreamReportParameters, KeyframeRequestResult>
+{
+    private readonly LiveSensorService _live;
+
+    public ReportLivePlaybackAction(LiveSensorService live) => _live = live;
+
+    public override string Name => "media.live.report";
+
+    public override string Description => "Tell the PC what the phone is measuring of the live camera.";
+
+    protected override ValueTask<KeyframeRequestResult> ExecuteAsync(
+        Screen.StreamReportParameters parameters,
+        CapabilityContext context,
+        CancellationToken cancellationToken)
+    {
+        _live.ReportCameraPlayback(new Screen.ClientPlayback(
+            parameters.LatencyMs ?? -1,
+            parameters.DecodeMs ?? -1,
+            parameters.RenderedFps ?? 0,
+            parameters.Dropped ?? 0));
+
+        return ValueTask.FromResult(new KeyframeRequestResult { Requested = false });
+    }
+}
+
 internal static class LiveSensorParsing
 {
     public static LiveSensorKind Parse(string? sensor) => sensor?.Trim().ToUpperInvariant() switch

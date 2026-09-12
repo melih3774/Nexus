@@ -532,6 +532,7 @@ public sealed class RemoteTransportTests : IAsyncLifetime
                 // Live monitoring. FullRemote only: absent from the unauthorised subset below, so a
                 // paired-but-locked phone cannot open the camera.
                 "media.live.keyframe",
+                "media.live.report",
                 "media.live.start",
                 "media.live.status",
                 "media.live.stop",

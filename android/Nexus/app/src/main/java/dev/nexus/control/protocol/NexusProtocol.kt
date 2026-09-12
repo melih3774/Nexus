@@ -81,6 +81,7 @@ object NexusProtocol {
         const val MEDIA_LIVE_STOP = "media.live.stop"
         const val MEDIA_LIVE_STATUS = "media.live.status"
         const val MEDIA_LIVE_KEYFRAME = "media.live.keyframe"
+        const val MEDIA_LIVE_REPORT = "media.live.report"
 
         // v1.2 - the video pipeline. KEYFRAME is how a decoder that lost its place asks to be given
         // one again; REPORT is how the PC finds out that the phone, rather than the link, is the

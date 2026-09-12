@@ -563,6 +563,7 @@ public static class Program
         services.AddSingleton<ICapabilityAction, SetMediaQualityAction>();
         services.AddSingleton<ICapabilityAction, MediaTimeAction>();
         services.AddSingleton<ICapabilityAction, RequestLiveKeyframeAction>();
+        services.AddSingleton<ICapabilityAction, ReportLivePlaybackAction>();
 
         services.AddSingleton<ICapabilityAction, BeginInputAction>();
         services.AddSingleton<ICapabilityAction, EndInputAction>();

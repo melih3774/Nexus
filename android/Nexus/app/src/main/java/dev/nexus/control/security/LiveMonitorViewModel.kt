@@ -437,6 +437,19 @@ class LiveMonitorViewModel(
         windowRendered = 0
         windowBytes = 0
 
+        // Fire-and-forget, once a second: the PC logs it beside what it sent, which is what makes
+        // one verification session enough to see both ends of the same stream.
+        connection.notify(
+            NexusProtocol.Actions.MEDIA_LIVE_REPORT,
+            NexusJson.encodeToJsonElement(
+                dev.nexus.control.protocol.StreamReportParams.serializer(),
+                dev.nexus.control.protocol.StreamReportParams(
+                    latencyMs = latencyMs.takeIf { it >= 0 },
+                    renderedFps = fps,
+                ),
+            ),
+        )
+
         val latency = if (latencyMs >= 0) "%.0f ms".format(latencyMs) else "— ms"
 
         _state.value = _state.value.copy(

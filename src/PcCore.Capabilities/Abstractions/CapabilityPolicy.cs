@@ -114,6 +114,7 @@ public sealed class DefaultCapabilityPolicy : ICapabilityPolicy
         "media.live.stop",
         "media.live.status",
         "media.live.keyframe",
+        "media.live.report",
     }.ToFrozenSet(StringComparer.Ordinal);
 
     /// <summary>
