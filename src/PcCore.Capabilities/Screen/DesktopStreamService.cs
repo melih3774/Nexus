@@ -491,6 +491,7 @@ public sealed class DesktopStreamService : IAsyncDisposable
     {
         var token = session.Stopping;
         var adaptive = new AdaptiveStreamController();
+        var pacer = new FramePacer();
         var packets = new List<VideoPacket>();
 
         IDesktopCaptureSource? source = null;
@@ -512,7 +513,6 @@ public sealed class DesktopStreamService : IAsyncDisposable
         {
             while (!token.IsCancellationRequested)
             {
-                var frameStarted = DateTimeOffset.UtcNow;
                 var interval = TimeSpan.FromMilliseconds(1000.0 / Math.Clamp(plan.Fps, 1, 60));
 
                 if (source is null)
@@ -555,7 +555,7 @@ public sealed class DesktopStreamService : IAsyncDisposable
                 if (session.Backlog > _options.MaxBacklog)
                 {
                     session.CountSkip();
-                    await PaceAsync(frameStarted, interval, token).ConfigureAwait(false);
+                    await pacer.WaitAsync(interval, token).ConfigureAwait(false);
                     continue;
                 }
 
@@ -667,7 +667,7 @@ public sealed class DesktopStreamService : IAsyncDisposable
                     nextDiagnostics = now.AddSeconds(_options.DiagnosticsIntervalSeconds);
                 }
 
-                await PaceAsync(frameStarted, interval, token).ConfigureAwait(false);
+                await pacer.WaitAsync(interval, token).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)
@@ -685,18 +685,6 @@ public sealed class DesktopStreamService : IAsyncDisposable
             _quality.Changed -= OnSettingsChanged;
             source?.Dispose();
             video?.Dispose();
-        }
-    }
-
-    private static async Task PaceAsync(DateTimeOffset started, TimeSpan interval, CancellationToken token)
-    {
-        // Pace to the target rate. Capture can be much faster than this and there is no point
-        // encoding frames nobody asked for.
-        var spent = DateTimeOffset.UtcNow - started;
-
-        if (spent < interval)
-        {
-            await Task.Delay(interval - spent, token).ConfigureAwait(false);
         }
     }
 

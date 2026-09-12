@@ -109,6 +109,10 @@ public sealed unsafe class MediaFoundationVideoEncoder : IVideoEncoder
     private long _needInputEvents;
     private long _haveOutputEvents;
     private long _submitted;
+    private long _convertTicks;
+    private long _waitTicks;
+    private long _submitTicks;
+    private long _timedFrames;
     private long _startedUnixMs = -1;
     private int _forceKeyframe;
     private bool _disposed;
@@ -155,7 +159,25 @@ public sealed unsafe class MediaFoundationVideoEncoder : IVideoEncoder
         $"events {Interlocked.Read(ref _events_seen)}, need-input {Interlocked.Read(ref _needInputEvents)}, "
         + $"have-output {Interlocked.Read(ref _haveOutputEvents)}, submitted {Interlocked.Read(ref _submitted)}"
         + (_faulted ? ", faulted" : "")
+        + Timings()
         + Notes();
+
+    /// <summary>Where an encode call's time goes, averaged: conversion, waiting for the encoder, handing over.</summary>
+    public (double ConvertMs, double WaitMs, double SubmitMs) StageTimings()
+    {
+        var frames = Math.Max(1, Interlocked.Read(ref _timedFrames));
+        var toMs = 1000.0 / System.Diagnostics.Stopwatch.Frequency / frames;
+
+        return (Interlocked.Read(ref _convertTicks) * toMs,
+            Interlocked.Read(ref _waitTicks) * toMs,
+            Interlocked.Read(ref _submitTicks) * toMs);
+    }
+
+    private string Timings()
+    {
+        var (convert, wait, submit) = StageTimings();
+        return $", convert {convert:F1} ms, wait {wait:F1} ms, submit {submit:F1} ms";
+    }
 
     private string Notes()
     {
@@ -201,7 +223,11 @@ public sealed unsafe class MediaFoundationVideoEncoder : IVideoEncoder
             _nv12 = new byte[needed];
         }
 
+        var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         _converter.Convert(bgra, width, height, stride, _nv12, Settings.Width, Settings.Height);
+        var t1 = System.Diagnostics.Stopwatch.GetTimestamp();
+        Interlocked.Add(ref _convertTicks, t1 - t0);
+        Interlocked.Increment(ref _timedFrames);
 
         if (_startedUnixMs < 0)
         {
@@ -224,14 +250,21 @@ public sealed unsafe class MediaFoundationVideoEncoder : IVideoEncoder
             // An asynchronous transform accepts input only when it has asked for it. Waiting a
             // bounded time and then giving up is deliberate: a frame the encoder is too busy to take
             // is a frame that would have been stale by the time it came out.
-            if (!_needInput.Wait(InputWait))
+            var waited = _needInput.Wait(InputWait);
+            Interlocked.Add(ref _waitTicks, System.Diagnostics.Stopwatch.GetTimestamp() - t1);
+
+            if (!waited)
             {
                 Drain(output);
                 return;
             }
         }
 
-        if (!Submit(_nv12.AsSpan(0, needed), pts, duration, captureUnixMs))
+        var t2 = System.Diagnostics.Stopwatch.GetTimestamp();
+        var submitted = Submit(_nv12.AsSpan(0, needed), pts, duration, captureUnixMs);
+        Interlocked.Add(ref _submitTicks, System.Diagnostics.Stopwatch.GetTimestamp() - t2);
+
+        if (!submitted)
         {
             return;
         }

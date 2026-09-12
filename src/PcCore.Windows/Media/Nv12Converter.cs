@@ -27,6 +27,13 @@ namespace PcCore.Windows.Media;
 /// this machine takes about a millisecond; it would have been absurd to spend twenty feeding it.
 /// </para>
 /// <para>
+/// <b>Why it is split into bands.</b> Measured on a busy desktop rather than an idle one: the
+/// conversion that takes three milliseconds on a quiet machine took twenty to thirty while the owner
+/// had other work running, and the hardware encoder behind it was waiting on it for almost none of
+/// that time. The work is independent row by row, so the frame is cut into a few horizontal bands on
+/// even row boundaries — chroma pairs never straddle two — and they run in parallel.
+/// </para>
+/// <para>
 /// <b>Why the matrix depends on the height.</b> Android's decoder picks its own conversion when the
 /// stream does not insist otherwise, and it picks by size: BT.601 below 720 lines, BT.709 at or
 /// above. Encoding with the other one leaves skin tones and greens visibly wrong. This follows the
@@ -55,13 +62,40 @@ public sealed unsafe class Nv12Converter
         28782, -26142, -2639,
     ];
 
-    private int[] _sumB = [];
-    private int[] _sumG = [];
-    private int[] _sumR = [];
-    private int[] _chromaB = [];
-    private int[] _chromaG = [];
-    private int[] _chromaR = [];
-    private int[] _chromaRows = [];
+    /// <summary>
+    /// Accumulators for one horizontal band of the frame. Each band has its own so bands can run on
+    /// different threads without sharing anything they write.
+    /// </summary>
+    private sealed class Band
+    {
+        public Band(int width)
+        {
+            SumB = new int[width];
+            SumG = new int[width];
+            SumR = new int[width];
+            ChromaB = new int[width / 2];
+            ChromaG = new int[width / 2];
+            ChromaR = new int[width / 2];
+            ChromaRows = new int[width / 2];
+        }
+
+        public int Width => SumB.Length;
+
+        public int[] SumB { get; }
+        public int[] SumG { get; }
+        public int[] SumR { get; }
+        public int[] ChromaB { get; }
+        public int[] ChromaG { get; }
+        public int[] ChromaR { get; }
+        public int[] ChromaRows { get; }
+    }
+
+    private Band[] _bands = [];
+
+    /// <summary>
+    /// Rows per band below which splitting costs more than it saves.
+    /// </summary>
+    private const int MinimumBandRows = 96;
 
     /// <summary>
     /// How many source pixels each destination column covers.
@@ -84,6 +118,21 @@ public sealed unsafe class Nv12Converter
     private static readonly int[] Reciprocal = BuildReciprocals();
 
     private const int ReciprocalShift = 24;
+
+    /// <summary>
+    /// Which destination row each source row belongs to.
+    /// <para>
+    /// Built with exactly the same rule as the columns — destination row <c>d</c> covers source rows
+    /// from <c>d * sourceHeight / height</c> up to <c>(d + 1) * sourceHeight / height</c>. The first
+    /// version computed rows the other way round, from the source row, which is also an area average
+    /// but a different partition: at 1080 to 720 it gave each destination row a different pair of
+    /// source rows than its columns assumed, and at 1440 to 1080 some rows came from a source row one
+    /// further down. Nothing crashed; text was simply a little softer vertically than horizontally.
+    /// </para>
+    /// </summary>
+    private int[] _rowOf = [];
+    private int _plannedSourceHeight = -1;
+    private int _plannedHeight = -1;
 
     /// <summary>True when every column covers exactly one pixel, which is the unscaled case.</summary>
     private bool _columnsAreOneToOne;
@@ -141,43 +190,125 @@ public sealed unsafe class Nv12Converter
             return;
         }
 
-        EnsureCapacity(width);
         PlanColumns(sourceWidth, width);
+        PlanRows(sourceHeight, height);
+
+        var bandCount = BandCount(height);
+        EnsureBands(bandCount, width);
+
+        var direct = sourceWidth == width && sourceHeight == height;
 
         fixed (byte* source = bgra)
         fixed (byte* target = destination)
-        fixed (int* sumB = _sumB, sumG = _sumG, sumR = _sumR)
-        fixed (int* chromaB = _chromaB, chromaG = _chromaG, chromaR = _chromaR, chromaRows = _chromaRows)
         fixed (int* columns = _columnCount)
+        fixed (int* rows = _rowOf)
         fixed (int* coefficients = matrix)
         fixed (int* reciprocals = Reciprocal)
         {
-            if (sourceWidth == width && sourceHeight == height)
+            // Addresses rather than pointers, so they can cross into the band delegates. The arrays
+            // stay pinned for as long as this block runs, and the block does not return until every
+            // band has finished.
+            var src = (nint)source;
+            var dst = (nint)target;
+            var cols = _columnsAreOneToOne ? 0 : (nint)columns;
+            var coef = (nint)coefficients;
+            var rec = (nint)reciprocals;
+            var rowTable = (nint)rows;
+
+            void RunBand(int band)
             {
-                // Nothing to average: one source pixel per destination pixel. Worth its own loop
-                // because it skips the accumulators entirely, and it is the native-resolution case.
-                Direct(source, stride, target, width, height, coefficients);
-                return;
+                var first = RowStart(band, bandCount, height);
+                var last = RowStart(band + 1, bandCount, height);
+
+                if (direct)
+                {
+                    // Nothing to average: one source pixel per destination pixel. Worth its own loop
+                    // because it skips the accumulators entirely, and it is the native-resolution case.
+                    Direct((byte*)src, stride, (byte*)dst, width, height, (int*)coef, first, last);
+                    return;
+                }
+
+                var accumulators = _bands[band];
+
+                fixed (int* sumB = accumulators.SumB, sumG = accumulators.SumG, sumR = accumulators.SumR)
+                fixed (int* chromaB = accumulators.ChromaB, chromaG = accumulators.ChromaG)
+                fixed (int* chromaR = accumulators.ChromaR, chromaRows = accumulators.ChromaRows)
+                {
+                    Reduce(
+                        (byte*)src,
+                        sourceHeight,
+                        stride,
+                        (byte*)dst,
+                        width,
+                        height,
+                        sumB,
+                        sumG,
+                        sumR,
+                        chromaB,
+                        chromaG,
+                        chromaR,
+                        chromaRows,
+                        (int*)cols,
+                        (int*)coef,
+                        (int*)rec,
+                        (int*)rowTable,
+                        first,
+                        last);
+                }
             }
 
-            Reduce(
-                source,
-                sourceHeight,
-                stride,
-                target,
-                width,
-                height,
-                sumB,
-                sumG,
-                sumR,
-                chromaB,
-                chromaG,
-                chromaR,
-                chromaRows,
-                _columnsAreOneToOne ? null : columns,
-                coefficients,
-                reciprocals);
+            if (bandCount == 1)
+            {
+                RunBand(0);
+            }
+            else
+            {
+                Parallel.For(0, bandCount, RunBand);
+            }
         }
+    }
+
+    private void PlanRows(int sourceHeight, int height)
+    {
+        if (_plannedSourceHeight == sourceHeight && _plannedHeight == height)
+        {
+            return;
+        }
+
+        var rows = new int[sourceHeight];
+
+        for (var dy = 0; dy < height; dy++)
+        {
+            var start = (int)((long)dy * sourceHeight / height);
+            var end = dy == height - 1 ? sourceHeight : (int)((long)(dy + 1) * sourceHeight / height);
+
+            for (var sy = start; sy < end; sy++)
+            {
+                rows[sy] = dy;
+            }
+        }
+
+        _rowOf = rows;
+        _plannedSourceHeight = sourceHeight;
+        _plannedHeight = height;
+    }
+
+    /// <summary>How many bands a frame of this height is worth splitting into on this machine.</summary>
+    private static int BandCount(int height) =>
+        Math.Max(1, Math.Min(Math.Clamp(Environment.ProcessorCount / 2, 1, 4), height / MinimumBandRows));
+
+    /// <summary>The first destination row of a band. Always even, so no chroma pair is split.</summary>
+    private static int RowStart(int band, int bands, int height) =>
+        band >= bands ? height : (int)((long)height * band / bands) & ~1;
+
+    private void EnsureBands(int count, int width)
+    {
+        if (_bands.Length == count && _bands.All(b => b.Width >= width))
+        {
+            return;
+        }
+
+        _bands = [.. Enumerable.Range(0, count).Select(_ => new Band(width))];
     }
 
     private static void Reduce(
@@ -196,7 +327,10 @@ public sealed unsafe class Nv12Converter
         int* chromaRows,
         int* columnCount,
         int* matrix,
-        int* reciprocals)
+        int* reciprocals,
+        int* rowOf,
+        int firstRow,
+        int endRow)
     {
         var luma = target;
         var chroma = target + ((long)width * height);
@@ -210,12 +344,17 @@ public sealed unsafe class Nv12Converter
         Clear(chromaR, chromaWidth);
         Clear(chromaRows, chromaWidth);
 
-        var currentRow = 0;
+        var currentRow = firstRow;
         var rowsAccumulated = 0;
 
-        for (var sy = 0; sy < sourceHeight; sy++)
+        // The source rows that land in this band: the first whose destination row is at or after
+        // firstRow, up to the first whose destination row is at or after endRow.
+        var firstSource = (int)((long)firstRow * sourceHeight / height);
+        var endSource = endRow >= height ? sourceHeight : (int)((long)endRow * sourceHeight / height);
+
+        for (var sy = firstSource; sy < endSource; sy++)
         {
-            var row = (int)((long)sy * height / sourceHeight);
+            var row = rowOf[sy];
 
             if (row != currentRow)
             {
@@ -279,7 +418,7 @@ public sealed unsafe class Nv12Converter
         // frame and the reopen — leaves the bottom rows never written. Repeating the last finished
         // row is invisible for one frame and far better than handing the encoder uninitialised
         // memory, which decodes as a band of green noise.
-        for (var y = currentRow + 1; y < height; y++)
+        for (var y = Math.Max(firstRow + 1, currentRow + 1); y < endRow; y++)
         {
             Buffer.MemoryCopy(luma + ((long)(y - 1) * width), luma + ((long)y * width), width, width);
 
@@ -298,12 +437,18 @@ public sealed unsafe class Nv12Converter
     /// <summary>
     /// One source pixel per destination pixel: convert in place, with no averaging at all.
     /// <para>
-    /// Chroma is taken from the top-left of each 2x2 block rather than its average. That is what
-    /// 4:2:0 does to the picture anyway, and paying for a four-pixel average to feed a format which
-    /// keeps one sample per four pixels buys nothing visible.
+    /// Chroma is the average of each 2x2 block, for the reason given where it is computed.
     /// </para>
     /// </summary>
-    private static void Direct(byte* source, int stride, byte* target, int width, int height, int* matrix)
+    private static void Direct(
+        byte* source,
+        int stride,
+        byte* target,
+        int width,
+        int height,
+        int* matrix,
+        int firstRow,
+        int endRow)
     {
         var luma = target;
         var chroma = target + ((long)width * height);
@@ -318,12 +463,15 @@ public sealed unsafe class Nv12Converter
         var vg = matrix[7];
         var vb = matrix[8];
 
-        for (var y = 0; y < height; y++)
+        for (var y = firstRow; y < endRow; y++)
         {
             var pixels = source + ((long)y * stride);
             var output = luma + ((long)y * width);
             var wantsChroma = (y & 1) == 0;
             var chromaOutput = chroma + ((long)(y / 2) * width);
+
+            // The row below, for the chroma average. Always present: heights are even.
+            var below = source + ((long)(y + 1) * stride);
 
             for (var x = 0; x < width; x++)
             {
@@ -335,11 +483,20 @@ public sealed unsafe class Nv12Converter
 
                 if (wantsChroma && (x & 1) == 0)
                 {
-                    chromaOutput[x] = Clamp(128 + (((ur * r) + (ug * g) + (ub * b) + Half) >> Shift));
-                    chromaOutput[x + 1] = Clamp(128 + (((vr * r) + (vg * g) + (vb * b) + Half) >> Shift));
+                    // Averaged over the 2x2 block rather than sampled from one corner. On a desktop
+                    // the difference is coloured text: ClearType fringes are one pixel wide, and a
+                    // corner sample keeps some and drops others, which reads as colour noise along
+                    // every edge.
+                    var cb = (b + pixels[4] + below[0] + below[4]) >> 2;
+                    var cg = (g + pixels[5] + below[1] + below[5]) >> 2;
+                    var cr = (r + pixels[6] + below[2] + below[6]) >> 2;
+
+                    chromaOutput[x] = Clamp(128 + (((ur * cr) + (ug * cg) + (ub * cb) + Half) >> Shift));
+                    chromaOutput[x + 1] = Clamp(128 + (((vr * cr) + (vg * cg) + (vb * cb) + Half) >> Shift));
                 }
 
                 pixels += 4;
+                below += 4;
             }
         }
     }
@@ -512,24 +669,6 @@ public sealed unsafe class Nv12Converter
         _columnsAreOneToOne = sourceWidth == width;
         _plannedSourceWidth = sourceWidth;
         _plannedWidth = width;
-    }
-
-    private void EnsureCapacity(int width)
-    {
-        if (_sumB.Length >= width)
-        {
-            return;
-        }
-
-        _sumB = new int[width];
-        _sumG = new int[width];
-        _sumR = new int[width];
-
-        var chroma = width / 2;
-        _chromaB = new int[chroma];
-        _chromaG = new int[chroma];
-        _chromaR = new int[chroma];
-        _chromaRows = new int[chroma];
     }
 
     private static void Clear(int* values, int count)

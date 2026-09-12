@@ -171,6 +171,7 @@ internal static class VideoSelfTest
         using var source = stream.Open(display.Index);
 
         var packets = new List<VideoPacket>();
+        var pacer = new FramePacer();
         var deadline = Stopwatch.StartNew();
         var interval = TimeSpan.FromMilliseconds(1000.0 / plan.Fps);
 
@@ -180,12 +181,14 @@ internal static class VideoSelfTest
         long skipped = 0;
         double encodeMs = 0;
         double convertMs = 0;
+        double captureMs = 0;
         long encoded = 0;
 
         while (deadline.Elapsed < TimeSpan.FromSeconds(seconds))
         {
             var tick = Stopwatch.GetTimestamp();
             var result = source.TryGetFrame(TimeSpan.FromMilliseconds(60));
+            captureMs += Stopwatch.GetElapsedTime(tick).TotalMilliseconds;
 
             if (result.Status != CaptureStatus.Frame || result.Frame is null)
             {
@@ -229,17 +232,16 @@ internal static class VideoSelfTest
                 }
             }
 
-            var spent = Stopwatch.GetElapsedTime(tick);
-
-            if (spent < interval)
-            {
-                await Task.Delay(interval - spent).ConfigureAwait(false);
-            }
+            // Paced exactly as the real stream is, so the delivered rate here is the one the phone gets.
+            await pacer.WaitAsync(interval, CancellationToken.None).ConfigureAwait(false);
         }
 
         if (encoder is MediaFoundationVideoEncoder detailed)
         {
-            Console.WriteLine($"    [{plan.Label}] {detailed.Diagnostics()}");
+            var (convert, wait, submit) = detailed.StageTimings();
+            Console.WriteLine(
+                $"    [{plan.Label}] capture wait {captureMs / Math.Max(1, encoded):F1} ms, convert {convert:F1} ms, "
+                + $"encoder wait {wait:F1} ms, submit {submit:F1} ms");
         }
 
         // The converter is measured separately against the same frame size, because inside the
