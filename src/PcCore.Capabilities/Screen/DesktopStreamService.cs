@@ -39,7 +39,7 @@ public sealed class StreamOptions
     public int FrameTimeoutMs { get; set; } = 250;
 
     /// <summary>How often the capture loop logs its counters. Zero disables it.</summary>
-    public int DiagnosticsIntervalSeconds { get; set; } = 30;
+    public int DiagnosticsIntervalSeconds { get; set; } = 5;
 
     /// <summary>
     /// Encoded frames allowed to be waiting for the socket before a capture is abandoned.
@@ -503,6 +503,8 @@ public sealed class DesktopStreamService : IAsyncDisposable
         var nextDiagnostics = DateTimeOffset.UtcNow.AddSeconds(_options.DiagnosticsIntervalSeconds);
         var nextHealthCheck = DateTimeOffset.UtcNow.AddSeconds(1);
         var deliveredAtLastCheck = 0L;
+        (TimeSpan Elapsed, long Encoded, long Delivered, long Bytes, double EncodeTotal, long Skipped, long Dropped)
+            windowStart = (TimeSpan.Zero, 0, 0, 0, 0, 0, 0);
         var settingsChanged = 0;
 
         void OnSettingsChanged(MediaQualitySettings _) => Interlocked.Exchange(ref settingsChanged, 1);
@@ -537,16 +539,28 @@ public sealed class DesktopStreamService : IAsyncDisposable
                 // than in the middle of one.
                 if (Interlocked.Exchange(ref settingsChanged, 0) == 1)
                 {
+                    // A deliberate change starts adaptation from the top of the new plan rather than
+                    // carrying a step that was taken for the old one.
+                    adaptive.Reset();
+                    session.AdaptiveLevel = 0;
+                    session.AdaptiveReason = "";
+
                     var wanted = MediaPlanner.Resolve(
                         _quality.Current.Screen,
                         MediaTarget.Screen,
                         session.Display.Width,
-                        session.Display.Height,
-                        adaptive.Level);
+                        session.Display.Height);
 
                     if (Rebuild(session, wanted, ref plan, ref video, ref codecConfig))
                     {
-                        adaptive.Reset();
+                        _logger.LogInformation(
+                            "Stream {StreamId} settings changed: {Plan} at {Width}x{Height}, {Fps} fps, {Bitrate} kbit/s.",
+                            session.StreamId,
+                            wanted.Label,
+                            wanted.Width,
+                            wanted.Height,
+                            wanted.Fps,
+                            wanted.BitrateKbps);
                     }
                 }
 
@@ -649,21 +663,38 @@ public sealed class DesktopStreamService : IAsyncDisposable
                 if (_options.DiagnosticsIntervalSeconds > 0 && now >= nextDiagnostics)
                 {
                     var stats = session.Statistics();
+                    var window = stats.Elapsed - windowStart.Elapsed;
+                    var seconds = Math.Max(0.001, window.TotalSeconds);
+                    var delivered = stats.FramesEncoded - session.Backlog;
+                    var encodeTotal = stats.EncodeMs * stats.FramesEncoded;
+                    var framesInWindow = stats.FramesEncoded - windowStart.Encoded;
 
+                    // Rates over the last interval, not the whole session. A profile change a minute
+                    // in should show up in the next line, not be averaged into the first minute.
                     _logger.LogInformation(
-                        "Stream {StreamId}: {Delivered:F1} fps delivered of {Planned} planned, "
-                        + "{Bitrate:F0} kbit/s, {Encode:F1} ms/frame, backlog {Backlog}, "
-                        + "{Skipped} skipped, {Dropped} dropped, phone {Latency}.",
+                        "Stream {StreamId} [{Plan} {Width}x{Height}@{Planned} {PlanKbps}kbps]: "
+                        + "{Delivered:F1} fps delivered, {Bitrate:F0} kbit/s, {Encode:F1} ms/frame, "
+                        + "backlog {Backlog}, {Skipped} skipped, {Dropped} dropped | phone: {Latency}, "
+                        + "{Rendered:F1} fps rendered, {Decode} decode, {PhoneDropped} dropped.",
                         session.StreamId,
-                        stats.DeliveredFps,
+                        plan.Label,
+                        plan.Width,
+                        plan.Height,
                         plan.Fps,
-                        stats.BitrateKbps,
-                        stats.EncodeMs,
+                        plan.BitrateKbps,
+                        (delivered - windowStart.Delivered) / seconds,
+                        (stats.BytesEncoded - windowStart.Bytes) * 8 / seconds / 1000,
+                        framesInWindow <= 0 ? 0 : (encodeTotal - windowStart.EncodeTotal) / framesInWindow,
                         session.Backlog,
-                        stats.FramesSkipped,
-                        stats.FramesDropped,
-                        stats.Client.LatencyMs < 0 ? "not reporting" : $"{stats.Client.LatencyMs:F0} ms");
+                        stats.FramesSkipped - windowStart.Skipped,
+                        stats.FramesDropped - windowStart.Dropped,
+                        stats.Client.LatencyMs < 0 ? "latency not reported" : $"{stats.Client.LatencyMs:F0} ms capture-to-render",
+                        stats.Client.RenderedFps,
+                        stats.Client.DecodeMs < 0 ? "n/a" : $"{stats.Client.DecodeMs:F1} ms",
+                        stats.Client.Dropped);
 
+                    windowStart = (stats.Elapsed, stats.FramesEncoded, delivered, stats.BytesEncoded, encodeTotal,
+                        stats.FramesSkipped, stats.FramesDropped);
                     nextDiagnostics = now.AddSeconds(_options.DiagnosticsIntervalSeconds);
                 }
 
