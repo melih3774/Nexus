@@ -305,14 +305,16 @@ class RemoteControlViewModel(
             while (isActive) {
                 delay(REPORT_INTERVAL_MS)
 
-                val stats = pipeline.stats.value
+                // Only this second's pictures. A latency figure carried over from before a stall is
+                // not a measurement of the stall, and the PC adapts on every number it is sent.
+                val report = pipeline.takeReport()
 
                 val result = session.report(
                     StreamReportParams(
-                        latencyMs = stats.latencyMs.takeIf { it >= 0 },
-                        decodeMs = stats.decodeMs.takeIf { stats.encoding == "H.264" },
-                        renderedFps = stats.renderFps,
-                        dropped = stats.dropped,
+                        latencyMs = report.latencyMs,
+                        decodeMs = report.decodeMs,
+                        renderedFps = report.renderedFps,
+                        dropped = report.dropped,
                     ),
                 )
 

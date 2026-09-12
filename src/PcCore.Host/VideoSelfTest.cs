@@ -67,6 +67,11 @@ internal static class VideoSelfTest
             return 0;
         }
 
+        if (args.Contains("--bitrate-change"))
+        {
+            return BitrateChange(factory);
+        }
+
         var stream = new DxgiDesktopStream(loggers);
         var displays = stream.GetDisplays();
 
@@ -259,6 +264,135 @@ internal static class VideoSelfTest
             convertMs,
             keyframes,
             skipped);
+    }
+
+    /// <summary>
+    /// Whether this machine's encoder takes a new bitrate while running, and actually honours it.
+    /// <para>
+    /// The adaptive controller's cheapest step depends on it, and "the call returned S_OK" is not the
+    /// same as "the rate controller listened". So the answer is measured: a detailed moving picture
+    /// that no encoder can squeeze below its target, five seconds at one bitrate, a change in place,
+    /// five seconds at the other, and the bits that came out of each.
+    /// </para>
+    /// </summary>
+    private static int BitrateChange(IVideoEncoderFactory factory)
+    {
+        const int Width = 1280;
+        const int Height = 720;
+        const int Fps = 30;
+        const int HighKbps = 4000;
+        const int LowKbps = 1000;
+        const int FramesPerRun = Fps * 5;
+        const int WarmUp = Fps;
+
+        // Low-contrast grain that is different in every frame, cycled from a few prepared pictures.
+        // Hard enough that the encoder has to decide how many bits to spend on every frame, and soft
+        // enough that it can meet either target. Noise at full contrast turned out to be beyond any
+        // target - a new encoder built for one megabit produced nine - which says nothing about
+        // whether a change was honoured.
+        var random = new Random(7);
+        var grain = new byte[8][];
+
+        for (var g = 0; g < grain.Length; g++)
+        {
+            grain[g] = new byte[Width * Height * 4];
+            random.NextBytes(grain[g]);
+
+            for (var b = 0; b < grain[g].Length; b++)
+            {
+                grain[g][b] = (byte)(112 + (grain[g][b] >> 5));
+            }
+        }
+
+        var frame = new byte[Width * Height * 4];
+        var packets = new List<VideoPacket>();
+        var origin = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var index = 0;
+
+        void Paint() => grain[index % grain.Length].CopyTo(frame, 0);
+
+        double Run(IVideoEncoder encoder)
+        {
+            long bytes = 0;
+            var measured = 0;
+
+            for (var i = 0; i < FramesPerRun; i++, index++)
+            {
+                Paint();
+                packets.Clear();
+                encoder.Encode(frame, Width, Height, Width * 4, origin + (index * 1000L / Fps), packets);
+
+                foreach (var packet in packets)
+                {
+                    if (i >= WarmUp)
+                    {
+                        bytes += packet.Bytes.Length;
+                        measured++;
+                    }
+                }
+            }
+
+            return measured == 0 ? 0 : bytes * 8.0 * Fps / measured / 1000;
+        }
+
+        double high;
+        double down;
+        double up;
+        bool accepted;
+        string name;
+
+        using (var encoder = factory.Create(new VideoEncoderSettings(Width, Height, Fps, HighKbps, 2)))
+        {
+            name = encoder.BackendName;
+            encoder.RequestKeyframe();
+            high = Run(encoder);
+
+            accepted = encoder.TryChangeBitrate(LowKbps);
+            down = Run(encoder);
+
+            accepted &= encoder.TryChangeBitrate(HighKbps);
+            up = Run(encoder);
+        }
+
+        // The control: a new encoder built at the lower rate, on the same kind of picture. If this one
+        // cannot get down to the target either, the content is the limit rather than the change.
+        double freshLow;
+
+        using (var encoder = factory.Create(new VideoEncoderSettings(Width, Height, Fps, LowKbps, 2)))
+        {
+            encoder.RequestKeyframe();
+            freshLow = Run(encoder);
+        }
+
+        Console.WriteLine($"  {name}, 1280x720 at 30 fps, changing grain, first second of each run excluded:");
+        Console.WriteLine($"    built at {HighKbps} kbit/s:               {high,5:F0} kbit/s produced");
+        Console.WriteLine($"    changed in place to {LowKbps} kbit/s:     {down,5:F0} kbit/s produced");
+        Console.WriteLine($"    changed in place back to {HighKbps} kbit/s: {up,5:F0} kbit/s produced");
+        Console.WriteLine($"    control, a new encoder at {LowKbps} kbit/s: {freshLow,5:F0} kbit/s produced");
+        Console.WriteLine();
+
+        if (!accepted)
+        {
+            Console.WriteLine("  FAIL  the encoder refused the change; adaptive steps will rebuild it instead.");
+            return 1;
+        }
+
+        if (high <= 0 || freshLow > high * 0.6)
+        {
+            Console.WriteLine("  INCONCLUSIVE  even a new encoder could not reach the lower rate on this content.");
+            return 1;
+        }
+
+        var midpoint = (high + freshLow) / 2;
+
+        if (down > midpoint || up < midpoint)
+        {
+            Console.WriteLine("  FAIL  the change was accepted but the output bitrate did not follow it.");
+            return 1;
+        }
+
+        Console.WriteLine("  PASS  the running encoder follows a new bitrate, down and up, without being rebuilt.");
+        return 0;
     }
 
     /// <summary>

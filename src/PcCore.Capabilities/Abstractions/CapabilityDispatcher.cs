@@ -21,6 +21,28 @@ public interface ICapabilityDispatcher
 
 public sealed class CapabilityDispatcher : ICapabilityDispatcher
 {
+    /// <summary>
+    /// Actions that arrive many times a second while in use, logged at debug rather than information.
+    /// <para>
+    /// A moving pointer is sixty requests a second, and each wrote two lines to a log file that is
+    /// opened, appended and closed per line under one lock the capture loop also takes. That cost
+    /// was on the input path itself, and it filled the two-megabyte log in under two minutes —
+    /// pushing out the stream measurements the log exists to keep. Denials and failures of these
+    /// actions are still logged as warnings like any other.
+    /// </para>
+    /// </summary>
+    private static readonly HashSet<string> HighFrequencyActions = new(StringComparer.Ordinal)
+    {
+        "input.pointer",
+        "input.scroll",
+        "input.touch",
+        "screen.stream.report",
+        "screen.stream.keyframe",
+        "media.time",
+        "media.live.report",
+        "media.live.keyframe",
+    };
+
     private readonly ICapabilityRegistry _registry;
     private readonly ICapabilityPolicy _policy;
     private readonly ILogger<CapabilityDispatcher> _logger;
@@ -94,7 +116,10 @@ public sealed class CapabilityDispatcher : ICapabilityDispatcher
             return Failure(request, stopwatch, bindError);
         }
 
-        _logger.LogInformation(
+        var routine = HighFrequencyActions.Contains(request.Action) ? LogLevel.Debug : LogLevel.Information;
+
+        _logger.Log(
+            routine,
             "-> {Action} (request {RequestId}, caller {Caller})",
             request.Action,
             request.Id,
@@ -107,7 +132,8 @@ public sealed class CapabilityDispatcher : ICapabilityDispatcher
             var result = await capability.InvokeAsync(parameters!, context, cancellationToken).ConfigureAwait(false);
             stopwatch.Stop();
 
-            _logger.LogInformation(
+            _logger.Log(
+                routine,
                 "<- {Action} ok in {ElapsedMs} ms (request {RequestId})",
                 request.Action,
                 stopwatch.ElapsedMilliseconds,

@@ -2,6 +2,7 @@ package dev.nexus.control
 
 import dev.nexus.control.protocol.LiveSensorFrameHeader
 import dev.nexus.control.protocol.StreamFrameHeader
+import dev.nexus.control.remote.PlaybackWindow
 import dev.nexus.control.remote.StreamClock
 import dev.nexus.control.remote.VideoDecoder
 import org.junit.Assert.assertArrayEquals
@@ -185,5 +186,60 @@ class VideoPipelineTest {
 
         assertFalse(header.isH264)
         assertEquals(LiveSensorFrameHeader.ENCODING_DEFAULT, header.encoding)
+    }
+
+    // --- What is reported to the PC ------------------------------------------------------------------
+
+    @Test
+    fun `a report covers only the pictures rendered since the previous one`() {
+        val window = PlaybackWindow()
+
+        window.onRendered(ageMs = 2_593, nowMs = 0)
+        window.onRendered(ageMs = 2_400, nowMs = 500)
+        window.take(nowMs = 1_000)
+
+        window.onRendered(ageMs = 120, nowMs = 1_200)
+        window.onRendered(ageMs = 140, nowMs = 1_700)
+        val second = window.take(nowMs = 2_000)
+
+        assertEquals(130.0, second.latencyMs!!, 0.001)
+        assertEquals(2, second.rendered)
+        assertEquals(2.0, second.renderedFps, 0.001)
+    }
+
+    @Test
+    fun `a second with nothing rendered reports no latency rather than the last one`() {
+        // The regression from the phone: a decoder waiting for a keyframe drew nothing, and the last
+        // spike was reported again and again until the PC had stepped down twice on it.
+        val window = PlaybackWindow()
+
+        window.onRendered(ageMs = 2_593, nowMs = 0)
+        window.take(nowMs = 1_000)
+
+        val stalled = window.take(nowMs = 2_000)
+
+        assertNull(stalled.latencyMs)
+        assertEquals(0, stalled.rendered)
+        assertEquals(0.0, stalled.renderedFps, 0.001)
+    }
+
+    @Test
+    fun `pictures shown before the clock is synchronised count as rendered but not as latency`() {
+        val window = PlaybackWindow()
+
+        window.onRendered(ageMs = null, nowMs = 0)
+        window.onRendered(ageMs = null, nowMs = 500)
+        val sample = window.take(nowMs = 1_000)
+
+        assertNull(sample.latencyMs)
+        assertEquals(2, sample.rendered)
+    }
+
+    @Test
+    fun `a codec that is still starting may hold a keyframe and what follows it`() {
+        // Three was applied while the codec had not offered a single input buffer yet, so every
+        // restart threw away the keyframe that started it. The limit only tightens once it is running.
+        assertTrue(VideoDecoder.pendingLimit(codecAcceptingInput = false) >= 15)
+        assertEquals(3, VideoDecoder.pendingLimit(codecAcceptingInput = true))
     }
 }

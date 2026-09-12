@@ -89,6 +89,20 @@ public sealed unsafe class MediaFoundationVideoEncoder : IVideoEncoder
     /// <summary>How long a frame waits for the encoder to ask for input before being abandoned.</summary>
     private static readonly TimeSpan InputWait = TimeSpan.FromMilliseconds(120);
 
+    /// <summary>
+    /// Transforms that refused to activate, and when.
+    /// <para>
+    /// On a hybrid-graphics laptop the discrete GPU's encoder is enumerated but fails
+    /// <c>ActivateObject</c> every time, and each attempt costs about half a second. Every encoder
+    /// rebuild paid that before reaching the one that works, which put a half-second hole in the
+    /// stream on every resolution change. Remembered for a while rather than forever, because
+    /// plugging in a monitor can wake that GPU and make it usable.
+    /// </para>
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, DateTimeOffset> RefusedActivation = new();
+
+    private static readonly TimeSpan RefusalMemory = TimeSpan.FromMinutes(10);
+
     private readonly ILogger _logger;
     private readonly Nv12Converter _converter = new();
     private readonly ConcurrentQueue<VideoPacket> _ready = new();
@@ -140,7 +154,7 @@ public sealed unsafe class MediaFoundationVideoEncoder : IVideoEncoder
 
     public bool IsHardware { get; }
 
-    public VideoEncoderSettings Settings { get; }
+    public VideoEncoderSettings Settings { get; private set; }
 
     public byte[]? CodecConfig { get; private set; }
 
@@ -200,6 +214,56 @@ public sealed unsafe class MediaFoundationVideoEncoder : IVideoEncoder
     }
 
     public void RequestKeyframe() => Interlocked.Exchange(ref _forceKeyframe, 1);
+
+    /// <summary>
+    /// Sets <c>CODECAPI_AVEncCommonMeanBitRate</c> and the ceiling above it on the running transform.
+    /// <para>
+    /// Only honoured in the rate-control mode <see cref="Configure"/> chooses, which was picked for
+    /// exactly this reason — see there. Only the mean is required to succeed: an encoder that refuses
+    /// the new ceiling keeps the old one.
+    /// </para>
+    /// </summary>
+    public bool TryChangeBitrate(int bitrateKbps)
+    {
+        if (_disposed || _faulted || _codecApi == IntPtr.Zero || bitrateKbps <= 0)
+        {
+            return false;
+        }
+
+        var meanKey = CodecApiMeanBitRate;
+        var maxKey = CodecApiMaxBitRate;
+
+        if (IsSupported(_codecApi, ref meanKey) != SOk)
+        {
+            return false;
+        }
+
+        var mean = Variant.Ui4((uint)bitrateKbps * 1000);
+        var max = Variant.Ui4((uint)bitrateKbps * 1500);
+        var hasCeiling = IsSupported(_codecApi, ref maxKey) == SOk;
+
+        // The ceiling moves first when going up and last when going down, so that at no point is the
+        // mean asked for above the ceiling in force — which an encoder may refuse, or clamp silently.
+        var raising = bitrateKbps > Settings.BitrateKbps;
+
+        if (raising && hasCeiling)
+        {
+            SetCodecValue(_codecApi, ref maxKey, ref max);
+        }
+
+        if (SetCodecValue(_codecApi, ref meanKey, ref mean) < 0)
+        {
+            return false;
+        }
+
+        if (!raising && hasCeiling)
+        {
+            SetCodecValue(_codecApi, ref maxKey, ref max);
+        }
+
+        Settings = Settings with { BitrateKbps = bitrateKbps };
+        return true;
+    }
 
     public void Encode(
         ReadOnlySpan<byte> bgra,
@@ -899,13 +963,22 @@ public sealed unsafe class MediaFoundationVideoEncoder : IVideoEncoder
         try
         {
             var name = FriendlyName(activate);
+
+            if (RefusedActivation.TryGetValue(name, out var refusedAt)
+                && DateTimeOffset.UtcNow - refusedAt < RefusalMemory)
+            {
+                return null;
+            }
+
             var iid = IidMfTransform;
 
             var activated = ActivateObject(activate, ref iid, out transform);
 
             if (activated < 0 || transform == IntPtr.Zero)
             {
-                logger.LogInformation("{Name}: ActivateObject failed (0x{Hr:X8}).", name, activated);
+                RefusedActivation[name] = DateTimeOffset.UtcNow;
+                logger.LogInformation(
+                    "{Name}: ActivateObject failed (0x{Hr:X8}); not trying it again for ten minutes.", name, activated);
                 return null;
             }
 
@@ -1131,7 +1204,14 @@ public sealed unsafe class MediaFoundationVideoEncoder : IVideoEncoder
             return;
         }
 
-        Set(CodecApiRateControlMode, Variant.Ui4(RateControlCbr));
+        // Peak-constrained VBR rather than CBR, and chosen by measurement rather than by name. The
+        // adaptive controller changes the bitrate of a running encoder, and Intel's Quick Sync
+        // transform accepts a new mean in CBR — and low-delay VBR — and then ignores it: built at four
+        // megabits and changed to one, it went on producing 3.8 while a new encoder built at one
+        // produced 0.94. In peak-constrained VBR the same change is followed within a second. The
+        // ceiling below keeps a busy frame from spending far past the link's budget, which is what
+        // CBR was for; `--selftest-video --bitrate-change` repeats the measurement on any machine.
+        Set(CodecApiRateControlMode, Variant.Ui4(RateControlPeakConstrainedVbr));
         Set(CodecApiMeanBitRate, Variant.Ui4((uint)Math.Max(1, settings.BitrateKbps) * 1000));
 
         // A ceiling a little above the average, so a busy frame can spend more without the next

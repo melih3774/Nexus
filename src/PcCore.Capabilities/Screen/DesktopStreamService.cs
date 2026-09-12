@@ -114,6 +114,8 @@ public sealed class DesktopStreamSession : IAsyncDisposable
     private int _backlog;
     private int _keyframeWanted = 1;
     private ClientPlayback _client = new(-1, -1, 0, 0);
+    private long _clientReports;
+    private long _clientReportsTaken;
 
     internal DesktopStreamSession(
         uint streamId,
@@ -187,6 +189,29 @@ public sealed class DesktopStreamSession : IAsyncDisposable
         lock (_gate)
         {
             _client = playback;
+            _clientReports++;
+        }
+    }
+
+    /// <summary>
+    /// The phone's report, if one has arrived since this was last called; otherwise null.
+    /// <para>
+    /// The adaptive controller reads this once a second and must not read the same report twice.
+    /// A phone whose decoder is waiting for a keyframe renders nothing and so measures nothing new,
+    /// and a latency figure left over from before that is not evidence about the second after it.
+    /// </para>
+    /// </summary>
+    internal ClientPlayback? TakeFreshClient()
+    {
+        lock (_gate)
+        {
+            if (_clientReports == _clientReportsTaken)
+            {
+                return null;
+            }
+
+            _clientReportsTaken = _clientReports;
+            return _client;
         }
     }
 
@@ -484,6 +509,32 @@ public sealed class DesktopStreamService : IAsyncDisposable
         }
     }
 
+    /// <summary>The encoder a stream is using, and the one being built to replace it.</summary>
+    private sealed class EncoderState
+    {
+        public required MediaPlan Plan { get; set; }
+
+        public IVideoEncoder? Video { get; set; }
+
+        public byte[]? CodecConfig { get; set; }
+
+        /// <summary>An encoder for a new size or rate, being built while the current one keeps running.</summary>
+        public Task<IVideoEncoder?>? Replacement { get; set; }
+
+        public MediaPlan? ReplacementPlan { get; set; }
+
+        public long ReplacementStarted { get; set; }
+
+        /// <summary>A plan asked for while a replacement was already being built. Applied once it lands.</summary>
+        public MediaPlan? Queued { get; set; }
+
+        /// <summary>When creating an encoder last failed, so a broken one is not retried every frame.</summary>
+        public long LastCreateFailure { get; set; }
+    }
+
+    /// <summary>After an encoder could not be created, how long the stream stays on stills before trying again.</summary>
+    private static readonly TimeSpan EncoderRetryInterval = TimeSpan.FromSeconds(5);
+
     /// <summary>
     /// Capture, encode, publish — and survive everything the display can do while it runs.
     /// </summary>
@@ -493,16 +544,14 @@ public sealed class DesktopStreamService : IAsyncDisposable
         var adaptive = new AdaptiveStreamController();
         var pacer = new FramePacer();
         var packets = new List<VideoPacket>();
+        var state = new EncoderState { Plan = session.Plan };
 
         IDesktopCaptureSource? source = null;
-        IVideoEncoder? video = null;
-        byte[]? codecConfig = null;
 
         var sequence = 0UL;
-        var plan = session.Plan;
+        var screenQuality = _quality.Current.Screen;
         var nextDiagnostics = DateTimeOffset.UtcNow.AddSeconds(_options.DiagnosticsIntervalSeconds);
         var nextHealthCheck = DateTimeOffset.UtcNow.AddSeconds(1);
-        var deliveredAtLastCheck = 0L;
         (TimeSpan Elapsed, long Encoded, long Delivered, long Bytes, double EncodeTotal, long Skipped, long Dropped)
             windowStart = (TimeSpan.Zero, 0, 0, 0, 0, 0, 0);
         var settingsChanged = 0;
@@ -515,7 +564,7 @@ public sealed class DesktopStreamService : IAsyncDisposable
         {
             while (!token.IsCancellationRequested)
             {
-                var interval = TimeSpan.FromMilliseconds(1000.0 / Math.Clamp(plan.Fps, 1, 60));
+                var interval = TimeSpan.FromMilliseconds(1000.0 / Math.Clamp(state.Plan.Fps, 1, 60));
 
                 if (source is null)
                 {
@@ -535,10 +584,19 @@ public sealed class DesktopStreamService : IAsyncDisposable
                     }
                 }
 
-                // Re-plan before capturing, so a new encoder is built against the next frame rather
-                // than in the middle of one.
-                if (Interlocked.Exchange(ref settingsChanged, 0) == 1)
+                // A replacement encoder takes over between frames, never in the middle of one.
+                if (state.Replacement is { IsCompleted: true })
                 {
+                    SwapInReplacement(session, state, adaptive);
+                }
+
+                // Re-plan before capturing, so a new plan applies to the next frame rather than the
+                // middle of one. Only a change to the screen's own settings counts: the camera's
+                // share the same store, and adjusting it must not reset how this stream has adapted.
+                if (Interlocked.Exchange(ref settingsChanged, 0) == 1 && _quality.Current.Screen != screenQuality)
+                {
+                    screenQuality = _quality.Current.Screen;
+
                     // A deliberate change starts adaptation from the top of the new plan rather than
                     // carrying a step that was taken for the old one.
                     adaptive.Reset();
@@ -546,12 +604,12 @@ public sealed class DesktopStreamService : IAsyncDisposable
                     session.AdaptiveReason = "";
 
                     var wanted = MediaPlanner.Resolve(
-                        _quality.Current.Screen,
+                        screenQuality,
                         MediaTarget.Screen,
                         session.Display.Width,
                         session.Display.Height);
 
-                    if (Rebuild(session, wanted, ref plan, ref video, ref codecConfig))
+                    if (ApplyPlan(session, state, wanted))
                     {
                         _logger.LogInformation(
                             "Stream {StreamId} settings changed: {Plan} at {Width}x{Height}, {Fps} fps, {Bitrate} kbit/s.",
@@ -564,79 +622,83 @@ public sealed class DesktopStreamService : IAsyncDisposable
                     }
                 }
 
-                // Nothing queued may be thrown away once there is a codec in the path, so the way to
-                // keep the stream current is not to capture what would arrive late.
                 if (session.Backlog > _options.MaxBacklog)
                 {
+                    // Nothing queued may be thrown away once there is a codec in the path, so the way
+                    // to keep the stream current is not to capture what would arrive late. The health
+                    // check below still runs — this is precisely the state it exists to notice, and
+                    // skipping it here let a whole stall's worth of skips land in one reading.
                     session.CountSkip();
-                    await pacer.WaitAsync(interval, token).ConfigureAwait(false);
-                    continue;
                 }
-
-                var result = source.TryGetFrame(TimeSpan.FromMilliseconds(
-                    Math.Clamp(_options.FrameTimeoutMs, 20, 2000)));
-
-                switch (result.Status)
+                else
                 {
-                    case CaptureStatus.Frame:
-                        session.CountCapture();
-                        Encode(session, result.Frame!, ref sequence, ref video, ref codecConfig, plan, packets);
-                        break;
+                    var result = source.TryGetFrame(TimeSpan.FromMilliseconds(
+                        Math.Clamp(_options.FrameTimeoutMs, 20, 2000)));
 
-                    case CaptureStatus.Timeout:
-                        // Nothing changed. The client keeps showing the last frame, which is still
-                        // correct, so there is nothing to send.
-                        break;
+                    switch (result.Status)
+                    {
+                        case CaptureStatus.Frame:
+                            session.CountCapture();
+                            Encode(session, result.Frame!, ref sequence, state, packets);
+                            break;
 
-                    case CaptureStatus.Lost:
-                        session.CountLoss();
-                        _logger.LogInformation(
-                            "Stream {StreamId} capture lost ({Reason}); reopening.",
-                            session.StreamId, result.Diagnostic);
-                        source.Dispose();
-                        source = null;
+                        case CaptureStatus.Timeout:
+                            // Nothing changed. The client keeps showing the last frame, which is still
+                            // correct, so there is nothing to send.
+                            break;
 
-                        // A new capture may be a new size, so the encoder is rebuilt from the
-                        // display as it is now and the client is told with a fresh configuration.
-                        video?.Dispose();
-                        video = null;
-                        codecConfig = null;
-                        session.RequestKeyframe();
-                        break;
+                        case CaptureStatus.Lost:
+                            session.CountLoss();
+                            _logger.LogInformation(
+                                "Stream {StreamId} capture lost ({Reason}); reopening.",
+                                session.StreamId, result.Diagnostic);
+                            source.Dispose();
+                            source = null;
 
-                    case CaptureStatus.Unavailable:
-                        session.CountLoss();
-                        _logger.LogInformation(
-                            "Stream {StreamId} capture unavailable ({Reason}); retrying.",
-                            session.StreamId, result.Diagnostic);
-                        source.Dispose();
-                        source = null;
-                        await Task.Delay(TimeSpan.FromSeconds(1), token).ConfigureAwait(false);
-                        break;
+                            // A new capture may be a new size, so the encoder is rebuilt from the
+                            // display as it is now and the client is told with a fresh configuration.
+                            state.Video?.Dispose();
+                            state.Video = null;
+                            state.CodecConfig = null;
+                            session.RequestKeyframe();
+                            adaptive.NoteDisruption();
+                            break;
+
+                        case CaptureStatus.Unavailable:
+                            session.CountLoss();
+                            _logger.LogInformation(
+                                "Stream {StreamId} capture unavailable ({Reason}); retrying.",
+                                session.StreamId, result.Diagnostic);
+                            source.Dispose();
+                            source = null;
+                            adaptive.NoteDisruption();
+                            await Task.Delay(TimeSpan.FromSeconds(1), token).ConfigureAwait(false);
+                            break;
+                    }
                 }
 
                 var now = DateTimeOffset.UtcNow;
 
                 if (now >= nextHealthCheck)
                 {
-                    var stats = session.Statistics();
-                    var deliveredNow = stats.FramesEncoded - session.Backlog;
+                    nextHealthCheck = now.AddSeconds(1);
+
+                    // Taken, not peeked: a report is evidence about the second it describes, and
+                    // reading the same one again a second later is how one latency spike became two
+                    // steps down.
+                    var client = session.TakeFreshClient();
 
                     var health = new StreamHealth(
                         session.Backlog,
-                        stats.FramesSkipped,
-                        Math.Max(0, deliveredNow - deliveredAtLastCheck),
-                        plan.Fps,
-                        stats.Client.LatencyMs,
-                        stats.Client.DecodeMs);
+                        session.Statistics().FramesSkipped,
+                        state.Plan.Fps,
+                        client?.LatencyMs ?? -1,
+                        client?.DecodeMs ?? -1);
 
-                    deliveredAtLastCheck = deliveredNow;
-                    nextHealthCheck = now.AddSeconds(1);
-
-                    if (adaptive.Observe(health) && _quality.Current.Screen.Profile == StreamingProfile.Auto)
+                    if (screenQuality.Profile == StreamingProfile.Auto && adaptive.Observe(health))
                     {
                         var wanted = MediaPlanner.Resolve(
-                            _quality.Current.Screen,
+                            screenQuality,
                             MediaTarget.Screen,
                             session.Display.Width,
                             session.Display.Height,
@@ -656,7 +718,7 @@ public sealed class DesktopStreamService : IAsyncDisposable
                             wanted.BitrateKbps,
                             adaptive.Reason);
 
-                        Rebuild(session, wanted, ref plan, ref video, ref codecConfig);
+                        ApplyPlan(session, state, wanted);
                     }
                 }
 
@@ -668,6 +730,7 @@ public sealed class DesktopStreamService : IAsyncDisposable
                     var delivered = stats.FramesEncoded - session.Backlog;
                     var encodeTotal = stats.EncodeMs * stats.FramesEncoded;
                     var framesInWindow = stats.FramesEncoded - windowStart.Encoded;
+                    var plan = state.Plan;
 
                     // Rates over the last interval, not the whole session. A profile change a minute
                     // in should show up in the next line, not be averaged into the first minute.
@@ -715,65 +778,200 @@ public sealed class DesktopStreamService : IAsyncDisposable
         {
             _quality.Changed -= OnSettingsChanged;
             source?.Dispose();
-            video?.Dispose();
+            state.Video?.Dispose();
+            AbandonReplacement(state);
         }
     }
 
-    /// <summary>Swaps the encoder for a new plan. Returns true when anything actually changed.</summary>
-    private bool Rebuild(
-        DesktopStreamSession session,
-        MediaPlan wanted,
-        ref MediaPlan plan,
-        ref IVideoEncoder? video,
-        ref byte[]? codecConfig)
+    /// <summary>
+    /// Moves the stream to a new plan by the cheapest route that works. Returns true when anything changed.
+    /// <list type="bullet">
+    /// <item>Same size and frame rate: the running encoder takes the new bitrate. No keyframe, no gap.</item>
+    /// <item>A new size or rate: a new encoder is built in the background while the current one keeps
+    /// streaming, and takes over between two frames once it exists.</item>
+    /// <item>No encoder running at all: nothing to keep going, so the next frame builds one directly.</item>
+    /// </list>
+    /// </summary>
+    private bool ApplyPlan(DesktopStreamSession session, EncoderState state, MediaPlan wanted)
     {
-        if (video is not null && !wanted.NeedsNewEncoder(plan) && wanted.BitrateKbps == plan.BitrateKbps)
+        if (state.Replacement is not null)
+        {
+            // One build at a time. Judged against where the stream is heading rather than where it
+            // is, and the newest request wins once the build in flight lands.
+            state.Queued = wanted == state.ReplacementPlan ? null : wanted;
+            return state.Queued is not null;
+        }
+
+        if (wanted == state.Plan)
         {
             return false;
         }
 
-        plan = wanted;
-        session.Plan = wanted;
+        if (!wanted.NeedsNewEncoder(state.Plan)
+            && (state.Video is null
+                || wanted.BitrateKbps == state.Plan.BitrateKbps
+                || state.Video.TryChangeBitrate(wanted.BitrateKbps)))
+        {
+            state.Plan = wanted;
+            session.Plan = wanted;
+            return true;
+        }
 
-        video?.Dispose();
-        video = null;
-        codecConfig = null;
+        if (state.Video is null)
+        {
+            state.Plan = wanted;
+            session.Plan = wanted;
+            state.CodecConfig = null;
+            session.RequestKeyframe();
+            return true;
+        }
 
-        // Not built here: the loop builds it on the next frame, which keeps every encoder creation
-        // on one path with one set of failure handling.
-        session.RequestKeyframe();
+        var settings = wanted.ToEncoderSettings();
+
+        state.ReplacementPlan = wanted;
+        state.ReplacementStarted = Stopwatch.GetTimestamp();
+        // A thread of its own rather than the pool's: building a hardware transform blocks inside the
+        // driver for up to half a second, and the capture loop's own continuations run on the pool.
+        state.Replacement = Task.Factory.StartNew(
+            () => CreateEncoder(session, settings),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
         return true;
     }
+
+    private void SwapInReplacement(DesktopStreamSession session, EncoderState state, AdaptiveStreamController adaptive)
+    {
+        var task = state.Replacement!;
+        var plan = state.ReplacementPlan!;
+
+        state.Replacement = null;
+        state.ReplacementPlan = null;
+
+        var next = task.IsCompletedSuccessfully ? task.Result : null;
+
+        if (next is null)
+        {
+            // The stream carries on as it was. The controller will see the same strain again and
+            // ask again, which is a better outcome than stopping the picture over a failed build.
+            _logger.LogWarning(
+                "Stream {StreamId} could not build an encoder for {Width}x{Height} at {Fps} fps; keeping the current one.",
+                session.StreamId,
+                plan.Width,
+                plan.Height,
+                plan.Fps);
+
+            if (task.Exception is { } failure)
+            {
+                _logger.LogDebug(failure.GetBaseException(), "Building the replacement encoder failed.");
+            }
+        }
+        else
+        {
+            state.Video?.Dispose();
+            state.Video = next;
+            state.CodecConfig = null;
+            state.Plan = plan;
+            session.Plan = plan;
+            session.Encoder = Describe(next);
+
+            // The phone restarts its decoder around the new parameter sets, and that restart is not
+            // congestion.
+            session.RequestKeyframe();
+            adaptive.NoteDisruption();
+
+            _logger.LogInformation(
+                "Stream {StreamId} switched to a {Width}x{Height} {Fps} fps encoder, built in {Ms:F0} ms "
+                + "while the previous one kept streaming.",
+                session.StreamId,
+                plan.Width,
+                plan.Height,
+                plan.Fps,
+                Stopwatch.GetElapsedTime(state.ReplacementStarted).TotalMilliseconds);
+        }
+
+        if (state.Queued is { } queued)
+        {
+            state.Queued = null;
+            ApplyPlan(session, state, queued);
+        }
+    }
+
+    private static void AbandonReplacement(EncoderState state)
+    {
+        if (state.Replacement is not { } pending)
+        {
+            return;
+        }
+
+        state.Replacement = null;
+
+        // The build cannot be cancelled part way through a driver call, so whatever it produces is
+        // disposed when it arrives rather than leaked.
+        _ = pending.ContinueWith(
+            static t =>
+            {
+                if (t.IsCompletedSuccessfully)
+                {
+                    t.Result?.Dispose();
+                }
+                else
+                {
+                    _ = t.Exception;
+                }
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private IVideoEncoder? CreateEncoder(DesktopStreamSession session, VideoEncoderSettings settings)
+    {
+        try
+        {
+            return _videoEncoders.Create(settings);
+        }
+        catch (Exception ex) when (ex is NotSupportedException or InvalidOperationException)
+        {
+            _logger.LogWarning(
+                "Stream {StreamId} could not start an H.264 encoder ({Reason}).", session.StreamId, ex.Message);
+            return null;
+        }
+    }
+
+    private static string Describe(IVideoEncoder encoder) =>
+        $"{encoder.BackendName} ({(encoder.IsHardware ? "hardware" : "software")})";
 
     private void Encode(
         DesktopStreamSession session,
         RawFrame frame,
         ref ulong sequence,
-        ref IVideoEncoder? video,
-        ref byte[]? codecConfig,
-        MediaPlan plan,
+        EncoderState state,
         List<VideoPacket> packets)
     {
         var started = Stopwatch.GetTimestamp();
 
-        if (video is null && _videoEncoders.IsAvailable)
+        if (state.Video is null
+            && _videoEncoders.IsAvailable
+            && (state.LastCreateFailure == 0 || Stopwatch.GetElapsedTime(state.LastCreateFailure) >= EncoderRetryInterval))
         {
-            try
-            {
-                video = _videoEncoders.Create(plan.ToEncoderSettings());
-                session.Encoder = $"{video.BackendName} ({(video.IsHardware ? "hardware" : "software")})";
-                session.RequestKeyframe();
-            }
-            catch (Exception ex) when (ex is NotSupportedException or InvalidOperationException)
-            {
-                _logger.LogWarning(
-                    "Stream {StreamId} could not start an H.264 encoder ({Reason}); falling back to still frames.",
-                    session.StreamId,
-                    ex.Message);
+            state.Video = CreateEncoder(session, state.Plan.ToEncoderSettings());
 
+            if (state.Video is null)
+            {
+                state.LastCreateFailure = Stopwatch.GetTimestamp();
                 session.Encoder = "JPEG still frames";
             }
+            else
+            {
+                state.LastCreateFailure = 0;
+                state.CodecConfig = null;
+                session.Encoder = Describe(state.Video);
+                session.RequestKeyframe();
+            }
         }
+
+        var video = state.Video;
 
         if (video is null)
         {
@@ -805,18 +1003,21 @@ public sealed class DesktopStreamService : IAsyncDisposable
                 ex, "Stream {StreamId} could not encode a frame; falling back to still frames.", session.StreamId);
 
             video.Dispose();
-            video = null;
-            codecConfig = null;
+            state.Video = null;
+            state.CodecConfig = null;
+            state.LastCreateFailure = Stopwatch.GetTimestamp();
             session.Encoder = "JPEG still frames";
             return;
         }
 
+        var plan = state.Plan;
+
         // The parameter sets go out as their own frame the first time they are known, and again
         // whenever they change. A client that has them can start on any keyframe; one that does not
         // cannot start at all, and has no way to ask.
-        if (video.CodecConfig is { Length: > 0 } sets && !sets.AsSpan().SequenceEqual(codecConfig))
+        if (video.CodecConfig is { Length: > 0 } sets && !sets.AsSpan().SequenceEqual(state.CodecConfig))
         {
-            codecConfig = sets;
+            state.CodecConfig = sets;
             PublishVideo(session, sets, FrameFlags.CodecConfig, frame, plan, ref sequence);
         }
 

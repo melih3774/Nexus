@@ -239,13 +239,22 @@ public sealed class WindowsLiveCamera : ILiveCameraSource, ILiveVideoControl
                     var wanted = MediaPlanner.Resolve(
                         _quality.Current.Camera, MediaTarget.Camera, nativeWidth, nativeHeight, adaptive.Level);
 
-                    if (video is null || wanted != plan)
+                    if (video is not null
+                        && !wanted.NeedsNewEncoder(plan)
+                        && (wanted.BitrateKbps == plan.BitrateKbps || video.TryChangeBitrate(wanted.BitrateKbps)))
+                    {
+                        // Same size and rate: the running encoder takes the new bitrate, with no
+                        // keyframe and no gap in the picture.
+                        plan = wanted;
+                    }
+                    else if (video is null || wanted != plan)
                     {
                         plan = wanted;
                         video?.Dispose();
                         video = null;
                         codecConfig = null;
                         video = CreateEncoder(plan);
+                        adaptive.NoteDisruption();
                     }
                 }
 
@@ -271,16 +280,13 @@ public sealed class WindowsLiveCamera : ILiveCameraSource, ILiveVideoControl
                     var health = new StreamHealth(
                         congestion > 0 ? AdaptiveStreamController.BacklogLimit + congestion : 0,
                         0,
-                        // Not the delivered rate: a webcam in a dim room drops to fifteen frames on its
-                        // own, and treating that as congestion would ratchet the plan down for nothing.
-                        0,
                         plan.Fps,
                         -1,
                         -1);
 
                     producedAtLastCheck = produced;
 
-                    if (adaptive.Observe(health) && _quality.Current.Camera.Profile == StreamingProfile.Auto)
+                    if (_quality.Current.Camera.Profile == StreamingProfile.Auto && adaptive.Observe(health))
                     {
                         _logger.LogInformation(
                             "Live camera moved to adaptive step {Level} because {Reason}.",

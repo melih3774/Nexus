@@ -76,6 +76,18 @@ public interface IVideoEncoder : IDisposable
     void RequestKeyframe();
 
     /// <summary>
+    /// Changes the target bitrate of the running encoder, without a new keyframe or a gap.
+    /// <para>
+    /// The adaptive controller's first step, and most of its later ones, change only the bitrate.
+    /// Rebuilding the encoder for that costs up to a second with no pictures and then the largest
+    /// frame there is — a stall that looks exactly like the congestion being reacted to, and was
+    /// read as such. Returns false when the encoder cannot change it in place, and the caller
+    /// rebuilds instead.
+    /// </para>
+    /// </summary>
+    bool TryChangeBitrate(int bitrateKbps);
+
+    /// <summary>
     /// Encodes one captured frame, appending whatever packets came out.
     /// <para>
     /// Zero packets is normal and not an error: a hardware encoder has a pipeline, and the first

@@ -35,7 +35,15 @@ data class DecodedFrame(
     val displayIndex: Int,
 )
 
-/** Local diagnostics. Shown behind a toggle on the remote screen and reported to the PC. */
+/** What goes to the PC once a second: only what happened since the previous report. */
+data class PlaybackReport(
+    val latencyMs: Double?,
+    val decodeMs: Double?,
+    val renderedFps: Double,
+    val dropped: Long,
+)
+
+/** Local diagnostics. Shown behind a toggle on the remote screen. */
 data class FrameStats(
     val encoding: String = "",
     val width: Int = 0,
@@ -135,6 +143,7 @@ class FramePipeline(
     private var queued = 0
     private var dropped = 0L
     private var encoding = ""
+    private val reportWindow = PlaybackWindow()
 
     @Volatile
     var plan: String = ""
@@ -215,7 +224,26 @@ class FramePipeline(
             windowRendered = 0
             windowBytes = 0
             latencyMs = -1.0
+            reportWindow.reset()
         }
+    }
+
+    /**
+     * What to tell the PC, covering only the pictures rendered since the last call.
+     *
+     * Also refreshes the overlay's rates, which otherwise only move when a frame arrives — so a
+     * stream that has stopped delivering shows zero rather than the last second it was working.
+     */
+    fun takeReport(): PlaybackReport = synchronized(lock) {
+        val sample = reportWindow.take(SystemClock.elapsedRealtime())
+        roll()
+
+        PlaybackReport(
+            latencyMs = sample.latencyMs,
+            decodeMs = decodeMs.takeIf { encoding == "H.264" && sample.rendered > 0 },
+            renderedFps = sample.renderedFps,
+            dropped = dropped,
+        )
     }
 
     fun release() {
@@ -245,6 +273,7 @@ class FramePipeline(
 
         synchronized(lock) {
             windowRendered++
+            reportWindow.onRendered(age, SystemClock.elapsedRealtime())
             decodeMs = decoded.decodeMs
             queued = decoded.queued
             dropped = decoded.dropped
@@ -337,7 +366,11 @@ class FramePipeline(
 
         synchronized(lock) {
             windowRendered++
-            clock.ageOf(frame.header.timestampUnixMs)?.takeIf { it >= 0 }?.let { age ->
+
+            val stillAge = clock.ageOf(frame.header.timestampUnixMs)
+            reportWindow.onRendered(stillAge, SystemClock.elapsedRealtime())
+
+            stillAge?.takeIf { it >= 0 }?.let { age ->
                 latencyMs = if (latencyMs < 0) age.toDouble() else (latencyMs * 0.8) + (age * 0.2)
             }
             roll()

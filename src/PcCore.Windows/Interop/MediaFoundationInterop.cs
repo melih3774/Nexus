@@ -130,8 +130,11 @@ internal static unsafe class MediaFoundationInterop
     public static readonly Guid CodecApiForceKeyFrame = new("398c1b98-8353-475a-9ef2-8f265d260345");
     public static readonly Guid CodecApiRealTime = new("143a0ff6-a131-43da-b81e-98fbb8ec378e");
 
-    /// <summary>eAVEncCommonRateControlMode_CBR. Constant bitrate, which is what a link budget means.</summary>
+    /// <summary>eAVEncCommonRateControlMode_CBR.</summary>
     public const uint RateControlCbr = 0;
+
+    /// <summary>eAVEncCommonRateControlMode_PeakConstrainedVBR. A mean with a ceiling.</summary>
+    public const uint RateControlPeakConstrainedVbr = 2;
 
     /// <summary>eAVEncCommonRateControlMode_LowDelayVBR. Preferred when the encoder offers it.</summary>
     public const uint RateControlLowDelayVbr = 4;

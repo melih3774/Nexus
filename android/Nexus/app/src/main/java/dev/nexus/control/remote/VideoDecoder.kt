@@ -62,6 +62,10 @@ class VideoDecoder(
     private val submitted = LinkedHashMap<Long, Long>()
 
     private var awaitingKeyframe = true
+
+    /** Whether the current codec has offered an input buffer yet. Until it has, nothing can be fed. */
+    private var codecAcceptingInput = false
+
     private var rendered = 0L
     private var dropped = 0L
     private var decodeMs = 0.0
@@ -147,7 +151,7 @@ class VideoDecoder(
                 return
             }
 
-            if (pending.size >= MAX_PENDING) {
+            if (pending.size >= pendingLimit(codecAcceptingInput)) {
                 // The decoder is behind. Throwing away part of the queue would break every frame
                 // after it, so the whole queue goes and the stream restarts at the next keyframe.
                 dropped += pending.size.toLong()
@@ -220,6 +224,7 @@ class VideoDecoder(
             thread = worker
             handler = post
             codec = created
+            codecAcceptingInput = false
             freeInputs.clear()
             submitted.clear()
 
@@ -255,6 +260,7 @@ class VideoDecoder(
         thread?.quitSafely()
         thread = null
         handler = null
+        codecAcceptingInput = false
 
         pending.clear()
         freeInputs.clear()
@@ -301,6 +307,7 @@ class VideoDecoder(
             synchronized(lock) {
                 if (this@VideoDecoder.codec !== codec) return
 
+                codecAcceptingInput = true
                 freeInputs.addLast(index)
                 pumpLocked()
             }
@@ -377,7 +384,23 @@ class VideoDecoder(
          */
         private const val MAX_PENDING = 3
 
+        /**
+         * Access units held while a codec that has just been created gets ready.
+         *
+         * A new codec takes a few hundred milliseconds to offer its first input buffer, and nothing can
+         * be fed until it does. The running limit of three was applied during that time too, so the
+         * queue "overflowed" a tenth of a second into every restart: the keyframe that had started the
+         * codec was thrown away, another was asked for, and the phone showed nothing for a second or
+         * more after each change of size. A second's worth is held instead; a codec that has still
+         * not asked for input by then is not going to, and the normal recovery applies.
+         */
+        private const val MAX_PENDING_WHILE_STARTING = 30
+
         private const val MAX_TRACKED = 32
+
+        /** How many access units may wait, depending on whether the codec has started taking them. */
+        fun pendingLimit(codecAcceptingInput: Boolean): Int =
+            if (codecAcceptingInput) MAX_PENDING else MAX_PENDING_WHILE_STARTING
 
         /**
          * Splits Annex-B parameter sets into the two buffers `MediaCodec` wants.

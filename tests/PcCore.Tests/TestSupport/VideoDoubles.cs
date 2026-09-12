@@ -26,17 +26,18 @@ public sealed class FakeVideoEncoder : IVideoEncoder
     private bool _wantsKeyframe = true;
     private int _frames;
 
-    public FakeVideoEncoder(VideoEncoderSettings settings, int pipelineDelay = 0)
+    public FakeVideoEncoder(VideoEncoderSettings settings, int pipelineDelay = 0, bool acceptsBitrateChanges = true)
     {
         Settings = settings;
         _pipelineDelay = pipelineDelay;
+        AcceptsBitrateChanges = acceptsBitrateChanges;
     }
 
     public string BackendName => "fake H.264";
 
     public bool IsHardware => false;
 
-    public VideoEncoderSettings Settings { get; }
+    public VideoEncoderSettings Settings { get; private set; }
 
     public byte[]? CodecConfig { get; private set; }
 
@@ -44,10 +45,28 @@ public sealed class FakeVideoEncoder : IVideoEncoder
 
     public int KeyframeRequests { get; private set; }
 
+    /// <summary>False models an encoder whose rate cannot be changed while it runs.</summary>
+    public bool AcceptsBitrateChanges { get; }
+
+    /// <summary>Every bitrate this encoder was switched to in place.</summary>
+    public List<int> BitrateChanges { get; } = [];
+
     public void RequestKeyframe()
     {
         KeyframeRequests++;
         _wantsKeyframe = true;
+    }
+
+    public bool TryChangeBitrate(int bitrateKbps)
+    {
+        if (!AcceptsBitrateChanges)
+        {
+            return false;
+        }
+
+        BitrateChanges.Add(bitrateKbps);
+        Settings = Settings with { BitrateKbps = bitrateKbps };
+        return true;
     }
 
     public void Encode(
@@ -100,12 +119,20 @@ public sealed class FakeVideoEncoder : IVideoEncoder
 public sealed class FakeVideoEncoderFactory : IVideoEncoderFactory
 {
     private readonly int _pipelineDelay;
+    private readonly bool _acceptsBitrateChanges;
 
-    public FakeVideoEncoderFactory(bool available = true, int pipelineDelay = 0)
+    public FakeVideoEncoderFactory(bool available = true, int pipelineDelay = 0, bool acceptsBitrateChanges = true)
     {
         IsAvailable = available;
         _pipelineDelay = pipelineDelay;
+        _acceptsBitrateChanges = acceptsBitrateChanges;
     }
+
+    /// <summary>
+    /// When set, creation waits for it — standing in for a hardware transform's start-up, for exactly as
+    /// long as a test needs rather than for a fixed time a loaded machine may not honour.
+    /// </summary>
+    public ManualResetEventSlim? CreationGate { get; set; }
 
     public bool IsAvailable { get; set; }
 
@@ -121,8 +148,15 @@ public sealed class FakeVideoEncoderFactory : IVideoEncoderFactory
             throw new NotSupportedException("This test has no video encoder.");
         }
 
-        var encoder = new FakeVideoEncoder(settings, _pipelineDelay);
-        Created.Add(encoder);
+        CreationGate?.Wait(TimeSpan.FromSeconds(30));
+
+        var encoder = new FakeVideoEncoder(settings, _pipelineDelay, _acceptsBitrateChanges);
+
+        lock (Created)
+        {
+            Created.Add(encoder);
+        }
+
         return encoder;
     }
 }

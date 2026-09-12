@@ -750,13 +750,18 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
         }
 
         // Control traffic goes first, because the control traffic is the pointer: an input event
-        // queued behind a video frame is a cursor that lags the finger, which is the one thing worth
-        // sacrificing picture for. The wait is bounded and short — ten milliseconds at most, against
-        // the fifty the still-image version allowed, because a video frame delayed past its
-        // successor now costs a skipped capture rather than a discarded picture.
-        for (var i = 0; i < 10 && Volatile.Read(ref _controlPending) > 0; i++)
+        // queued behind a video frame is a cursor that lags the finger. The gate already hands out
+        // turns in arrival order, so a control message that is waiting is ahead of this frame; the
+        // one gap is a message that has been counted but not yet reached the gate, and a single
+        // yield closes it.
+        //
+        // Not a timed wait. This used to poll with one-millisecond delays, and on Windows a
+        // one-millisecond delay is a timer tick — about fifteen. While the pointer was moving there
+        // was nearly always a reply pending, so every frame waited a tick or more: moving the mouse
+        // was what made the screen stutter, and the resulting queue was read as a slow link.
+        if (Volatile.Read(ref _controlPending) > 0)
         {
-            await Task.Delay(1, cancellationToken).ConfigureAwait(false);
+            await Task.Yield();
         }
 
         try
