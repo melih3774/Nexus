@@ -167,6 +167,40 @@ public sealed class GetLiveSensorStatusAction : CapabilityAction<NoParameters, L
             await _audio.IsAvailableAsync(cancellationToken).ConfigureAwait(false));
 }
 
+/// <summary>
+/// Asks the live camera for a keyframe.
+/// <para>
+/// The camera equivalent of <c>screen.stream.keyframe</c>, and needed for the same reason: a phone
+/// whose decoder lost its place, or that re-created the view it draws into, cannot decode another
+/// picture until an IDR arrives, and only it knows that happened. Behind the same Full Remote
+/// requirement as the rest of <c>media.live.*</c>, because it reaches the same device.
+/// </para>
+/// </summary>
+public sealed class RequestLiveKeyframeAction : CapabilityAction<NoParameters, KeyframeRequestResult>
+{
+    private readonly LiveSensorService _live;
+
+    public RequestLiveKeyframeAction(LiveSensorService live) => _live = live;
+
+    public override string Name => "media.live.keyframe";
+
+    public override string Description => "Ask the live camera for a full keyframe.";
+
+    protected override ValueTask<KeyframeRequestResult> ExecuteAsync(
+        NoParameters parameters,
+        CapabilityContext context,
+        CancellationToken cancellationToken) =>
+        ValueTask.FromResult(new KeyframeRequestResult
+        {
+            Requested = _live.RequestKeyframe(LiveSensorKind.Camera),
+        });
+}
+
+public sealed record KeyframeRequestResult
+{
+    public required bool Requested { get; init; }
+}
+
 internal static class LiveSensorParsing
 {
     public static LiveSensorKind Parse(string? sensor) => sensor?.Trim().ToUpperInvariant() switch

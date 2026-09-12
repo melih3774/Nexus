@@ -46,14 +46,26 @@ namespace PcCore.Windows.Media;
 /// </para>
 /// </summary>
 [SupportedOSPlatform("windows10.0.17763.0")]
-public sealed class WindowsLiveCamera : ILiveCameraSource
+public sealed class WindowsLiveCamera : ILiveCameraSource, ILiveVideoControl
 {
+    /// <summary>
+    /// How early a frame may arrive and still count as the next one.
+    /// <para>
+    /// A webcam's frames are not evenly spaced. Pacing with an exact interval rejects every frame
+    /// that turns up a millisecond early, which at a thirty-frame plan against a thirty-frame camera
+    /// throws away something like every other frame and delivers eighteen.
+    /// </para>
+    /// </summary>
+    private static readonly TimeSpan PacingSlack = TimeSpan.FromMilliseconds(10);
+
     private readonly ILogger<WindowsLiveCamera> _logger;
     private readonly IVideoEncoderFactory _encoders;
     private readonly IFrameEncoder _stillEncoder;
     private readonly MediaQualityStore _quality;
 
     private (int Width, int Height)? _nativeSize;
+    private int _keyframeWanted;
+    private int _congestion;
 
     public WindowsLiveCamera(
         ILogger<WindowsLiveCamera> logger,
@@ -68,6 +80,10 @@ public sealed class WindowsLiveCamera : ILiveCameraSource
     }
 
     public string Name => "camera";
+
+    public void RequestKeyframe() => Interlocked.Exchange(ref _keyframeWanted, 1);
+
+    public void ReportCongestion() => Interlocked.Increment(ref _congestion);
 
     /// <summary>
     /// The camera's own resolution, as far as it is known.
@@ -171,45 +187,87 @@ public sealed class WindowsLiveCamera : ILiveCameraSource
             format.FrameRate.Denominator == 0 ? 0 : format.FrameRate.Numerator / format.FrameRate.Denominator,
             format.Subtype);
 
-        var plan = MediaPlanner.Resolve(
-            _quality.Current.Camera,
-            MediaTarget.Camera,
-            (int)format.VideoFormat.Width,
-            (int)format.VideoFormat.Height);
+        var nativeWidth = (int)format.VideoFormat.Width;
+        var nativeHeight = (int)format.VideoFormat.Height;
+        var adaptive = new AdaptiveStreamController();
+        var plan = MediaPlanner.Resolve(_quality.Current.Camera, MediaTarget.Camera, nativeWidth, nativeHeight);
 
         IVideoEncoder? video = null;
         byte[]? codecConfig = null;
         var packets = new List<VideoPacket>();
-        var interval = TimeSpan.FromMilliseconds(1000.0 / Math.Max(1, plan.Fps));
         var lastSent = Stopwatch.GetTimestamp();
+        var nextHealthCheck = Stopwatch.GetTimestamp();
+        var producedAtLastCheck = 0L;
+        var produced = 0L;
+        var settingsChanged = 1;
+
+        void OnSettingsChanged(MediaQualitySettings _) => Interlocked.Exchange(ref settingsChanged, 1);
+
+        _quality.Changed += OnSettingsChanged;
+        Interlocked.Exchange(ref _congestion, 0);
 
         try
         {
-            if (_encoders.IsAvailable)
-            {
-                try
-                {
-                    video = _encoders.Create(plan.ToEncoderSettings());
-                    video.RequestKeyframe();
-                }
-                catch (Exception ex) when (ex is NotSupportedException or InvalidOperationException)
-                {
-                    _logger.LogWarning(
-                        "The live camera could not use H.264 ({Reason}); sending stills instead.", ex.Message);
-                }
-            }
-
             await foreach (var frame in raw.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
             {
+                // A settings change, or an adaptive step, rebuilds the encoder around the next frame.
+                // The camera itself keeps running at its native format; only what is encoded changes,
+                // so a change never lights the indicator off and on again.
+                if (Interlocked.Exchange(ref settingsChanged, 0) == 1)
+                {
+                    var wanted = MediaPlanner.Resolve(
+                        _quality.Current.Camera, MediaTarget.Camera, nativeWidth, nativeHeight, adaptive.Level);
+
+                    if (video is null || wanted != plan)
+                    {
+                        plan = wanted;
+                        video?.Dispose();
+                        video = null;
+                        codecConfig = null;
+                        video = CreateEncoder(plan);
+                    }
+                }
+
                 // Paced here rather than by asking the camera for a lower rate: a webcam's advertised
-                // frame rates are coarse, and dropping a raw frame is cheaper than making the sensor
+                // frame rates are coarse, and skipping a raw frame is cheaper than making the sensor
                 // work differently.
-                if (Stopwatch.GetElapsedTime(lastSent) < interval)
+                var interval = TimeSpan.FromMilliseconds(1000.0 / Math.Max(1, plan.Fps));
+
+                if (Stopwatch.GetElapsedTime(lastSent) < interval - PacingSlack)
                 {
                     continue;
                 }
 
                 lastSent = Stopwatch.GetTimestamp();
+
+                if (Stopwatch.GetElapsedTime(nextHealthCheck) >= TimeSpan.Zero)
+                {
+                    nextHealthCheck = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
+
+                    var congestion = Interlocked.Exchange(ref _congestion, 0);
+
+                    var health = new StreamHealth(
+                        congestion > 0 ? AdaptiveStreamController.BacklogLimit + congestion : 0,
+                        0,
+                        // Not the delivered rate: a webcam in a dim room drops to fifteen frames on its
+                        // own, and treating that as congestion would ratchet the plan down for nothing.
+                        0,
+                        plan.Fps,
+                        -1,
+                        -1);
+
+                    producedAtLastCheck = produced;
+
+                    if (adaptive.Observe(health) && _quality.Current.Camera.Profile == StreamingProfile.Auto)
+                    {
+                        _logger.LogInformation(
+                            "Live camera moved to adaptive step {Level} because {Reason}.",
+                            adaptive.Level,
+                            adaptive.Reason);
+
+                        Interlocked.Exchange(ref settingsChanged, 1);
+                    }
+                }
 
                 if (video is null)
                 {
@@ -217,10 +275,16 @@ public sealed class WindowsLiveCamera : ILiveCameraSource
 
                     if (still is not null)
                     {
+                        produced++;
                         yield return still;
                     }
 
                     continue;
+                }
+
+                if (Interlocked.Exchange(ref _keyframeWanted, 0) == 1)
+                {
+                    video.RequestKeyframe();
                 }
 
                 packets.Clear();
@@ -243,6 +307,8 @@ public sealed class WindowsLiveCamera : ILiveCameraSource
 
                 foreach (var packet in packets)
                 {
+                    produced++;
+
                     yield return new LiveFrame(
                         packet.Bytes,
                         plan.Width,
@@ -257,6 +323,7 @@ public sealed class WindowsLiveCamera : ILiveCameraSource
         }
         finally
         {
+            _quality.Changed -= OnSettingsChanged;
             reader.FrameArrived -= OnFrameArrived;
 
             // Stopped and disposed promptly, so the camera light goes out when the owner stops the
@@ -275,6 +342,37 @@ public sealed class WindowsLiveCamera : ILiveCameraSource
             capture.Dispose();
 
             _logger.LogInformation("The live camera was released.");
+        }
+    }
+
+    private IVideoEncoder? CreateEncoder(MediaPlan plan)
+    {
+        if (!_encoders.IsAvailable)
+        {
+            return null;
+        }
+
+        try
+        {
+            var encoder = _encoders.Create(plan.ToEncoderSettings());
+            encoder.RequestKeyframe();
+
+            _logger.LogInformation(
+                "Live camera encoding {Plan} at {Width}x{Height}, {Fps} fps, {Bitrate} kbit/s via {Encoder}.",
+                plan.Label,
+                plan.Width,
+                plan.Height,
+                plan.Fps,
+                plan.BitrateKbps,
+                encoder.BackendName);
+
+            return encoder;
+        }
+        catch (Exception ex) when (ex is NotSupportedException or InvalidOperationException)
+        {
+            _logger.LogWarning(
+                "The live camera could not use H.264 ({Reason}); sending stills instead.", ex.Message);
+            return null;
         }
     }
 

@@ -692,6 +692,8 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
                     {
                         break;
                     }
+
+                    session.ReportSent();
                 }
             }
             catch (OperationCanceledException)

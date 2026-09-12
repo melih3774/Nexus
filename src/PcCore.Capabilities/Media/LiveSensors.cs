@@ -74,6 +74,26 @@ public interface ILiveSensorSource
 /// <summary>Marker for the camera, so both can be registered.</summary>
 public interface ILiveCameraSource : ILiveSensorSource;
 
+/// <summary>
+/// A source that encodes video, and so can be told things a still or audio source never needs to be.
+/// <para>
+/// Optional, and discovered by type rather than added to <see cref="ILiveSensorSource"/>: the
+/// microphone has no keyframes and no congestion to adapt to, and a fake source in a test should not
+/// have to pretend otherwise.
+/// </para>
+/// </summary>
+public interface ILiveVideoControl
+{
+    /// <summary>Makes the next encoded frame an IDR.</summary>
+    void RequestKeyframe();
+
+    /// <summary>
+    /// Says that frames had to be thrown away because the link was not keeping up. A source that
+    /// adapts steps its plan down on repeated reports; one that does not may ignore it.
+    /// </summary>
+    void ReportCongestion();
+}
+
 /// <summary>Marker for the microphone.</summary>
 public interface ILiveAudioSource : ILiveSensorSource;
 
@@ -108,26 +128,53 @@ public sealed record LiveStartOutcome(bool Started, LiveStartFailure Failure, st
 /// <summary>
 /// One running sensor stream, and the channel its frames leave by.
 /// <para>
-/// Bounded at one frame and dropping the oldest, exactly as the desktop stream is: monitoring is
-/// only useful if it is current, and a queue that grows under a slow link turns a live view into a
-/// delayed one that gets steadily worse.
+/// <b>Short, and a drop is not silent.</b> The channel holds a handful of frames rather than one,
+/// because the camera is now H.264: a discarded predicted frame breaks every frame after it until
+/// the next keyframe. Staleness is controlled before frames get here — see
+/// <see cref="LiveSensorService"/>, which stops forwarding predicted frames when the transport is
+/// behind and resumes at the next keyframe — and a drop that happens anyway is reported so the
+/// source can be asked for one.
 /// </para>
 /// </summary>
 public sealed class LiveSensorSession
 {
-    private readonly Channel<byte[]> _frames;
+    /// <summary>Frames held for the socket. A second at the camera's rate, which it should never reach.</summary>
+    internal const int Capacity = 32;
 
-    internal LiveSensorSession(LiveSensorKind kind, CallerDescriptor caller)
+    private readonly Channel<byte[]> _frames;
+    private int _backlog;
+    private long _sent;
+
+    internal LiveSensorSession(LiveSensorKind kind, CallerDescriptor caller, Action? onDropped = null)
     {
         Kind = kind;
         Caller = caller;
 
-        _frames = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(1)
-        {
-            FullMode = BoundedChannelFullMode.DropOldest,
-            SingleReader = true,
-            SingleWriter = true,
-        });
+        _frames = Channel.CreateBounded<byte[]>(
+            new BoundedChannelOptions(Capacity)
+            {
+                FullMode = BoundedChannelFullMode.DropOldest,
+                SingleReader = true,
+                SingleWriter = true,
+            },
+            itemDropped: _ =>
+            {
+                Interlocked.Decrement(ref _backlog);
+                onDropped?.Invoke();
+            });
+    }
+
+    /// <summary>Frames written but not yet on the socket.</summary>
+    public int Backlog => Volatile.Read(ref _backlog);
+
+    /// <summary>Frames that have actually been sent.</summary>
+    public long Sent => Interlocked.Read(ref _sent);
+
+    /// <summary>Called by the transport once a frame is on the socket.</summary>
+    public void ReportSent()
+    {
+        Interlocked.Decrement(ref _backlog);
+        Interlocked.Increment(ref _sent);
     }
 
     public LiveSensorKind Kind { get; }
@@ -148,7 +195,11 @@ public sealed class LiveSensorSession
 
     public ChannelReader<byte[]> Frames => _frames.Reader;
 
-    internal void Publish(byte[] message) => _frames.Writer.TryWrite(message);
+    internal void Publish(byte[] message)
+    {
+        Interlocked.Increment(ref _backlog);
+        _frames.Writer.TryWrite(message);
+    }
 
     internal void Complete() => _frames.Writer.TryComplete();
 }
@@ -287,6 +338,12 @@ public sealed class LiveSensorService : IAsyncDisposable
 
     private static readonly TimeSpan AuthorityInterval = TimeSpan.FromSeconds(5);
 
+    /// <summary>
+    /// Encoded camera frames allowed to wait for the socket before forwarding pauses until the next
+    /// keyframe. Four frames at thirty a second is a little over a tenth of a second behind.
+    /// </summary>
+    internal const int MaxVideoBacklog = 4;
+
     public async ValueTask<LiveStartOutcome> StartAsync(
         LiveSensorKind kind,
         CallerDescriptor caller,
@@ -328,7 +385,7 @@ public sealed class LiveSensorService : IAsyncDisposable
                     false, LiveStartFailure.AlreadyRunning, $"The {Describe(kind)} is already live.");
             }
 
-            session = new LiveSensorSession(kind, caller);
+            session = new LiveSensorSession(kind, caller, () => RequestKeyframe(kind));
             var stopping = new CancellationTokenSource();
             var running = new Running(session, stopping);
             _running[kind] = running;
@@ -345,6 +402,29 @@ public sealed class LiveSensorService : IAsyncDisposable
 
         Notify();
         return new LiveStartOutcome(true, LiveStartFailure.None, null);
+    }
+
+    /// <summary>
+    /// Asks a running video source for a keyframe. A no-op for the microphone and for a source that
+    /// does not encode video.
+    /// </summary>
+    public bool RequestKeyframe(LiveSensorKind kind)
+    {
+        lock (_gate)
+        {
+            if (!_running.ContainsKey(kind))
+            {
+                return false;
+            }
+        }
+
+        if (Source(kind) is ILiveVideoControl control)
+        {
+            control.RequestKeyframe();
+            return true;
+        }
+
+        return false;
     }
 
     public void Stop(LiveSensorKind kind, string reason)
@@ -467,11 +547,54 @@ public sealed class LiveSensorService : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         ulong sequence = 0;
+        var skippingToKeyframe = false;
+        var keyframeAsked = false;
+        var control = source as ILiveVideoControl;
 
         try
         {
             await foreach (var frame in source.CaptureAsync(cancellationToken).ConfigureAwait(false))
             {
+                if (frame.Encoding == FrameEncoding.H264 && !frame.Flags.HasFlag(FrameFlags.CodecConfig))
+                {
+                    var keyframe = frame.Flags.HasFlag(FrameFlags.Keyframe);
+                    var behind = session.Backlog > MaxVideoBacklog;
+
+                    if (!skippingToKeyframe && behind)
+                    {
+                        // The link is not keeping up. Rather than queue a room that is already out of
+                        // date, stop forwarding — keyframes included, since those are the largest
+                        // frames of all — and let the source know, so an adaptive plan can ask for less.
+                        skippingToKeyframe = true;
+                        keyframeAsked = false;
+                        control?.ReportCongestion();
+                        continue;
+                    }
+
+                    if (skippingToKeyframe)
+                    {
+                        if (behind)
+                        {
+                            continue;
+                        }
+
+                        if (!keyframe)
+                        {
+                            // Drained. Ask once for a fresh keyframe and wait for it: a predicted frame
+                            // now would decode against a picture the phone never received.
+                            if (!keyframeAsked)
+                            {
+                                control?.RequestKeyframe();
+                                keyframeAsked = true;
+                            }
+
+                            continue;
+                        }
+
+                        skippingToKeyframe = false;
+                    }
+                }
+
                 var header = new LiveSensorFrameHeader
                 {
                     Version = LiveSensorFrameHeader.CurrentVersion,
