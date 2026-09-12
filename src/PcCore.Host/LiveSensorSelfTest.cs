@@ -95,6 +95,7 @@ internal static class LiveSensorSelfTest
         using var stopping = new CancellationTokenSource(TimeSpan.FromSeconds(seconds));
 
         var frames = 0;
+        var keyframes = 0;
         long bytes = 0;
         var first = TimeSpan.Zero;
         var clock = Stopwatch.StartNew();
@@ -111,12 +112,23 @@ internal static class LiveSensorSelfTest
                     first = clock.Elapsed;
 
                     detail = describe == Describe.Camera
-                        ? $"{frame.WidthOrSampleRate}x{frame.HeightOrChannels} JPEG"
+                        ? $"{frame.WidthOrSampleRate}x{frame.HeightOrChannels} {(frame.Encoding == PcCore.Protocol.FrameEncoding.H264 ? "H.264" : "JPEG")}"
                         : $"{frame.WidthOrSampleRate} Hz, {frame.HeightOrChannels} channel(s), 16-bit PCM";
+                }
+
+                // Configuration frames carry no picture and are not counted as frames.
+                if (frame.Flags.HasFlag(PcCore.Protocol.FrameFlags.CodecConfig))
+                {
+                    continue;
                 }
 
                 frames++;
                 bytes += frame.Payload.Length;
+
+                if (frame.Flags.HasFlag(PcCore.Protocol.FrameFlags.Keyframe))
+                {
+                    keyframes++;
+                }
             }
         }
         catch (OperationCanceledException)
@@ -134,9 +146,21 @@ internal static class LiveSensorSelfTest
 
         var rate = frames / Math.Max(clock.Elapsed.TotalSeconds, 0.001);
 
+        // The steady rate, from the first frame on. The overall rate includes however long the device
+        // took to open, which is a different number with a different fix.
+        var steady = frames <= 1 ? 0 : (frames - 1) / Math.Max((clock.Elapsed - first).TotalSeconds, 0.001);
+        var megabits = bytes * 8.0 / Math.Max((clock.Elapsed - first).TotalSeconds, 0.001) / 1_000_000;
+
         Console.WriteLine($"  PASS  the {name} produced {frames} frame(s): {detail}.");
         Console.WriteLine(
-            $"        {rate:F1}/s, {bytes / 1024.0:F0} KB total, first frame after {first.TotalMilliseconds:F0} ms.");
+            $"        {rate:F1}/s overall, {steady:F1}/s steady, {megabits:F2} Mbit/s, "
+            + $"first frame after {first.TotalMilliseconds:F0} ms"
+            + (describe == Describe.Camera ? $", {keyframes} keyframe(s)." : "."));
+
+        if (source is WindowsLiveCamera camera)
+        {
+            Console.WriteLine($"        {camera.Diagnostics()}");
+        }
 
         return true;
     }

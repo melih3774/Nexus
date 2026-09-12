@@ -66,6 +66,10 @@ public sealed class WindowsLiveCamera : ILiveCameraSource, ILiveVideoControl
     private (int Width, int Height)? _nativeSize;
     private int _keyframeWanted;
     private int _congestion;
+    private long _arrived;
+    private long _paced;
+    private long _encodeTicks;
+    private long _encoded;
 
     public WindowsLiveCamera(
         ILogger<WindowsLiveCamera> logger,
@@ -84,6 +88,22 @@ public sealed class WindowsLiveCamera : ILiveCameraSource, ILiveVideoControl
     public void RequestKeyframe() => Interlocked.Exchange(ref _keyframeWanted, 1);
 
     public void ReportCongestion() => Interlocked.Increment(ref _congestion);
+
+    /// <summary>
+    /// Frames the camera delivered, frames kept after pacing, and the encode cost, for the self-test.
+    /// <para>
+    /// The distinction matters because the two ways a live view is slow look identical from the phone:
+    /// a camera that only produces fifteen frames in a dim room, and a pipeline that cannot keep up
+    /// with thirty.
+    /// </para>
+    /// </summary>
+    public string Diagnostics()
+    {
+        var encoded = Math.Max(1, Interlocked.Read(ref _encoded));
+
+        return $"camera delivered {Interlocked.Read(ref _arrived)}, kept {Interlocked.Read(ref _paced)}, "
+            + $"{Interlocked.Read(ref _encodeTicks) * 1000.0 / Stopwatch.Frequency / encoded:F1} ms to convert and encode";
+    }
 
     /// <summary>
     /// The camera's own resolution, as far as it is known.
@@ -139,6 +159,7 @@ public sealed class WindowsLiveCamera : ILiveCameraSource, ILiveVideoControl
         {
             try
             {
+                Interlocked.Increment(ref _arrived);
                 using var reference = sender.TryAcquireLatestFrame();
                 var bitmap = reference?.VideoMediaFrame?.SoftwareBitmap;
 
@@ -239,6 +260,7 @@ public sealed class WindowsLiveCamera : ILiveCameraSource, ILiveVideoControl
                 }
 
                 lastSent = Stopwatch.GetTimestamp();
+                Interlocked.Increment(ref _paced);
 
                 if (Stopwatch.GetElapsedTime(nextHealthCheck) >= TimeSpan.Zero)
                 {
@@ -289,6 +311,8 @@ public sealed class WindowsLiveCamera : ILiveCameraSource, ILiveVideoControl
 
                 packets.Clear();
 
+                var encodeStarted = Stopwatch.GetTimestamp();
+
                 video.Encode(
                     frame.Pixels,
                     frame.Width,
@@ -296,6 +320,9 @@ public sealed class WindowsLiveCamera : ILiveCameraSource, ILiveVideoControl
                     frame.Stride,
                     frame.CapturedUnixMs,
                     packets);
+
+                Interlocked.Add(ref _encodeTicks, Stopwatch.GetTimestamp() - encodeStarted);
+                Interlocked.Increment(ref _encoded);
 
                 if (video.CodecConfig is { Length: > 0 } sets && !sets.AsSpan().SequenceEqual(codecConfig))
                 {
@@ -442,6 +469,8 @@ public sealed class WindowsLiveCamera : ILiveCameraSource, ILiveVideoControl
                 StreamingCaptureMode = StreamingCaptureMode.Video,
             }).AsTask(cancellationToken).ConfigureAwait(false);
 
+            PreferFrameRate(capture);
+
             var source = capture.FrameSources[candidate.Source!.Id];
             var wanted = _quality.Current.Camera;
             var targetHeight = TargetHeight(wanted);
@@ -470,6 +499,38 @@ public sealed class WindowsLiveCamera : ILiveCameraSource, ILiveVideoControl
             _logger.LogWarning("The camera could not be opened for live monitoring: {Reason}", ex.Message);
             capture?.Dispose();
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Asks the camera to hold its frame rate rather than trade it for exposure.
+    /// <para>
+    /// Webcams lengthen their exposure in dim light, and a longer exposure than one frame interval
+    /// means fewer frames: this machine's camera, formatted for thirty, delivered twenty-one in an
+    /// ordinary room. For a live view, motion that stays fluid is worth a slightly darker picture.
+    /// The control is optional on a device, and a device that does not offer it is left as it was.
+    /// </para>
+    /// </summary>
+    private void PreferFrameRate(MediaCapture capture)
+    {
+        try
+        {
+            var controller = capture.VideoDeviceController;
+
+            if (controller.ExposurePriorityVideoControl.Supported)
+            {
+                controller.ExposurePriorityVideoControl.Enabled = false;
+            }
+
+            _logger.LogInformation(
+                "Camera exposure priority: {Exposure}.",
+                controller.ExposurePriorityVideoControl.Supported
+                    ? "disabled, so dim light does not lower the frame rate"
+                    : "not offered by this device");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "The camera did not accept frame-rate preferences.");
         }
     }
 
