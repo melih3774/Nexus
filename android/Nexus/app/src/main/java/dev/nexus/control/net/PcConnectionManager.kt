@@ -26,7 +26,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -97,35 +96,24 @@ class PcConnectionManager(
     val events: SharedFlow<EventEnvelope> = _events.asSharedFlow()
 
     /**
-     * Live desktop frames, newest only.
+     * Where live desktop frames go, delivered on the socket thread, in order, with nothing dropped.
      *
-     * `extraBufferCapacity = 1` with `DROP_OLDEST`: the same latest-frame-wins rule the PC applies
-     * before sending. A frame that has been superseded on the wire has nothing to offer a viewer,
-     * and buffering it would only delay the one that has.
+     * **Why a callback and not a flow any more.** The still-image version used a `SharedFlow` with a
+     * one-frame buffer that discarded the oldest, which was the right rule when every frame was an
+     * independent JPEG. With H.264 it is the wrong rule in the worst way: a frame dropped between
+     * the socket and the decoder corrupts every picture after it until the next keyframe, and nothing
+     * anywhere would know it had happened. The decoder has its own short queue and its own recovery,
+     * so frames are handed straight to it and the only place a frame can be discarded is a place
+     * that also asks for a keyframe.
+     *
+     * The sink must not block. The one the remote screen installs copies nothing and only queues.
      */
-    private val _frames = MutableSharedFlow<StreamFrame>(
-        extraBufferCapacity = 1,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST,
-    )
-    val frames: SharedFlow<StreamFrame> = _frames.asSharedFlow()
+    @Volatile
+    var streamFrameSink: ((StreamFrame) -> Unit)? = null
 
-    /**
-     * Live camera and microphone frames.
-     *
-     * Its own flow rather than a variant of [frames]: the desktop stream and a live sensor can be
-     * running at the same time, and a collector that wanted one would otherwise have to filter every
-     * frame of the other.
-     *
-     * `extraBufferCapacity` with `DROP_OLDEST` for the same reason the PC drops frames — a live view
-     * that queues is a delayed view that gets worse.
-     */
-    private val _liveFrames = MutableSharedFlow<LiveSensorFrame>(
-        replay = 0,
-        extraBufferCapacity = 4,
-        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
-    )
-
-    val liveFrames: SharedFlow<LiveSensorFrame> = _liveFrames.asSharedFlow()
+    /** The same, for live camera and microphone frames. */
+    @Volatile
+    var liveFrameSink: ((LiveSensorFrame) -> Unit)? = null
 
     private val pending = ConcurrentHashMap<String, CompletableDeferred<ResponseEnvelope>>()
     private val requestCounter = AtomicLong(0)
@@ -339,12 +327,12 @@ class PcConnectionManager(
                     val raw = bytes.toByteArray()
 
                     StreamFrame.parse(raw)?.let {
-                        _frames.tryEmit(it)
+                        streamFrameSink?.invoke(it)
                         return
                     }
 
                     LiveSensorFrame.parse(raw)?.let {
-                        _liveFrames.tryEmit(it)
+                        liveFrameSink?.invoke(it)
                         return
                     }
 

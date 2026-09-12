@@ -36,14 +36,29 @@ data class StreamFrameHeader(
 
     val isComplete: Boolean get() = flags and FLAG_COMPLETE != 0
 
+    /** An IDR. The decoder may start here, and a gap before it no longer matters. */
+    val isKeyframe: Boolean get() = flags and FLAG_KEYFRAME != 0
+
+    /**
+     * Parameter sets rather than a picture. Must be fed to the decoder and never drawn — a
+     * configuration buffer handed to a renderer produces nothing, and handed to a decoder that was
+     * not told what it is produces a codec error.
+     */
+    val isCodecConfig: Boolean get() = flags and FLAG_CODEC_CONFIG != 0
+
+    val isH264: Boolean get() = encoding == ENCODING_H264
+
     companion object {
         const val SIZE: Int = 64
         const val CURRENT_VERSION: Int = 1
 
         const val ENCODING_JPEG: Int = 1
+        const val ENCODING_H264: Int = 2
 
         const val FLAG_CURSOR_BAKED_IN: Int = 1
         const val FLAG_COMPLETE: Int = 2
+        const val FLAG_KEYFRAME: Int = 4
+        const val FLAG_CODEC_CONFIG: Int = 8
 
         /** Matches the PC's bound. A larger stated length is a bug or a hostile peer. */
         const val MAX_PAYLOAD_BYTES: Int = 16 * 1024 * 1024
@@ -67,7 +82,7 @@ data class StreamFrameHeader(
             if (version != CURRENT_VERSION) return null
 
             val encoding = message[5].toInt() and 0xFF
-            if (encoding > ENCODING_JPEG) return null
+            if (encoding > ENCODING_H264) return null
 
             val payloadLength = int32(message, 60)
             if (payloadLength < 0 || payloadLength > MAX_PAYLOAD_BYTES) return null

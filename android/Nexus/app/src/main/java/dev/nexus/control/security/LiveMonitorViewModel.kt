@@ -5,7 +5,9 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
+import android.os.SystemClock
 import android.util.Log
+import android.view.Surface
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.ViewModel
@@ -15,12 +17,23 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import dev.nexus.control.net.NexusCommandChannel
 import dev.nexus.control.net.PcConnectionManager
 import dev.nexus.control.nexusContainer
+import dev.nexus.control.protocol.LiveSensorFrame
+import dev.nexus.control.protocol.LiveSensorFrameHeader
 import dev.nexus.control.protocol.LiveSensorKind
+import dev.nexus.control.protocol.MediaQualityResult
 import dev.nexus.control.protocol.NexusJson
 import dev.nexus.control.protocol.NexusProtocol
+import dev.nexus.control.protocol.SetMediaQualityParams
+import dev.nexus.control.remote.DecodeStats
+import dev.nexus.control.remote.MediaQualityClient
+import dev.nexus.control.remote.StreamClock
+import dev.nexus.control.remote.VideoDecoder
+import dev.nexus.control.remote.synchronise
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -56,6 +69,22 @@ data class LiveMonitorUiState(
 
     /** Frames seen since the camera started, so a still-looking picture can be told from a stalled one. */
     val framesReceived: Long = 0,
+
+    /** Pictures actually put on screen. Zero means still waiting for the first. */
+    val framesRendered: Long = 0,
+
+    /** The stream's own size, which shapes the preview. Zero until the first frame. */
+    val cameraWidth: Int = 0,
+    val cameraHeight: Int = 0,
+
+    /** True when the camera arrives as H.264 and is drawn on a video surface rather than as a bitmap. */
+    val cameraVideo: Boolean = false,
+
+    /** Measured, once a second: delivered frame rate, bitrate and capture-to-screen latency. */
+    val cameraStats: String? = null,
+
+    /** The PC's streaming settings, for the camera's quality panel. */
+    val quality: MediaQualityResult? = null,
 ) {
     val anyLive: Boolean get() = camera || microphone
 }
@@ -87,8 +116,61 @@ class LiveMonitorViewModel(
     private var collector: Job? = null
     private var audio: AudioTrack? = null
 
+    private val clock = StreamClock()
+    private val qualityClient = MediaQualityClient(channel)
+
+    /**
+     * The camera's decoder. The same hardware path the desktop uses, drawing straight onto the
+     * preview's surface; a lost place asks the PC for a keyframe rather than smearing.
+     */
+    private val decoder = VideoDecoder(
+        onKeyframeNeeded = { requestCameraKeyframe() },
+        onStats = { onCameraDecoded(it) },
+    )
+
+    /** JPEG stills from a PC with no video encoder, newest only, decoded off the socket thread. */
+    private val stills = Channel<LiveSensorFrame>(capacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+
+    private val statsLock = Any()
+    private var windowStart = 0L
+    private var windowReceived = 0
+    private var windowRendered = 0
+    private var windowBytes = 0L
+    private var latencyMs = -1.0
+    private var lastKeyframeRequest = 0L
+
+    @Volatile
+    private var received = 0L
+
+    @Volatile
+    private var renderedTotal = 0L
+
     /** Guards against two starts racing to create two AudioTracks. */
     private val audioLock = Any()
+
+    /** The preview surface came or went. */
+    fun attachCameraSurface(surface: Surface?) = decoder.attach(surface)
+
+    fun loadQuality() {
+        viewModelScope.launch {
+            qualityClient.get()?.let { _state.value = _state.value.copy(quality = it) }
+        }
+    }
+
+    /** Changes the camera's settings. A running camera re-plans without reopening the device. */
+    fun setCameraQuality(change: SetMediaQualityParams) {
+        viewModelScope.launch {
+            try {
+                qualityClient.set(change.copy(target = "camera"))?.let {
+                    _state.value = _state.value.copy(quality = it)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(message = describe(e))
+            }
+        }
+    }
 
     fun refresh() {
         viewModelScope.launch {
@@ -130,6 +212,13 @@ class LiveMonitorViewModel(
 
                 if (kind == LiveSensorKind.MICROPHONE) startAudio()
 
+                if (kind == LiveSensorKind.CAMERA) {
+                    received = 0
+                    renderedTotal = 0
+                    clock.reset()
+                    launch { clock.synchronise(channel) }
+                }
+
                 ensureCollecting()
             } catch (e: CancellationException) {
                 throw e
@@ -167,7 +256,11 @@ class LiveMonitorViewModel(
                     camera = if (kind == LiveSensorKind.CAMERA) false else _state.value.camera,
                     microphone = if (kind == LiveSensorKind.MICROPHONE) false else _state.value.microphone,
                     image = if (kind == LiveSensorKind.CAMERA) null else _state.value.image,
+                    framesRendered = if (kind == LiveSensorKind.CAMERA) 0 else _state.value.framesRendered,
+                    cameraStats = if (kind == LiveSensorKind.CAMERA) null else _state.value.cameraStats,
                 )
+
+                if (kind == LiveSensorKind.CAMERA) decoder.reset()
 
                 if (!_state.value.anyLive) stopCollecting()
             }
@@ -186,7 +279,14 @@ class LiveMonitorViewModel(
             } finally {
                 stopAudio()
                 stopCollecting()
-                _state.value = _state.value.copy(camera = false, microphone = false, image = null)
+                decoder.reset()
+                _state.value = _state.value.copy(
+                    camera = false,
+                    microphone = false,
+                    image = null,
+                    framesRendered = 0,
+                    cameraStats = null,
+                )
             }
         }
     }
@@ -210,39 +310,162 @@ class LiveMonitorViewModel(
         if (result.camera || result.microphone) ensureCollecting() else stopCollecting()
     }
 
+    /**
+     * Routes live frames as they come off the socket.
+     *
+     * A direct callback rather than a collected flow, for the same reason as the desktop: the old flow
+     * kept a few frames and discarded the oldest, which is harmless for JPEG and corrupting for H.264.
+     * Video goes straight to the decoder, audio straight to a non-blocking track write, and only the
+     * still-image fallback is handed to a coroutine, because decoding a JPEG is the one thing here too
+     * slow for the socket thread.
+     */
     private fun ensureCollecting() {
         if (collector?.isActive == true) return
 
-        collector = viewModelScope.launch {
-            connection.liveFrames.collect { frame ->
-                when (frame.header.kind) {
-                    LiveSensorKind.CAMERA -> {
-                        val bitmap = withContext(Dispatchers.Default) {
-                            val bytes = frame.payload()
-                            try {
-                                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                            } catch (e: OutOfMemoryError) {
-                                null
-                            }
-                        }
+        connection.liveFrameSink = { frame -> route(frame) }
 
-                        if (bitmap != null) {
-                            _state.value = _state.value.copy(
-                                image = bitmap.asImageBitmap(),
-                                framesReceived = _state.value.framesReceived + 1,
-                            )
-                        }
-                    }
+        collector = viewModelScope.launch(Dispatchers.Default) {
+            for (frame in stills) {
+                val bytes = frame.payload()
+                val bitmap = try {
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                } catch (e: OutOfMemoryError) {
+                    null
+                }
 
-                    LiveSensorKind.MICROPHONE -> playAudio(frame.payload(), frame.header.widthOrSampleRate)
+                if (bitmap != null) {
+                    synchronized(statsLock) { windowRendered++ }
+                    renderedTotal++
+
+                    _state.value = _state.value.copy(
+                        image = bitmap.asImageBitmap(),
+                        framesReceived = received,
+                        framesRendered = renderedTotal,
+                        cameraWidth = bitmap.width,
+                        cameraHeight = bitmap.height,
+                        cameraVideo = false,
+                    )
                 }
             }
         }
     }
 
+    private fun route(frame: LiveSensorFrame) {
+        when (frame.header.kind) {
+            LiveSensorKind.MICROPHONE -> playAudio(frame.payload(), frame.header.widthOrSampleRate)
+
+            LiveSensorKind.CAMERA -> {
+                received++
+
+                synchronized(statsLock) {
+                    windowReceived++
+                    windowBytes += frame.header.payloadLength
+                    roll()
+                }
+
+                if (!frame.header.isH264) {
+                    stills.trySend(frame)
+                    return
+                }
+
+                val header = frame.header
+
+                if (_state.value.cameraWidth != header.widthOrSampleRate ||
+                    _state.value.cameraHeight != header.heightOrChannels ||
+                    !_state.value.cameraVideo
+                ) {
+                    _state.value = _state.value.copy(
+                        cameraWidth = header.widthOrSampleRate,
+                        cameraHeight = header.heightOrChannels,
+                        cameraVideo = true,
+                        image = null,
+                    )
+                }
+
+                decoder.submit(
+                    payload = frame.message,
+                    offset = LiveSensorFrameHeader.SIZE,
+                    length = header.payloadLength,
+                    width = header.widthOrSampleRate,
+                    height = header.heightOrChannels,
+                    captureUnixMs = header.timestampUnixMs,
+                    isKeyframe = header.isKeyframe,
+                    isCodecConfig = header.isCodecConfig,
+                )
+            }
+        }
+    }
+
+    private fun onCameraDecoded(stats: DecodeStats) {
+        renderedTotal = stats.rendered
+
+        val age = clock.ageOf(stats.renderedCaptureUnixMs)
+
+        synchronized(statsLock) {
+            windowRendered++
+
+            if (age != null && age >= 0) {
+                latencyMs = if (latencyMs < 0) age.toDouble() else (latencyMs * 0.8) + (age * 0.2)
+            }
+
+            roll()
+        }
+
+        if (stats.rendered == 1L) {
+            _state.value = _state.value.copy(framesRendered = 1)
+        }
+    }
+
+    /** Publishes the camera's measured rates once a second. Called with [statsLock] held. */
+    private fun roll() {
+        val now = SystemClock.elapsedRealtime()
+
+        if (windowStart == 0L) {
+            windowStart = now
+            return
+        }
+
+        val elapsed = now - windowStart
+        if (elapsed < 1_000) return
+
+        val fps = windowRendered * 1000.0 / elapsed
+        val arrived = windowReceived * 1000.0 / elapsed
+        val mbit = windowBytes * 8.0 / elapsed / 1000.0
+
+        windowStart = now
+        windowReceived = 0
+        windowRendered = 0
+        windowBytes = 0
+
+        val latency = if (latencyMs >= 0) "%.0f ms".format(latencyMs) else "— ms"
+
+        _state.value = _state.value.copy(
+            framesReceived = received,
+            framesRendered = renderedTotal,
+            cameraStats = "%.0f fps shown · %.0f received · %.2f Mbit/s · %s".format(fps, arrived, mbit, latency),
+        )
+    }
+
+    private fun requestCameraKeyframe() {
+        val now = SystemClock.elapsedRealtime()
+
+        synchronized(statsLock) {
+            if (now - lastKeyframeRequest < 500) return
+            lastKeyframeRequest = now
+        }
+
+        connection.notify(NexusProtocol.Actions.MEDIA_LIVE_KEYFRAME)
+    }
+
     private fun stopCollecting() {
+        connection.liveFrameSink = null
         collector?.cancel()
         collector = null
+
+        synchronized(statsLock) {
+            windowStart = 0
+            latencyMs = -1.0
+        }
     }
 
     /**
@@ -334,6 +557,7 @@ class LiveMonitorViewModel(
     override fun onCleared() {
         stopAudio()
         stopCollecting()
+        decoder.release()
         super.onCleared()
     }
 

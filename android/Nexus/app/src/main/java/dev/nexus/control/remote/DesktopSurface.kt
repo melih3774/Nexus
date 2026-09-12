@@ -6,6 +6,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -18,7 +19,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.viewinterop.AndroidView
+import android.view.SurfaceHolder
+import android.view.SurfaceView
+import android.view.Surface
 
 /**
  * What the owner touches: the PC's desktop, and the gestures over it.
@@ -36,6 +42,7 @@ import androidx.compose.ui.platform.LocalViewConfiguration
 @Composable
 fun DesktopSurface(
     frame: DecodedFrame?,
+    onSurface: (Surface?) -> Unit,
     pointerMode: PointerModeUi,
     inputEnabled: Boolean,
     onTap: (DesktopPoint?) -> Unit,
@@ -139,7 +146,40 @@ fun DesktopSurface(
             },
         contentAlignment = Alignment.Center,
     ) {
-        if (frame != null) {
+        // The video surface, sized to exactly the rectangle the desktop occupies. The decoder's
+        // output is scaled to the view by the compositor, so shaping the view to the stream's aspect
+        // ratio is the whole of "fit"; the pointer mapping above uses the same rectangle, which is
+        // what keeps a touch and the pixel under it in agreement.
+        //
+        // A SurfaceView rather than a TextureView: it is composited directly rather than drawn
+        // through the app's own GPU pass, which is one frame less between the decoder and the glass.
+        val density = LocalDensity.current
+        val currentOnSurface by rememberUpdatedState(onSurface)
+
+        val videoModifier = if (rendered.isUsable) {
+            with(density) { Modifier.size(rendered.drawnWidth.toDp(), rendered.drawnHeight.toDp()) }
+        } else {
+            Modifier.fillMaxSize()
+        }
+
+        AndroidView(
+            factory = { context ->
+                SurfaceView(context).apply {
+                    holder.addCallback(object : SurfaceHolder.Callback {
+                        override fun surfaceCreated(holder: SurfaceHolder) = currentOnSurface(holder.surface)
+
+                        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
+
+                        // Synchronous on purpose: the decoder must let go of the surface before this
+                        // returns, or it renders into memory the system is already reclaiming.
+                        override fun surfaceDestroyed(holder: SurfaceHolder) = currentOnSurface(null)
+                    })
+                }
+            },
+            modifier = videoModifier,
+        )
+
+        if (frame?.image != null) {
             Image(
                 bitmap = frame.image,
                 contentDescription = "The PC screen",

@@ -105,11 +105,83 @@ data class StartStreamParams(@SerialName("display_index") val displayIndex: Int?
 data class StreamStarted(
     @SerialName("stream_id") val streamId: Long = 0,
     val display: DisplayInfo = DisplayInfo(),
+
+    /** `h264` or `jpeg`. The decoder is set up from this rather than from the first frame. */
+    val encoding: String = "jpeg",
+
+    val width: Int = 0,
+    val height: Int = 0,
+    val fps: Int = 0,
+    @SerialName("bitrate_kbps") val bitrateKbps: Int = 0,
+
+    /** Which profile produced those numbers, including the adaptive step if there is one. */
+    val plan: String = "",
+
+    /** Named, so "hardware encoding" is something the owner can check rather than believe. */
+    val encoder: String = "",
+
     @SerialName("max_fps") val maxFps: Int = 0,
     @SerialName("max_width") val maxWidth: Int = 0,
     @SerialName("max_height") val maxHeight: Int = 0,
     val quality: Int = 0,
     @SerialName("frame_protocol_version") val frameProtocolVersion: Int = 0,
+) {
+    val isH264: Boolean get() = encoding.equals("h264", ignoreCase = true)
+}
+
+/** What the phone tells the PC about what it is actually seeing. */
+@Serializable
+data class StreamReportParams(
+    @SerialName("latency_ms") val latencyMs: Double? = null,
+    @SerialName("decode_ms") val decodeMs: Double? = null,
+    @SerialName("rendered_fps") val renderedFps: Double? = null,
+    val dropped: Long? = null,
+)
+
+/** The PC's answer: the plan in force now, so an adaptive change is noticed without polling. */
+@Serializable
+data class StreamReportResult(
+    val accepted: Boolean = false,
+    val width: Int = 0,
+    val height: Int = 0,
+    val fps: Int = 0,
+    @SerialName("bitrate_kbps") val bitrateKbps: Int = 0,
+    val plan: String = "",
+)
+
+@Serializable
+data class MediaTimeResult(@SerialName("unix_ms") val unixMs: Long = 0)
+
+/** One target's streaming settings, and what they currently resolve to on the PC. */
+@Serializable
+data class MediaQualityView(
+    val profile: String = "auto",
+    val resolution: String = "auto",
+    @SerialName("custom_height") val customHeight: Int = 720,
+    @SerialName("custom_fps") val customFps: Int = 30,
+    @SerialName("custom_bitrate_kbps") val customBitrateKbps: Int = 2500,
+    @SerialName("planned_width") val plannedWidth: Int = 0,
+    @SerialName("planned_height") val plannedHeight: Int = 0,
+    @SerialName("planned_fps") val plannedFps: Int = 0,
+    @SerialName("planned_bitrate_kbps") val plannedBitrateKbps: Int = 0,
+)
+
+@Serializable
+data class MediaQualityResult(
+    val screen: MediaQualityView = MediaQualityView(),
+    val camera: MediaQualityView = MediaQualityView(),
+    val encoder: String = "",
+    @SerialName("hardware_video") val hardwareVideo: Boolean = false,
+)
+
+@Serializable
+data class SetMediaQualityParams(
+    val target: String,
+    val profile: String? = null,
+    val resolution: String? = null,
+    @SerialName("custom_height") val customHeight: Int? = null,
+    @SerialName("custom_fps") val customFps: Int? = null,
+    @SerialName("custom_bitrate_kbps") val customBitrateKbps: Int? = null,
 )
 
 @Serializable

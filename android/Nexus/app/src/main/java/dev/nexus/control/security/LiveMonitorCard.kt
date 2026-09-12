@@ -19,6 +19,18 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.viewinterop.AndroidView
+import android.view.Surface
+import android.view.SurfaceHolder
+import android.view.SurfaceView
+import dev.nexus.control.protocol.SetMediaQualityParams
+import dev.nexus.control.remote.QualitySettingsPanel
+import dev.nexus.control.remote.QualityToggle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -43,7 +55,12 @@ fun LiveMonitorCard(
     onToggle: (LiveSensorKind) -> Unit,
     onStopAll: () -> Unit,
     modifier: Modifier = Modifier,
+    onCameraSurface: (Surface?) -> Unit = {},
+    onCameraQuality: (SetMediaQualityParams) -> Unit = {},
 ) {
+    var qualityVisible by remember { mutableStateOf(false) }
+    val currentOnSurface by rememberUpdatedState(onCameraSurface)
+
     Panel(title = "Live monitor", modifier = modifier) {
         Text(
             "See and hear the room your PC is in. Nothing is recorded — these frames are shown and "
@@ -60,28 +77,58 @@ fun LiveMonitorCard(
         }
 
         if (state.camera) {
+            // Shaped to the stream itself once it is known, so a 16:9 webcam is not letterboxed into
+            // a 4:3 box and a portrait one is not stretched.
+            val ratio = if (state.cameraWidth > 0 && state.cameraHeight > 0) {
+                state.cameraWidth.toFloat() / state.cameraHeight
+            } else {
+                16f / 9f
+            }
+
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .aspectRatio(4f / 3f)
+                    .aspectRatio(ratio)
                     .clip(RoundedCornerShape(12.dp))
                     .background(Color.Black),
                 contentAlignment = Alignment.Center,
             ) {
+                // The video surface is always there while the camera is on, so the decoder has
+                // somewhere to draw the moment the first keyframe arrives.
+                AndroidView(
+                    factory = { context ->
+                        SurfaceView(context).apply {
+                            holder.addCallback(object : SurfaceHolder.Callback {
+                                override fun surfaceCreated(holder: SurfaceHolder) = currentOnSurface(holder.surface)
+
+                                override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
+
+                                override fun surfaceDestroyed(holder: SurfaceHolder) = currentOnSurface(null)
+                            })
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().aspectRatio(ratio),
+                )
+
                 val image = state.image
 
-                if (image != null) {
+                if (image != null && !state.cameraVideo) {
                     Image(
                         bitmap = image,
                         contentDescription = "Live camera",
                         modifier = Modifier.fillMaxWidth(),
                         contentScale = ContentScale.Fit,
                     )
-                } else {
+                } else if (state.framesRendered == 0L) {
                     // Waiting rather than broken: the first frame takes as long as the camera takes
                     // to open, which on some webcams is a second or two.
                     CircularProgressIndicator()
                 }
+            }
+
+            state.cameraStats?.let {
+                Spacer(Modifier.height(4.dp))
+                Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
 
             Spacer(Modifier.height(8.dp))
@@ -110,6 +157,19 @@ fun LiveMonitorCard(
 
             OutlinedButton(onClick = onStopAll, modifier = Modifier.fillMaxWidth()) {
                 Text("Stop everything")
+            }
+        }
+
+        state.quality?.let { settings ->
+            QualityToggle(expanded = qualityVisible, onToggle = { qualityVisible = !qualityVisible })
+
+            if (qualityVisible) {
+                QualitySettingsPanel(
+                    title = "Camera quality",
+                    view = settings.camera,
+                    encoder = settings.encoder,
+                    onChange = onCameraQuality,
+                )
             }
         }
 

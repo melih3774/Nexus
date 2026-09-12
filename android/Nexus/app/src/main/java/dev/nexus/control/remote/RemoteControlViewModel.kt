@@ -16,8 +16,14 @@ import dev.nexus.control.protocol.NativeInputStatus
 import dev.nexus.control.protocol.NexusKey
 import dev.nexus.control.protocol.PointerButton
 import dev.nexus.control.protocol.TouchAction
+import dev.nexus.control.protocol.MediaQualityResult
+import dev.nexus.control.protocol.SetMediaQualityParams
+import dev.nexus.control.protocol.StreamReportParams
+import android.view.Surface
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -86,7 +92,27 @@ class RemoteControlViewModel(
     private val session: RemoteControlSession,
 ) : ViewModel() {
 
-    val pipeline = FramePipeline(viewModelScope)
+    /** The offset between this phone's clock and the PC's, so latency is a measurement. */
+    private val clock = StreamClock()
+
+    val pipeline = FramePipeline(
+        scope = viewModelScope,
+        clock = clock,
+        onKeyframeNeeded = { session.requestKeyframe() },
+    )
+
+    private val qualityClient = MediaQualityClient(connection)
+
+    private val _quality = MutableStateFlow<MediaQualityResult?>(null)
+
+    /** The PC's streaming settings for the screen and the camera, or null until read. */
+    val quality: StateFlow<MediaQualityResult?> = _quality.asStateFlow()
+
+    /** Set once the start response names the stream; until then any stream's frames are accepted. */
+    @Volatile
+    private var acceptedStreamId = -1L
+
+    private var reportJob: Job? = null
 
     private val _state = MutableStateFlow(RemoteUiState())
     val state: StateFlow<RemoteUiState> = _state.asStateFlow()
@@ -116,7 +142,10 @@ class RemoteControlViewModel(
                 if (state !is ConnectionState.Connected && _state.value.streaming) {
                     session.forgetHeldState()
                     lastContact = null
+                    connection.streamFrameSink = null
+                    reportJob?.cancel()
                     pipeline.stop()
+                    clock.reset()
 
                     _state.value = _state.value.copy(
                         streaming = false,
@@ -139,19 +168,31 @@ class RemoteControlViewModel(
         viewModelScope.launch {
             try {
                 val displays = runCatching { session.listDisplays() }.getOrDefault(emptyList())
+
+                // The sink goes in before the stream is asked for. The PC starts capturing the moment
+                // it accepts, so the configuration frame and the first keyframe can arrive before
+                // the response does — and a decoder that missed the configuration has nothing to
+                // start from until someone thinks to ask for another.
+                pipeline.start()
+                acceptedStreamId = -1
+                connection.streamFrameSink = { frame ->
+                    val accepted = acceptedStreamId
+
+                    if (accepted < 0 || frame.header.streamId == accepted) {
+                        pipeline.submit(frame)
+                    }
+                }
+
                 val started = session.startStream(_state.value.displayIndex.takeIf { displays.size > 1 })
 
-                pipeline.start()
+                acceptedStreamId = started.streamId
+                pipeline.plan = started.plan
                 _still.value = null
 
                 frameJob?.cancel()
-                frameJob = viewModelScope.launch {
-                    connection.frames.collect { frame ->
-                        if (frame.header.streamId == started.streamId) {
-                            pipeline.submit(frame)
-                        }
-                    }
-                }
+                frameJob = null
+
+                startReporting()
 
                 _state.value = _state.value.copy(
                     streaming = true,
@@ -185,6 +226,11 @@ class RemoteControlViewModel(
 
         frameJob?.cancel()
         frameJob = null
+
+        connection.streamFrameSink = null
+        acceptedStreamId = -1
+        reportJob?.cancel()
+        reportJob = null
 
         pipeline.stop()
 
@@ -233,6 +279,65 @@ class RemoteControlViewModel(
                 throw e
             } catch (e: Exception) {
                 _state.value = _state.value.copy(starting = false, error = describe(e))
+            }
+        }
+    }
+
+    /** The video surface came or went. The decoder follows it. */
+    fun attachSurface(surface: Surface?) = pipeline.attachSurface(surface)
+
+    /**
+     * Measures the clock, then tells the PC once a second what the phone is seeing.
+     *
+     * The report is what lets the PC tell a slow link from a slow phone, and its answer is the plan in
+     * force, which is how an adaptive change reaches the stats overlay without polling for it. The
+     * clock is re-measured every minute because a phone that roams from Wi-Fi to mobile data changes
+     * the round trip, and with it the error bound on every latency figure.
+     */
+    private fun startReporting() {
+        reportJob?.cancel()
+        reportJob = viewModelScope.launch {
+            clock.reset()
+            session.synchroniseClock(clock)
+
+            var tick = 0
+
+            while (isActive) {
+                delay(REPORT_INTERVAL_MS)
+
+                val stats = pipeline.stats.value
+
+                val result = session.report(
+                    StreamReportParams(
+                        latencyMs = stats.latencyMs.takeIf { it >= 0 },
+                        decodeMs = stats.decodeMs.takeIf { stats.encoding == "H.264" },
+                        renderedFps = stats.renderFps,
+                        dropped = stats.dropped,
+                    ),
+                )
+
+                result?.plan?.takeIf { it.isNotBlank() }?.let { pipeline.plan = it }
+
+                if (++tick % CLOCK_RESYNC_REPORTS == 0) {
+                    session.synchroniseClock(clock, samples = 3)
+                }
+            }
+        }
+    }
+
+    fun loadQuality() {
+        viewModelScope.launch { _quality.value = qualityClient.get() ?: _quality.value }
+    }
+
+    /** Changes the screen's settings. The running stream re-plans on its next frame. */
+    fun setScreenQuality(change: SetMediaQualityParams) {
+        viewModelScope.launch {
+            try {
+                _quality.value = qualityClient.set(change.copy(target = "screen")) ?: _quality.value
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(refusal = describe(e))
             }
         }
     }
@@ -470,11 +575,14 @@ class RemoteControlViewModel(
         // The last line of defence. Whatever route the screen left by, nothing is left running.
         stop()
         connectionJob?.cancel()
-        pipeline.stop()
+        pipeline.release()
         super.onCleared()
     }
 
     companion object {
+        private const val REPORT_INTERVAL_MS = 1_000L
+        private const val CLOCK_RESYNC_REPORTS = 60
+
         val Factory = viewModelFactory {
             initializer {
                 val connection = this.nexusContainer.connection

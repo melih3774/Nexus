@@ -9,6 +9,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.CircularProgressIndicator
@@ -50,6 +56,8 @@ fun RemoteScreen(
     val frame by viewModel.frames.collectAsStateWithLifecycle()
     val still by viewModel.still.collectAsStateWithLifecycle()
     val stats by viewModel.stats.collectAsStateWithLifecycle()
+    val quality by viewModel.quality.collectAsStateWithLifecycle()
+    var qualityVisible by remember { mutableStateOf(false) }
 
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -57,6 +65,7 @@ fun RemoteScreen(
     // should outlive this screen.
     DisposableEffect(Unit) {
         viewModel.start()
+        viewModel.loadQuality()
         onDispose { viewModel.stop() }
     }
 
@@ -81,6 +90,7 @@ fun RemoteScreen(
     Box(modifier = modifier.fillMaxSize().background(Color.Black)) {
         DesktopSurface(
             frame = frame,
+            onSurface = viewModel::attachSurface,
             pointerMode = state.pointerMode,
             inputEnabled = state.inputEnabled,
             onTap = { point ->
@@ -247,8 +257,35 @@ fun RemoteScreen(
                         Text(if (state.keyboardVisible) "Hide keyboard" else "Keyboard")
                     }
 
+                    if (quality != null) {
+                        QualityToggle(expanded = qualityVisible, onToggle = { qualityVisible = !qualityVisible })
+                    }
+
                     TextButton(onClick = viewModel::toggleDiagnostics) {
                         Text(if (state.diagnosticsVisible) stats.summary else "Stats")
+                    }
+                }
+
+                // The full measurement, not just the headline: what arrived, what was drawn, how old
+                // the picture on screen is and how sure that figure is.
+                AnimatedVisibility(visible = state.diagnosticsVisible) {
+                    Text(
+                        stats.detail,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                AnimatedVisibility(visible = qualityVisible && quality != null) {
+                    quality?.let { settings ->
+                        Column(Modifier.heightIn(max = 300.dp).verticalScroll(rememberScrollState())) {
+                            QualitySettingsPanel(
+                                title = "Screen quality",
+                                view = settings.screen,
+                                encoder = settings.encoder,
+                                onChange = viewModel::setScreenQuality,
+                            )
+                        }
                     }
                 }
 

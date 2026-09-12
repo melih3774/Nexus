@@ -38,8 +38,29 @@ data class LiveSensorFrameHeader(
     val heightOrChannels: Int,
 
     val payloadLength: Int,
+
+    /**
+     * How the payload is encoded: 0 keeps the original meaning (JPEG for the camera, PCM for the
+     * microphone), 2 is H.264.
+     */
+    val encoding: Int = ENCODING_DEFAULT,
+
+    /** Keyframe and codec-config markers, meaningful only when [encoding] is H.264. */
+    val flags: Int = 0,
 ) {
+    val isH264: Boolean get() = encoding == ENCODING_H264
+
+    val isKeyframe: Boolean get() = flags and FLAG_KEYFRAME != 0
+
+    val isCodecConfig: Boolean get() = flags and FLAG_CODEC_CONFIG != 0
+
     companion object {
+        const val ENCODING_DEFAULT: Int = 0
+        const val ENCODING_H264: Int = 2
+
+        const val FLAG_KEYFRAME: Int = 4
+        const val FLAG_CODEC_CONFIG: Int = 8
+
         const val SIZE: Int = 32
         const val CURRENT_VERSION: Int = 1
 
@@ -66,6 +87,9 @@ data class LiveSensorFrameHeader(
             val payloadLength = message.size - SIZE
             if (payloadLength < 0 || payloadLength > MAX_PAYLOAD_BYTES) return null
 
+            val encoding = message[6].toInt() and 0xFF
+            if (encoding > ENCODING_H264) return null
+
             return LiveSensorFrameHeader(
                 version = CURRENT_VERSION,
                 kind = kind,
@@ -74,6 +98,8 @@ data class LiveSensorFrameHeader(
                 widthOrSampleRate = int32(message, 24),
                 heightOrChannels = int16(message, 28),
                 payloadLength = payloadLength,
+                encoding = encoding,
+                flags = message[7].toInt() and 0xFF,
             )
         }
 
@@ -99,7 +125,9 @@ data class LiveSensorFrameHeader(
 /** One live frame: its header, and the bytes behind it. */
 class LiveSensorFrame(
     val header: LiveSensorFrameHeader,
-    private val message: ByteArray,
+
+    /** The whole received message. A video decoder reads the payload in place rather than copying it. */
+    val message: ByteArray,
 ) {
     /** JPEG bytes for the camera, signed 16-bit little-endian PCM for the microphone. */
     fun payload(): ByteArray =

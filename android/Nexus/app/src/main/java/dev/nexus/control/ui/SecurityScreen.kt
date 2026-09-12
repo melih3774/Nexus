@@ -111,6 +111,7 @@ fun SecurityScreen(
         viewModel.refresh()
         incidentViewModel.refresh()
         liveViewModel.refresh()
+        liveViewModel.loadQuality()
     }
 
     // Leaving the Security screen stops live capture. A camera the owner is no longer looking at is
@@ -264,6 +265,8 @@ fun SecurityScreen(
             state = liveState,
             onToggle = liveViewModel::toggle,
             onStopAll = liveViewModel::stopAll,
+            onCameraSurface = liveViewModel::attachCameraSurface,
+            onCameraQuality = liveViewModel::setCameraQuality,
         )
 
         Spacer(Modifier.height(24.dp))

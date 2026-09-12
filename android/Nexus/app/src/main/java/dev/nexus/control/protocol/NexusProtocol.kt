@@ -80,6 +80,17 @@ object NexusProtocol {
         const val MEDIA_LIVE_START = "media.live.start"
         const val MEDIA_LIVE_STOP = "media.live.stop"
         const val MEDIA_LIVE_STATUS = "media.live.status"
+        const val MEDIA_LIVE_KEYFRAME = "media.live.keyframe"
+
+        // v1.2 - the video pipeline. KEYFRAME is how a decoder that lost its place asks to be given
+        // one again; REPORT is how the PC finds out that the phone, rather than the link, is the
+        // bottleneck; MEDIA_TIME is what makes a latency figure a measurement rather than the
+        // difference between two unsynchronised clocks.
+        const val STREAM_KEYFRAME = "screen.stream.keyframe"
+        const val STREAM_REPORT = "screen.stream.report"
+        const val MEDIA_QUALITY_GET = "media.quality.get"
+        const val MEDIA_QUALITY_SET = "media.quality.set"
+        const val MEDIA_TIME = "media.time"
     }
 
     object Events {

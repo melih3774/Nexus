@@ -20,6 +20,8 @@ import dev.nexus.control.protocol.PointerParams
 import dev.nexus.control.protocol.ScrollParams
 import dev.nexus.control.protocol.StartStreamParams
 import dev.nexus.control.protocol.StreamStarted
+import dev.nexus.control.protocol.StreamReportParams
+import dev.nexus.control.protocol.StreamReportResult
 import dev.nexus.control.protocol.NativeInputStatus
 import dev.nexus.control.protocol.TextParams
 import dev.nexus.control.protocol.TouchAction
@@ -91,6 +93,32 @@ class RemoteControlSession(private val connection: NexusCommandChannel) {
 
         return NexusJson.decodeFromJsonElement(CaptureScreenResult.serializer(), result)
     }
+
+    /**
+     * Asks for the next frame to be a keyframe.
+     *
+     * Fire-and-forget: it is sent from the decoder's own callbacks, sometimes on the socket thread,
+     * and waiting for an acknowledgement there would stall the frames it is trying to recover.
+     */
+    fun requestKeyframe() {
+        connection.notify(NexusProtocol.Actions.STREAM_KEYFRAME)
+    }
+
+    /** Tells the PC what the phone is measuring, and learns the plan in force. Null on an older PC. */
+    suspend fun report(params: StreamReportParams): StreamReportResult? = try {
+        connection.request(
+            NexusProtocol.Actions.STREAM_REPORT,
+            NexusJson.encodeToJsonElement(StreamReportParams.serializer(), params),
+            timeoutMs = 3_000,
+        )?.let { NexusJson.decodeFromJsonElement(StreamReportResult.serializer(), it) }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        null
+    }
+
+    /** Measures the clock offset against the PC. See [StreamClock.synchronise]. */
+    suspend fun synchroniseClock(clock: StreamClock, samples: Int = 5) = clock.synchronise(connection, samples)
 
     /** Best-effort: the stream is stopping either way, and a failure here must not surface as an error. */
     suspend fun stopStream() {
