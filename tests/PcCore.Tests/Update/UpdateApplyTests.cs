@@ -127,6 +127,9 @@ public sealed class UpdateApplyTests : IDisposable
         Assert.Contains("previous version was restored", status.Message, StringComparison.Ordinal);
         Assert.False(File.Exists(_fixture.Paths.JournalPath));
         Assert.Null(_fixture.Paths.ReadInstalledRecord());
+
+        // Not kept for a resume: retrying a release that failed should read it from the store again.
+        Assert.False(Directory.Exists(_fixture.Paths.StagingRoot));
     }
 
     [Fact]

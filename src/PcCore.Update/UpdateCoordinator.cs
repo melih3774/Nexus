@@ -246,6 +246,7 @@ public sealed class UpdateCoordinator
             // is started again: an update that failed must not also leave the phone without a PC.
             _log($"Replacing files failed: {ex.Message}");
             await RestartPreviousAsync(previousVersion, cancellationToken).ConfigureAwait(false);
+            TryDeleteDirectory(_paths.StagingRoot);
             return Report(UpdateOutcome.RolledBack, manifest, $"The files could not be replaced ({ex.Message}). The previous version is back.", previousVersion);
         }
 
@@ -276,6 +277,10 @@ public sealed class UpdateCoordinator
         }
 
         await RestartPreviousAsync(previousVersion, cancellationToken).ConfigureAwait(false);
+
+        // A release that was installed and failed is not one to resume. Staging is kept only after a
+        // download that did not finish, so the next attempt starts from what arrived.
+        TryDeleteDirectory(_paths.StagingRoot);
 
         return Report(UpdateOutcome.RolledBack, manifest,
             $"Nexus {manifest.Version} did not start correctly ({healthy.Detail}). The previous version was restored.", previousVersion);
