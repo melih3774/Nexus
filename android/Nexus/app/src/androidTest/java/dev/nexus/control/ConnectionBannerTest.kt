@@ -69,7 +69,9 @@ class ConnectionBannerTest {
         // The one failure that will not fix itself, so it must not read like the others.
         show(ConnectionState.Failed(FailureReason.AuthenticationFailed, willRetry = false, attempt = 1))
 
-        compose.onNodeWithText("Authentication failed").assertIsDisplayed()
+        // Named for the credential, not "authentication", since v1.1.1: the owner's fingerprint prompt
+        // is also called authentication, and it is not what failed here.
+        compose.onNodeWithText("This phone is not the paired one").assertIsDisplayed()
     }
 
     @Test

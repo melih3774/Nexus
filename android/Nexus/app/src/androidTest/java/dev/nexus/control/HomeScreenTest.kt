@@ -4,6 +4,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import dev.nexus.control.data.PairedPc
 import dev.nexus.control.net.ConnectionState
@@ -37,6 +38,7 @@ class HomeScreenTest {
         deviceId = "bYWObWzU6kQ9UMMZT3kCog",
         endpoint = "100.101.102.103:47812",
         pairedAt = "2026-08-29T12:34:56.789+00:00",
+        credentialFingerprint = "1a2b3c4d",
     )
 
     private val info = SystemInfo(
@@ -103,20 +105,23 @@ class HomeScreenTest {
     }
 
     @Test
-    fun nothingCredentialShapedIsOnScreen() {
+    fun theCredentialAppearsOnlyAsItsFingerprint() {
         render(connected())
 
-        // The home screen holds PairedPc, which has no field that could carry a secret. The device
-        // id is not secret but is not useful to display either, so it is not shown.
-        compose.onNodeWithText(pc.deviceId).assertDoesNotExist()
-        compose.onNodeWithText(pc.pcInstanceId).assertDoesNotExist()
+        // PairedPc has no field that could carry the secret. Since v1.1.1 the screen shows the two
+        // identifiers PC Core names when it refuses a phone, and the credential as an eight-character
+        // fingerprint, so a refusal can be checked against the PC's log. Identifiers, not secrets.
+        compose.onNodeWithText(pc.deviceId).assertExists()
+        compose.onNodeWithText(pc.pcInstanceId).assertExists()
+        compose.onNodeWithText(pc.credentialFingerprint).assertExists()
     }
 
     @Test
     fun forgettingThePcAsksFirst() {
         render(connected())
 
-        compose.onNodeWithText("Forget this PC").performClick()
+        // Below the clipboard panel and the update card, so off the first screen.
+        compose.onNodeWithText("Forget this PC").performScrollTo().performClick()
 
         // The dialog explains that the PC keeps its own record — the phone is not the authority.
         compose.onNodeWithText("Forget this PC?").assertIsDisplayed()
