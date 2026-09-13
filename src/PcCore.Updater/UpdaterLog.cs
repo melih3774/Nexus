@@ -17,7 +17,7 @@ internal sealed class UpdaterLog
 
     private readonly string? _path;
     private readonly Lock _gate = new();
-    private readonly bool _console;
+    private bool _console;
 
     public UpdaterLog(string? path, bool attachConsole)
     {
@@ -52,7 +52,16 @@ internal sealed class UpdaterLog
         {
             if (_console)
             {
-                Console.WriteLine(line);
+                try
+                {
+                    Console.WriteLine(line);
+                }
+                catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+                {
+                    // Stopping an old PC Core borrows its console to send Ctrl+C, which leaves this
+                    // process's console handle dead. The file is the record; the console was a courtesy.
+                    _console = false;
+                }
             }
 
             if (_path is null)

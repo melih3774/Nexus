@@ -42,6 +42,10 @@ public static class Program
         var log = new UpdaterLog(paths.LogPath, attachConsole: true);
         var processes = new WindowsProcessControl(log.Write);
 
+        // The one outcome an update must never have: PC Core stopped and nobody left to start it.
+        // Everything expected is handled below; this is for whatever was not.
+        AppDomain.CurrentDomain.UnhandledException += (_, e) => LeavePcCoreRunning(paths, processes, log, e.ExceptionObject as Exception);
+
         var coordinator = new UpdateCoordinator(
             store,
             paths,
@@ -117,30 +121,54 @@ public static class Program
         {
             // Last resort. The coordinator handles every failure it expects; anything reaching here is
             // a bug, and the log is where the owner will look for it.
-            log.Write($"The updater failed unexpectedly: {ex}");
-
-            // Whatever it was in the middle of, leave the previous installation running.
-            var stuck = new PcCoreFileSwap(paths.JournalPath, log.Write).RollBack();
-
-            if (processes.FindRunning().Count == 0 && File.Exists(paths.InstalledExecutable))
-            {
-                processes.Start(paths.InstalledExecutable);
-            }
-
-            paths.WriteStatus(new UpdateStatus
-            {
-                State = UpdateState.Failed,
-                Message = stuck.Count == 0
-                    ? $"The update failed unexpectedly ({ex.GetType().Name}); the previous version was kept."
-                    : $"The update failed unexpectedly ({ex.GetType().Name}) and could not be fully undone. See {paths.LogPath}.",
-                UpdatedAtUtc = DateTimeOffset.UtcNow,
-            });
-
+            LeavePcCoreRunning(paths, processes, log, ex);
             return 1;
         }
         finally
         {
             mutex.ReleaseMutex();
+        }
+    }
+
+    /// <summary>
+    /// Whatever the updater was in the middle of: undo the file swap if one was under way, start PC
+    /// Core if it is not running, and say so. Every step is attempted even if an earlier one fails.
+    /// </summary>
+    private static void LeavePcCoreRunning(UpdatePaths paths, WindowsProcessControl processes, UpdaterLog log, Exception? ex)
+    {
+        IReadOnlyList<string> stuck = [];
+
+        Attempt(() => log.Write($"The updater failed unexpectedly: {ex}"));
+        Attempt(() => stuck = new PcCoreFileSwap(paths.JournalPath, log.Write).RollBack());
+
+        Attempt(() =>
+        {
+            if (processes.FindRunning().Count == 0 && File.Exists(paths.InstalledExecutable))
+            {
+                processes.Start(paths.InstalledExecutable);
+                log.Write("Started PC Core again after the failure.");
+            }
+        });
+
+        Attempt(() => paths.WriteStatus(new UpdateStatus
+        {
+            State = UpdateState.Failed,
+            Message = stuck.Count == 0
+                ? $"The update failed unexpectedly ({ex?.GetType().Name}); the previous version was kept."
+                : $"The update failed unexpectedly ({ex?.GetType().Name}) and could not be fully undone. See {paths.LogPath}.",
+            UpdatedAtUtc = DateTimeOffset.UtcNow,
+        }));
+
+        static void Attempt(Action step)
+        {
+            try
+            {
+                step();
+            }
+            catch
+            {
+                // Nothing else to fall back to; the remaining steps still run.
+            }
         }
     }
 
