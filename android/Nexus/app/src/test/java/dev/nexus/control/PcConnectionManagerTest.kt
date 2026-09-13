@@ -1,6 +1,7 @@
 package dev.nexus.control
 
 import dev.nexus.control.data.NexusCredential
+import dev.nexus.control.net.AppVersion
 import dev.nexus.control.net.ConnectionState
 import dev.nexus.control.net.FailureReason
 import dev.nexus.control.net.NexusRequestException
@@ -80,7 +81,7 @@ class PcConnectionManagerTest {
         server.start()
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         client = PcConnectionManager.defaultClient()
-        manager = PcConnectionManager(scope, probe, client)
+        manager = PcConnectionManager(scope, probe, client, appVersion = AppVersion(16, "1.3.1"))
     }
 
     @After
@@ -105,6 +106,7 @@ class PcConnectionManagerTest {
     private open inner class FakePc(
         private val acceptAuth: Boolean = true,
         private val onRequest: (WebSocket, RequestEnvelope) -> Unit = { _, _ -> },
+        private val updateRequired: Boolean = false,
     ) : WebSocketListener() {
 
         val received = CopyOnWriteArrayList<RequestEnvelope>()
@@ -156,7 +158,8 @@ class PcConnectionManagerTest {
                          "action":"auth.authenticate","success":true,
                          "result":{"authenticated":true,"actor_type":"DEVICE","device_id":"$DEVICE_ID",
                                    "session_id":"sess-1","pc_instance_id":"$PC_INSTANCE",
-                                   "allowed_roots":["C:\\Users\\Example\\Desktop"]},
+                                   "allowed_roots":["C:\\Users\\Example\\Desktop"],
+                                   "update_required":$updateRequired,"minimum_client_version_code":20},
                          "error":null,"duration_ms":1}
                         """.trimIndent().replace("\n", ""),
                     )
@@ -516,6 +519,29 @@ class PcConnectionManagerTest {
         assertTrue(!encoded.contains(SECRET))
     }
 
+    @Test
+    fun `the app says which build it is, and hears when the PC needs a newer one`() {
+        val pc = FakePc(updateRequired = true)
+        start(pc)
+        connect()
+
+        val connected = awaitConnected()
+
+        // Told outright, so the app can show the update instead of a string of refusals.
+        assertTrue(connected.updateRequired)
+
+        val auth = pc.received.single { it.action == NexusProtocol.Actions.AUTHENTICATE }.params!!.jsonObject
+        assertEquals("16", auth["client_version_code"]!!.jsonPrimitive.content)
+        assertEquals("1.3.1", auth["client_version_name"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `a current app is not told to update`() {
+        start(FakePc())
+        connect()
+
+        assertEquals(false, awaitConnected().updateRequired)
+    }
     private fun reason() = (manager.state.value as? ConnectionState.Failed)?.reason
 
     /** A port that was free a moment ago and has nothing listening on it now. */

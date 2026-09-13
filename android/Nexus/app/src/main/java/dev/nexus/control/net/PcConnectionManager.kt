@@ -84,6 +84,13 @@ class PcConnectionManager(
     private val scope: CoroutineScope,
     private val probe: PrivateNetworkProbe,
     private val http: OkHttpClient = defaultClient(),
+
+    /**
+     * Which build of this app is talking, sent at authentication. The PC uses it for one thing:
+     * telling an app too old for it that an update is required, instead of refusing it one request
+     * at a time.
+     */
+    private val appVersion: AppVersion = AppVersion.UNKNOWN,
 ) : NexusCommandChannel {
     private val _state = MutableStateFlow<ConnectionState>(ConnectionState.Idle)
     val state: StateFlow<ConnectionState> = _state.asStateFlow()
@@ -388,6 +395,8 @@ class PcConnectionManager(
                         deviceId = credential.deviceId,
                         proof = proof,
                         pcInstanceId = credential.pcInstanceId,
+                        clientVersionCode = appVersion.code.takeIf { it > 0 },
+                        clientVersionName = appVersion.name.takeIf { it.isNotEmpty() },
                     ),
                 ),
             )
@@ -412,11 +421,16 @@ class PcConnectionManager(
                 ?.let { NexusJson.decodeFromJsonElement(AuthenticatedSession.serializer(), it) }
                 ?: return FailureReason.ProtocolError
 
+            if (session.updateRequired) {
+                Log.w(TAG, "The PC serves app builds from ${session.minimumClientVersionCode}; this is ${appVersion.code}")
+            }
+
             _state.value = ConnectionState.Connected(
                 deviceId = session.deviceId.orEmpty(),
                 sessionId = session.sessionId.orEmpty(),
                 pcInstanceId = session.pcInstanceId.orEmpty(),
                 allowedRoots = session.allowedRoots,
+                updateRequired = session.updateRequired,
             )
 
             pump(incoming)
@@ -547,6 +561,10 @@ class PcConnectionManager(
          * of producing a failure that looks identical to a wrong secret and has a different cause.
          */
         @kotlinx.serialization.SerialName("pc_instance_id") val pcInstanceId: String,
+
+        /** This app's versionCode and versionName. Omitted when unknown, which reads as the legacy build. */
+        @kotlinx.serialization.SerialName("client_version_code") val clientVersionCode: Int? = null,
+        @kotlinx.serialization.SerialName("client_version_name") val clientVersionName: String? = null,
     )
 
     companion object {

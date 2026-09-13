@@ -39,6 +39,24 @@ public sealed record CallerDescriptor(
     }
 
     /// <summary>
+    /// The app build a remote device said it is running, when it said. Informational: it is the
+    /// caller's own claim, and only ever used to <em>narrow</em> what it may do.
+    /// </summary>
+    public int? ClientVersionCode { get; init; }
+
+    /// <summary>
+    /// Set by the remote transport when the device's app is older than this PC Core serves. The
+    /// policy then allows the update path and nothing else.
+    /// <para>
+    /// A compatibility gate, not a security control: the version is the client's own claim, and a
+    /// client that overstated it would receive exactly what a current app on the same authenticated
+    /// device receives. What it guarantees is that an honest old app is steered to the update instead
+    /// of misbehaving against a protocol it does not understand.
+    /// </para>
+    /// </summary>
+    public bool RequiresUpdate { get; init; }
+
+    /// <summary>
     /// A modelling guard, not a security control: it keeps a device id from being stamped onto a
     /// caller that was never authenticated as a device, so no part of the system can later read one
     /// and conclude a pairing happened.

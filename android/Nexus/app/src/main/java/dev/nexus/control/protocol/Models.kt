@@ -45,6 +45,14 @@ data class AuthenticatedSession(
 
     /** Whether this phone has already registered its owner-authentication key with the PC. */
     @SerialName("owner_key_registered") val ownerKeyRegistered: Boolean = false,
+
+    /**
+     * The PC serves only newer builds of this app. Until it updates, `update.check` and
+     * `update.apk.get` are all this session may do. False from a PC Core that predates the check.
+     */
+    @SerialName("update_required") val updateRequired: Boolean = false,
+
+    @SerialName("minimum_client_version_code") val minimumClientVersionCode: Int = 0,
 )
 
 /** What `session.status` reports about this connection. */

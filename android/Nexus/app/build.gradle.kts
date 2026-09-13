@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     // AGP 9 provides Kotlin compilation itself (built-in Kotlin); the standalone
     // org.jetbrains.kotlin.android plugin is not applied and would collide with it.
@@ -5,6 +7,34 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
 }
+
+/**
+ * One version for the whole product. The name is Nexus's product version, read from the same
+ * `Directory.Build.props` PC Core is stamped from, so the phone and the PC cannot disagree about which
+ * Nexus this is. `tools/publish-release.ps1` passes both explicitly for a release.
+ */
+val nexusVersionName: String = (findProperty("nexusVersionName") as String?)
+    ?: Regex("<VersionPrefix>([^<]+)</VersionPrefix>")
+        .find(rootProject.file("../../Directory.Build.props").readText())
+        ?.groupValues?.get(1)
+    ?: "0.0.0"
+
+/**
+ * Must increase for Android to accept an in-place upgrade. A release uses its release number; 14 is
+ * the last hand-numbered build, and what a local build gets when nobody says otherwise.
+ */
+val nexusVersionCode: Int = (findProperty("nexusVersionCode") as String?)?.toInt() ?: 14
+
+/**
+ * The release signing key, which never enters the repository. `tools/setup-android-signing.ps1`
+ * creates it once, in the owner's profile. A release without it is refused rather than built unsigned
+ * or signed with some other key: a different key is an APK Android will not install over the app
+ * that is there, and discovering that on the phone would cost the pairing.
+ */
+val nexusSigningProperties: File =
+    (System.getenv("NEXUS_SIGNING_PROPERTIES") ?: findProperty("nexusSigningProperties") as String?)
+        ?.let(::File)
+        ?: File(System.getProperty("user.home"), ".nexus/release-signing/signing.properties")
 
 android {
     namespace = "dev.nexus.control"
@@ -25,20 +55,39 @@ android {
         minSdk = 31
         targetSdk = 37
 
-        versionCode = 14
-        versionName = "1.2.1"
+        versionCode = nexusVersionCode
+        versionName = nexusVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        if (nexusSigningProperties.isFile) {
+            val signing = Properties().apply { nexusSigningProperties.inputStream().use(::load) }
+
+            create("nexusRelease") {
+                storeFile = File(signing.getProperty("storeFile")).let {
+                    if (it.isAbsolute) it else File(nexusSigningProperties.parentFile, it.path)
+                }
+                storePassword = signing.getProperty("storePassword")
+                keyAlias = signing.getProperty("keyAlias")
+                keyPassword = signing.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         debug {
-            // The only build type that matters for v0.5: the owner installs this directly.
+            // For development against a device over adb. What the phone installs day to day is the
+            // release build, delivered by its PC.
             isMinifyEnabled = false
         }
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+
+            // Null when the key is not set up, which leaves an unsigned APK the publish script refuses.
+            signingConfig = signingConfigs.findByName("nexusRelease")
         }
     }
 

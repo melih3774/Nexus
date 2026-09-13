@@ -10,6 +10,9 @@ import androidx.lifecycle.viewmodel.CreationExtras
 import dev.nexus.control.data.CredentialStore
 import dev.nexus.control.data.NexusRepository
 import dev.nexus.control.net.AndroidPrivateNetworkProbe
+import dev.nexus.control.net.AppVersion
+import dev.nexus.control.update.UpdateClient
+import dev.nexus.control.update.UpdateManager
 import dev.nexus.control.net.PcConnectionManager
 import dev.nexus.control.net.PcEnrollmentClient
 import dev.nexus.control.security.EvidenceCache
@@ -37,7 +40,10 @@ class NexusContainer(context: Context) {
 
     private val credentials = CredentialStore(context)
 
-    val connection = PcConnectionManager(scope, AndroidPrivateNetworkProbe(context))
+    /** This build, as Android installed it. Reported to the PC, and compared with what it offers. */
+    val appVersion = AppVersion.of(context)
+
+    val connection = PcConnectionManager(scope, AndroidPrivateNetworkProbe(context), appVersion = appVersion)
 
     val repository = NexusRepository(credentials, connection, PcEnrollmentClient())
 
@@ -63,6 +69,12 @@ class NexusContainer(context: Context) {
      * place for them is the one Android is allowed to empty without asking.
      */
     val evidenceCache = EvidenceCache(java.io.File(context.cacheDir, "nexus-evidence"), incidents)
+
+    /**
+     * Updating this app from its PC. In the container because an install outlives the screen that
+     * started it: Android's confirmation takes the foreground, and the answer comes back to a receiver.
+     */
+    val updates = UpdateManager(context.applicationContext, scope, connection.state, UpdateClient(connection), appVersion)
 }
 
 class NexusApplication : Application() {

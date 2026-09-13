@@ -55,6 +55,12 @@ public sealed class RemotePhoneClient : IAsyncDisposable
 
     public bool IsAuthenticated { get; private set; }
 
+    /// <summary>
+    /// The app build this client claims to be, sent at authentication the way the Android app sends
+    /// its versionCode. Null sends nothing, which is what a phone from before the update path does.
+    /// </summary>
+    public int? ClientVersionCode { get; init; }
+
     /// <summary>Events received on this connection, in arrival order.</summary>
     public IReadOnlyList<EventEnvelope> ReceivedEvents
     {
@@ -112,6 +118,7 @@ public sealed class RemotePhoneClient : IAsyncDisposable
                 // can then say "you are signing for a different installation" instead of leaving
                 // that indistinguishable from a wrong secret.
                 pc_instance_id = pcInstanceId,
+                client_version_code = ClientVersionCode,
             },
             cancellationToken).ConfigureAwait(false);
 
@@ -121,7 +128,7 @@ public sealed class RemotePhoneClient : IAsyncDisposable
 
     /// <summary>
     /// Reproduces the server's signed message and HMACs it. Mirrors
-    /// <c>DeviceAuthenticator.BuildSignedMessage</c> — the Android client must produce these exact
+    /// <c>DeviceAuthenticator.BuildSignedMessage</c> â€” the Android client must produce these exact
     /// bytes.
     /// </summary>
     public string Sign(string pcInstanceId, string challengeBase64Url)
@@ -141,7 +148,7 @@ public sealed class RemotePhoneClient : IAsyncDisposable
     /// credential.
     /// <para>
     /// Static, and it opens its own socket, because at this point there is no device id and no
-    /// permanent secret — the very things an instance of this class is constructed from. That is
+    /// permanent secret â€” the very things an instance of this class is constructed from. That is
     /// the bootstrap this path exists to resolve.
     /// </para>
     /// <para>
@@ -236,7 +243,7 @@ public sealed class RemotePhoneClient : IAsyncDisposable
 
     /// <summary>
     /// Mirrors <c>RemoteEnrollmentService.BuildEnrollmentMessage</c>. The key is the UTF-8 bytes of
-    /// the pairing secret exactly as it appears in the pairing code — not its decoded form — because
+    /// the pairing secret exactly as it appears in the pairing code â€” not its decoded form â€” because
     /// that is what the PC stored when it created the session.
     /// </summary>
     public static string SignEnrollment(

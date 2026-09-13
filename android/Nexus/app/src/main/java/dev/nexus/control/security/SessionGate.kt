@@ -188,6 +188,12 @@ class SessionGate(
     private fun establish(connected: ConnectionState.Connected) {
         establishing?.cancel()
 
+        // The PC will refuse the owner session to an app it has told to update, so asking would only
+        // turn "update required" into a misleading "your PC ended this session".
+        if (connected.updateRequired) {
+            return
+        }
+
         establishing = scope.launch {
             val held = ticket
 

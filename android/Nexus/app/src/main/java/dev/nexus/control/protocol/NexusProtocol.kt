@@ -92,6 +92,11 @@ object NexusProtocol {
         const val MEDIA_QUALITY_GET = "media.quality.get"
         const val MEDIA_QUALITY_SET = "media.quality.set"
         const val MEDIA_TIME = "media.time"
+
+        // v1.3 - updating this app from its PC. Both are reachable before the owner unlocks, and by
+        // an app too old for anything else, so an out-of-date phone can always fetch the fix.
+        const val UPDATE_CHECK = "update.check"
+        const val UPDATE_APK_GET = "update.apk.get"
     }
 
     object Events {
@@ -127,6 +132,9 @@ object NexusProtocol {
         const val NOT_AUTHORIZED = "not_authorized"
         const val RATE_LIMITED = "rate_limited"
         const val INTERNAL_ERROR = "internal_error"
+
+        /** This app is older than the PC serves; only the update path is open. */
+        const val UPDATE_REQUIRED = "update_required"
     }
 
     object MessageTypes {

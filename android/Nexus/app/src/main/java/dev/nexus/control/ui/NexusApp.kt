@@ -33,7 +33,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import dev.nexus.control.net.ConnectionState
 import dev.nexus.control.security.BiometricOwnerConfirmation
+import dev.nexus.control.update.AppUpdateState
+import dev.nexus.control.update.UpdateCard
+import dev.nexus.control.update.UpdateRequiredScreen
 import dev.nexus.control.security.SecurityAlertPreference
 import dev.nexus.control.security.SecurityAlertService
 import dev.nexus.control.security.LockReason
@@ -77,6 +81,7 @@ fun NexusApp(
 
     val gate = viewModel.gate
     val gateState by gate.state.collectAsStateWithLifecycle()
+    val updateState by viewModel.updates.state.collectAsStateWithLifecycle()
 
     // BiometricPrompt needs the hosting activity, so it is built here rather than in the container.
     // The gate itself never touches an Android UI type: it is handed a yes-or-no question to ask.
@@ -181,13 +186,31 @@ fun NexusApp(
                 // behind a lock screen.
                 !state.isPaired -> UnpairedFlow(navController, pairing, viewModel)
 
-                gateState.isUnlocked -> PairedFlow(navController, state, viewModel)
+                // Ahead of the lock: the PC will refuse everything but the update to this build, and
+                // a fingerprint cannot change that.
+                (state.connection as? ConnectionState.Connected)?.updateRequired == true -> UpdateRequiredScreen(
+                    updateState,
+                    viewModel.updates.installedVersion,
+                    onCheck = { viewModel.updates.check() },
+                    onUpdate = { viewModel.updates.update() },
+                )
+
+                gateState.isUnlocked -> PairedFlow(navController, state, viewModel, updateState)
 
                 else -> LockScreen(
                     gateState,
                     state.connection,
                     unlock,
                     pairing = state.pairedPc,
+                    footer = {
+                        UpdateCard(
+                            updateState,
+                            viewModel.updates.installedVersion,
+                            onCheck = { viewModel.updates.check() },
+                            onUpdate = { viewModel.updates.update() },
+                            compact = true,
+                        )
+                    },
                 )
             }
         }
@@ -228,6 +251,7 @@ private fun PairedFlow(
     navController: NavHostController,
     state: AppUiState,
     viewModel: AppViewModel,
+    updateState: AppUpdateState,
 ) {
     val entry by navController.currentBackStackEntryAsState()
     val current = Destination.entries.firstOrNull { it.route == entry?.destination?.route } ?: Destination.Home
@@ -262,6 +286,10 @@ private fun PairedFlow(
                         onOpen = { navController.navigate(it.route) },
                         onRetry = viewModel::retry,
                         onForget = viewModel::forgetPc,
+                        updates = updateState,
+                        installedVersion = viewModel.updates.installedVersion,
+                        onCheckUpdates = { viewModel.updates.check() },
+                        onUpdate = { viewModel.updates.update() },
                     )
                 }
 

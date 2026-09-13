@@ -22,6 +22,13 @@
 
     <!-- Owner confirmation before a security incident can be stood down. -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+
+    <!--
+      Updating Nexus from the APK its own PC serves. This lets the app hand a package to Android's
+      installer; it does not let it install anything silently. Android still shows its own
+      confirmation, and asks the owner once to allow Nexus as an install source.
+    -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 
     <application
@@ -51,5 +58,10 @@
             android:name=".security.SecurityAlertService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- Hears back from PackageInstaller about an update: confirm, cancelled, failed. -->
+        <receiver
+            android:name=".update.UpdateInstallReceiver"
+            android:exported="false" />
     </application>
 </manifest>

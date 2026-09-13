@@ -8,13 +8,34 @@
     <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
     <InvariantGlobalization>true</InvariantGlobalization>
 
-    <!-- Single source of truth for the version reported by system.get_info. -->
-    <VersionPrefix>1.2.1</VersionPrefix>
+    <!-- Single source of truth for the version reported by system.get_info. The Android app and the
+         release manifest read it from here too (tools/publish-release.ps1). -->
+    <VersionPrefix>1.3.0</VersionPrefix>
     <Product>PC Core</Product>
     <Company>PC Core</Company>
+
+    <!--
+      The oldest Android build (versionCode) this PC Core serves normally. A phone below it still
+      authenticates, but may only reach update.check and update.apk.get until it has updated. Raise it
+      only when a protocol change really breaks older phones; 14 is the last build that predates the
+      updater, which is what a phone that reports no version at all is taken to be.
+    -->
+    <NexusMinAndroidVersionCode>14</NexusMinAndroidVersionCode>
+
+    <!--
+      No commit hash in the informational version. It used to be appended automatically, which put a
+      different byte in every assembly on every commit - so an update could not tell a file that had
+      changed from one that had merely been rebuilt, and replaced all of them every time. The release
+      manifest records the commit instead.
+    -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
 
     <!-- PC Core is a user-level process. Nothing here requests elevation. -->
     <ApplicationManifest></ApplicationManifest>
   </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="NexusMinAndroidVersionCode" Value="$(NexusMinAndroidVersionCode)" />
+  </ItemGroup>
 
 </Project>

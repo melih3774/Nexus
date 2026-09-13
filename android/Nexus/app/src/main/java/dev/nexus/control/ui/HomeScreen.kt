@@ -21,7 +21,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import dev.nexus.control.net.AppVersion
 import dev.nexus.control.net.ConnectionState
+import dev.nexus.control.update.AppUpdateState
+import dev.nexus.control.update.UpdateCard
 
 /**
  * The control panel.
@@ -37,6 +40,10 @@ fun HomeScreen(
     onRetry: () -> Unit,
     onForget: () -> Unit,
     modifier: Modifier = Modifier,
+    updates: AppUpdateState = AppUpdateState.Unknown,
+    installedVersion: AppVersion = AppVersion.UNKNOWN,
+    onCheckUpdates: () -> Unit = {},
+    onUpdate: () -> Unit = {},
 ) {
     var confirmForget by remember { mutableStateOf(false) }
     val connected = state.connection.isConnected
@@ -122,6 +129,10 @@ fun HomeScreen(
                 modifier = Modifier.weight(1f),
             )
         }
+
+        Spacer(Modifier.height(20.dp))
+
+        UpdateCard(updates, installedVersion, onCheck = onCheckUpdates, onUpdate = onUpdate)
 
         Spacer(Modifier.height(28.dp))
 

@@ -99,9 +99,13 @@ public sealed class CapabilityDispatcher : ICapabilityDispatcher
             return Failure(
                 request,
                 stopwatch,
-                new ProtocolError(
-                    ErrorCodes.NotAuthorized,
-                    $"Action '{request.Action}' is not available to this caller."));
+                decision.Code == ErrorCodes.UpdateRequired
+                    ? new ProtocolError(
+                        ErrorCodes.UpdateRequired,
+                        "This version of Nexus is too old for this PC. Update the app to continue.")
+                    : new ProtocolError(
+                        decision.Code ?? ErrorCodes.NotAuthorized,
+                        $"Action '{request.Action}' is not available to this caller."));
         }
 
         if (!ProtocolCodec.TryBindParameters(request.Params, capability.ParameterType, out var parameters, out var bindError))

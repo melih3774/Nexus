@@ -16,6 +16,8 @@
   <ItemGroup>
     <ProjectReference Include="..\PcCore.Capabilities\PcCore.Capabilities.csproj" />
     <ProjectReference Include="..\PcCore.NativeInput\PcCore.NativeInput.csproj" />
+    <!-- The release manifest, the plan and the store, for NexusUpdateService. -->
+    <ProjectReference Include="..\PcCore.Update\PcCore.Update.csproj" />
   </ItemGroup>
 
   <ItemGroup>

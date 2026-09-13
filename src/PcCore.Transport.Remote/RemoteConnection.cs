@@ -7,6 +7,7 @@ using PcCore.Capabilities.Identity;
 using PcCore.Capabilities.Input;
 using PcCore.Capabilities.Media;
 using PcCore.Capabilities.Screen;
+using PcCore.Capabilities.Update;
 using PcCore.Protocol;
 
 namespace PcCore.Transport.Remote;
@@ -287,8 +288,16 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
             return false;
         }
 
+        // Too old for this PC Core? Decided once, here, from what the app reported. A phone that
+        // reports nothing predates the update path and is treated as the last build before it.
+        var requiresUpdate = ClientCompatibility.RequiresUpdate(parameters.ClientVersionCode);
+
         // The trusted identity is minted here, from the verification result, and nowhere else.
-        _caller = device.ToCaller(RemoteTransport.TransportName, _connectionId);
+        _caller = device.ToCaller(RemoteTransport.TransportName, _connectionId) with
+        {
+            ClientVersionCode = parameters.ClientVersionCode,
+            RequiresUpdate = requiresUpdate,
+        };
 
         _session = new RemoteSession(_connectionId, _caller, device.AuthenticatedAtUtc)
         {
@@ -331,14 +340,28 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
                 // may read two status fields and nothing else.
                 OwnerAuthorizationRequired = true,
                 OwnerKeyRegistered = _registry.Current?.HasOwnerKey ?? false,
+
+                // Said outright rather than left for the phone to discover one refusal at a time:
+                // this app is too old, and update.check / update.apk.get are what it may still do.
+                UpdateRequired = requiresUpdate,
+                MinimumClientVersionCode = ClientCompatibility.MinimumAndroidVersionCode,
             })),
             cancellationToken).ConfigureAwait(false);
 
         _logger.LogInformation(
-            "Remote device authenticated: {Caller} (session {SessionId}, {Sessions} active).",
+            "Remote device authenticated: {Caller} (session {SessionId}, {Sessions} active; app {AppVersion}).",
             _caller,
             _session.SessionId,
-            _sessions.Count);
+            _sessions.Count,
+            parameters.ClientVersionCode is { } code ? $"{parameters.ClientVersionName ?? "?"} ({code})" : "did not report a version");
+
+        if (requiresUpdate)
+        {
+            _logger.LogWarning(
+                "That phone's app is older than this PC Core serves (minimum version code {Minimum}); "
+                + "it may only check for and download the update.",
+                ClientCompatibility.MinimumAndroidVersionCode);
+        }
 
         foreach (var old in evicted)
         {
@@ -894,6 +917,12 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
         /// </para>
         /// </summary>
         public string? PcInstanceId { get; init; }
+
+        /// <summary>The app's Android versionCode. Absent from builds before the update path existed.</summary>
+        public int? ClientVersionCode { get; init; }
+
+        /// <summary>The app's versionName, for the log.</summary>
+        public string? ClientVersionName { get; init; }
     }
 
     /// <summary>

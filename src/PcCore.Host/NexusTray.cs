@@ -17,13 +17,17 @@ namespace PcCore.Host;
 /// <param name="Phone">The paired phone, or a note that there is none.</param>
 /// <param name="Connected">Whether the phone is connected right now.</param>
 /// <param name="Live">Live sensor streams, if any.</param>
+/// <param name="Update">One line about updates: up to date, available, updating, or how the last one ended.</param>
+/// <param name="UpdateInstallable">Whether "Install update" should be offered.</param>
 public sealed record TrayStatus(
     string Version,
     string Input,
     string Security,
     string Phone,
     bool Connected,
-    LiveSensorState Live);
+    LiveSensorState Live,
+    string Update = "Updates: not checked yet",
+    bool UpdateInstallable = false);
 
 /// <summary>
 /// Nexus in the notification area.
@@ -51,6 +55,8 @@ public sealed class NexusTray : IDisposable
 
     private readonly Action _onExit;
     private readonly Action _onStopLive;
+    private readonly Action? _onCheckUpdates;
+    private readonly Action? _onInstallUpdate;
 
     private Thread? _thread;
     private NotifyIcon? _icon;
@@ -59,6 +65,7 @@ public sealed class NexusTray : IDisposable
     private Icon? _liveIcon;
     private System.Windows.Forms.Timer? _poll;
     private bool _lastLive;
+    private SynchronizationContext? _sync;
 
     /// <summary>Where PC Core's log is, so the tray can open it. Null when it could not be created.</summary>
     private readonly string? _logPath;
@@ -69,7 +76,9 @@ public sealed class NexusTray : IDisposable
         Action onExit,
         Action onStopLive,
         ILogger logger,
-        string? logPath = null)
+        string? logPath = null,
+        Action? onCheckUpdates = null,
+        Action? onInstallUpdate = null)
     {
         _status = status;
         _controlPanelUrl = controlPanelUrl;
@@ -77,6 +86,35 @@ public sealed class NexusTray : IDisposable
         _onStopLive = onStopLive;
         _logger = logger;
         _logPath = logPath;
+        _onCheckUpdates = onCheckUpdates;
+        _onInstallUpdate = onInstallUpdate;
+    }
+
+    /// <summary>
+    /// A notification-area balloon. Used for update outcomes, which usually arrive in a PC Core that
+    /// was not running when the update began and has no other way to tell the owner what happened.
+    /// </summary>
+    public void Notify(string title, string text, bool warning = false)
+    {
+        var icon = _icon;
+
+        if (icon is null)
+        {
+            return;
+        }
+
+        // Raised on the tray's own thread, which owns the icon.
+        _sync?.Post(_ =>
+        {
+            try
+            {
+                icon.ShowBalloonTip(8000, title, text.Length > 250 ? text[..247] + "..." : text, warning ? ToolTipIcon.Warning : ToolTipIcon.Info);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "The tray could not show a notification.");
+            }
+        }, null);
     }
 
     /// <summary>
@@ -125,6 +163,10 @@ public sealed class NexusTray : IDisposable
             _poll.Start();
 
             RefreshIcon();
+
+            // Creating the menu installed the Windows Forms context on this thread; anything that
+            // needs the icon from elsewhere posts through it.
+            _sync = SynchronizationContext.Current;
 
             _context = new ApplicationContext();
             Application.Run(_context);
@@ -206,6 +248,25 @@ public sealed class NexusTray : IDisposable
             });
 
             menu.Items.Add(new ToolStripSeparator());
+
+            // Updates: one status line and at most two actions. Installing restarts PC Core, so it is
+            // only offered when there is something to install.
+            menu.Items.Add(new ToolStripMenuItem(status.Update) { Enabled = false });
+
+            if (status.UpdateInstallable && _onInstallUpdate is not null)
+            {
+                menu.Items.Add(new ToolStripMenuItem("Install update (restarts Nexus)", null, (_, _) => Run(_onInstallUpdate, "install the update"))
+                {
+                    Font = new Font(SystemFonts.MenuFont!, FontStyle.Bold),
+                });
+            }
+
+            if (_onCheckUpdates is not null)
+            {
+                menu.Items.Add(new ToolStripMenuItem("Check for updates", null, (_, _) => Run(_onCheckUpdates, "check for updates")));
+            }
+
+            menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("Exit Nexus", null, (_, _) => Exit()));
         };
 
@@ -278,6 +339,19 @@ public sealed class NexusTray : IDisposable
             _logger.LogWarning(ex, "The Nexus log could not be opened.");
         }
     }
+
+    /// <summary>Off the tray thread: a check hashes the install directory, and the menu must not freeze for it.</summary>
+    private void Run(Action action, string what) => _ = Task.Run(() =>
+    {
+        try
+        {
+            action();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "The tray could not {What}.", what);
+        }
+    });
 
     private void StopLive()
     {

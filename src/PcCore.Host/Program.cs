@@ -25,6 +25,10 @@ using PcCore.Windows.Capture;
 using PcCore.Windows.Media;
 using PcCore.NativeInput.Hid;
 using PcCore.Windows.Input;
+using PcCore.Capabilities.Update;
+using PcCore.Update;
+using PcCore.Update.Windows;
+using PcCore.Windows.Update;
 
 [assembly: SupportedOSPlatform("windows10.0.17763.0")]
 
@@ -136,6 +140,10 @@ public static class Program
         builder.Configuration
             .SetBasePath(AppContext.BaseDirectory)
             .AddJsonFile("appsettings.json", optional: false, reloadOnChange: false)
+
+            // The owner's own overrides. Not part of any release, so an update never replaces it -
+            // the place for a setting that must outlive the next appsettings.json.
+            .AddJsonFile("appsettings.Local.json", optional: true, reloadOnChange: false)
             .AddEnvironmentVariables(prefix: "PCCORE_")
             .AddCommandLine(args);
 
@@ -265,6 +273,13 @@ public static class Program
         // the process rather than lingering until someone hovers over it.
         var tray = StartTray(app, transportOptions, logger, fileLog.Path);
         app.Lifetime.ApplicationStopping.Register(() => tray?.Dispose());
+
+        // The updater stops PC Core through this event rather than killing it, so an update shuts
+        // down the same way Exit from the tray does.
+        var stopListener = UpdateShell.ListenForStop(app.Lifetime, logger);
+        app.Lifetime.ApplicationStopped.Register(stopListener.Dispose);
+
+        WatchForUpdates(app.Services, tray, logger);
 
         StartSecurityWorkflow(app.Services, logger);
         logger.LogInformation("Remote transport port: {Port} (Tailscale only)", remoteOptions.Port);
@@ -612,6 +627,17 @@ public static class Program
         services.AddSingleton<ICapabilityAction, DeleteSecuritySessionAction>();
         services.AddSingleton<ICapabilityAction, GetSecurityConfigAction>();
         services.AddSingleton<ICapabilityAction, SetSecurityConfigAction>();
+
+        // --- Capabilities added by v1.3: updating Nexus from its own release store -----------------
+        // The phone may check and download its APK; only a local caller may start the PC update.
+        services.AddSingleton(ReleaseStore.ForCurrentUser());
+        services.AddSingleton(UpdatePaths.ForCurrentUser());
+        services.AddSingleton<IElevatedComponentProbe, WindowsComponentProbe>();
+        services.AddSingleton<NexusUpdateService>();
+        services.AddSingleton<IUpdateService>(p => p.GetRequiredService<NexusUpdateService>());
+        services.AddSingleton<ICapabilityAction, CheckForUpdatesAction>();
+        services.AddSingleton<ICapabilityAction, GetAndroidPackageAction>();
+        services.AddSingleton<ICapabilityAction, InstallUpdateAction>();
     }
 
     /// <summary>
@@ -882,6 +908,7 @@ public static class Program
         {
             var services = app.Services;
             var url = LoopbackTransport.DescribeEndpoint(transportOptions);
+            NexusTray? trayRef = null;
 
             var tray = new NexusTray(
                 status: () =>
@@ -891,6 +918,7 @@ public static class Program
                     var phone = services.GetRequiredService<IPrimaryPhoneRegistry>().Current;
                     var sessions = services.GetRequiredService<IOwnerSessionService>();
                     var live = services.GetRequiredService<LiveSensorService>();
+                    var (updateLine, installable) = DescribeUpdates(services.GetRequiredService<NexusUpdateService>().Last);
 
                     return new TrayStatus(
                         Version: ProductInfo.Version,
@@ -898,7 +926,9 @@ public static class Program
                         Security: security.State.ToString(),
                         Phone: phone is null ? "not paired" : phone.DisplayName,
                         Connected: sessions.AnyFullRemote,
-                        Live: live.TrayState);
+                        Live: live.TrayState,
+                        Update: updateLine,
+                        UpdateInstallable: installable);
                 },
                 controlPanelUrl: url,
                 onExit: () =>
@@ -908,7 +938,20 @@ public static class Program
                 },
                 onStopLive: () => services.GetRequiredService<LiveSensorService>().StopAll("stopped from the tray"),
                 logger: logger,
-                logPath: logPath);
+                logPath: logPath,
+                onCheckUpdates: () =>
+                {
+                    var result = services.GetRequiredService<NexusUpdateService>().Check(refresh: true, null, includePcDetails: true);
+                    var (line, _) = DescribeUpdates(result);
+                    trayRef?.Notify("Nexus updates", line);
+                },
+                onInstallUpdate: () =>
+                {
+                    var started = services.GetRequiredService<NexusUpdateService>().StartPcUpdate();
+                    trayRef?.Notify(started.Started ? "Updating Nexus" : "Nexus update", started.Message, warning: !started.Started);
+                });
+
+            trayRef = tray;
 
             tray.Start();
             return tray;
@@ -918,6 +961,51 @@ public static class Program
             logger.LogWarning(ex, "The Nexus tray could not be started; PC Core continues without it.");
             return null;
         }
+    }
+
+    /// <summary>
+    /// Starts looking for new releases, and tells the owner - in the tray, since there may be no
+    /// console - when one appears and how an update ended.
+    /// </summary>
+    private static void WatchForUpdates(IServiceProvider services, NexusTray? tray, ILogger logger)
+    {
+        var updates = services.GetRequiredService<NexusUpdateService>();
+
+        updates.UpdateAvailable += result =>
+            tray?.Notify("Nexus update available", DescribeUpdates(result).Line + ". Install it from the Nexus tray menu.");
+
+        updates.UpdateFinished += status =>
+        {
+            if (UpdateShell.Describe(status) is { } balloon)
+            {
+                logger.Log(status.State == UpdateState.Succeeded ? LogLevel.Information : LogLevel.Warning, "Update: {Message}", status.Message);
+                tray?.Notify(balloon.Title, balloon.Text, warning: status.State != UpdateState.Succeeded);
+            }
+        };
+
+        updates.StartWatching(TimeSpan.FromMinutes(1));
+    }
+
+    /// <summary>The tray's single update line, and whether "Install update" belongs under it.</summary>
+    private static (string Line, bool Installable) DescribeUpdates(UpdateCheckResult? result)
+    {
+        if (result is null)
+        {
+            return ("Updates: not checked yet", false);
+        }
+
+        return result.State switch
+        {
+            "staging" or "installing" or "restarting" => ($"Updating to Nexus {result.LatestVersion}...", false),
+            "waiting_for_approval" => ("Update waiting for administrator approval", false),
+            _ when !result.ReleaseAvailable => ("Updates: no release published on this PC", false),
+            _ when result.PcUpdateAvailable => (
+                $"Update available: Nexus {result.LatestVersion} (release {result.LatestRelease})"
+                    + (result.NeedsAdministratorApproval ? " - needs admin approval" : string.Empty),
+                true),
+            "failed" or "rolled_back" => ($"Last update failed - Nexus {result.RunningVersion} is running", false),
+            _ => ($"Up to date: Nexus {result.RunningVersion}" + (result.InstalledRelease is { } r ? $" (release {r})" : string.Empty), false),
+        };
     }
 
     /// <summary>

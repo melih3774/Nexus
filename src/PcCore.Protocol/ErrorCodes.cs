@@ -66,6 +66,14 @@ public static class ErrorCodes
     /// </summary>
     public const string RateLimited = "rate_limited";
 
+    /// <summary>
+    /// The phone is authenticated, but its app is older than this PC Core serves. Only
+    /// <c>update.check</c> and <c>update.apk.get</c> remain available to it, so it can fetch the
+    /// build that is not. Distinct from <see cref="NotAuthorized"/> because the remedy is different:
+    /// updating the app, not authenticating the owner.
+    /// </summary>
+    public const string UpdateRequired = "update_required";
+
     /// <summary>An unexpected fault. Details are deliberately suppressed.</summary>
     public const string InternalError = "internal_error";
 }

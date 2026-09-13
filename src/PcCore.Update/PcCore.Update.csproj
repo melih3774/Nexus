@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Everything the Nexus update needs that is not a user interface: the release manifest, the local
+    release store, the plan, staging, the file swap and its rollback, and the sequence that ties them
+    together. PC Core uses it to answer "is there an update", the updater process uses it to apply
+    one, and the tests use it against throwaway directories.
+
+    No project references. The updater runs while PC Core is stopped and must not need any of it.
+    The few Windows-only pieces (registry probes, process control, UAC) are marked as such and live
+    under Windows/.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>PcCore.Update</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="PcCore.Tests" />
+  </ItemGroup>
+
+</Project>

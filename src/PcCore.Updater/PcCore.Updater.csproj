@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The Nexus updater: a separate process, because PC Core cannot replace the files it is running
+    from. PC Core copies this out of the release into a runner directory and starts it; it stops PC
+    Core, swaps the changed files, starts PC Core again and rolls back if the new one does not answer.
+
+    WinExe so starting it from the tray does not flash a console. It attaches to its parent's console
+    when there is one, so running it from a terminal still prints.
+
+    It asks for nothing at start. The one step that needs administrator rights - replacing
+    SecureCapture or the HID driver - re-launches it with runas for that step alone.
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>PcCore.Updater</RootNamespace>
+    <AssemblyName>PcCore.Updater</AssemblyName>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PcCore.Update\PcCore.Update.csproj" />
+  </ItemGroup>
+
+</Project>

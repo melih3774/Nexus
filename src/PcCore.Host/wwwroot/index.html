@@ -39,6 +39,15 @@
     </fieldset>
 
     <fieldset>
+      <legend>updates</legend>
+      <div id="updatebox" class="sub" style="margin:0 0 6px">Nexus __PCCORE_VERSION__ · not checked yet</div>
+      <div class="row">
+        <button onclick="checkUpdates()">Check for updates</button>
+        <button id="installupdate" onclick="installUpdate()" disabled>Install update (restarts Nexus)</button>
+      </div>
+    </fieldset>
+
+    <fieldset>
       <legend>files</legend>
       <label>allowed roots (click to use)</label>
       <div class="row" id="rootbar"></div>
@@ -237,6 +246,37 @@ function wsClose() { if (ws) ws.close(); }
 function wsSend(action, params) {
   if (!ws || ws.readyState !== 1) { log('WS', 'not connected'); return; }
   ws.send(JSON.stringify(envelope(action, params)));
+}
+
+// --- updates ----------------------------------------------------------------------------------
+
+async function checkUpdates() {
+  const json = await rpc('update.check', { refresh: true });
+  const box = document.getElementById('updatebox');
+  const install = document.getElementById('installupdate');
+  if (!json || !json.success) { box.textContent = 'update.check failed'; install.disabled = true; return; }
+
+  const r = json.result;
+  const busy = ['staging', 'waiting_for_approval', 'installing', 'restarting'].includes(r.state);
+  let text = `Nexus ${r.running_version}` + (r.installed_release ? ` (release ${r.installed_release})` : '');
+
+  if (!r.release_available) text += ' · ' + (r.problem || 'no release published on this PC');
+  else if (busy) text += ` · updating to ${r.latest_version}: ${r.message || r.state}`;
+  else if (r.pc_update_available) text += ` · update available: ${r.latest_version} (release ${r.latest_release}, ${r.pc_changed_files} file(s)`
+    + (r.needs_administrator_approval ? ', needs administrator approval' : '') + ')';
+  else text += ' · up to date';
+
+  if (r.android) text += ` · phone app ${r.android.version_name} (${r.android.version_code})`;
+  if (!busy && r.message && (r.state === 'failed' || r.state === 'rolled_back')) text += ` · last update: ${r.message}`;
+
+  box.textContent = text;
+  install.disabled = busy || !r.pc_update_available;
+}
+
+async function installUpdate() {
+  const json = await rpc('update.install');
+  if (json && json.success) document.getElementById('updatebox').textContent = json.result.message;
+  document.getElementById('installupdate').disabled = true;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -465,6 +505,8 @@ const ROOTS = __PCCORE_ROOTS__;
     bar.appendChild(b);
   }
 })();
+
+checkUpdates();
 </script>
 </body>
 </html>

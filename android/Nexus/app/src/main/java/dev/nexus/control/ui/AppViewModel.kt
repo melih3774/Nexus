@@ -13,6 +13,7 @@ import dev.nexus.control.protocol.NexusProtocol
 import dev.nexus.control.protocol.PairingCode
 import dev.nexus.control.protocol.SystemInfo
 import dev.nexus.control.security.SessionGate
+import dev.nexus.control.update.UpdateManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -52,6 +53,9 @@ class AppViewModel(
      * composable would put an application reference where the view model already has one.
      */
     val gate: SessionGate,
+
+    /** Updating this app. Held by the container for the same reason the gate is. */
+    val updates: UpdateManager,
 ) : ViewModel() {
 
     private val systemInfo = MutableStateFlow<SystemInfo?>(null)
@@ -162,7 +166,7 @@ class AppViewModel(
         val Factory = viewModelFactory {
             initializer {
                 val container = this.nexusContainer
-                AppViewModel(container.repository, container.gate)
+                AppViewModel(container.repository, container.gate, container.updates)
             }
         }
     }

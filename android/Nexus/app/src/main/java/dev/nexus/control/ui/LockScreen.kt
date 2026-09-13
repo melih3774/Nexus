@@ -42,6 +42,9 @@ fun LockScreen(
     modifier: Modifier = Modifier,
     /** How this phone identifies itself, so a refusal can be checked against the PC's log. */
     pairing: PairedPc? = null,
+
+    /** Shown below the unlock button: an available app update, which needs no unlock to install. */
+    footer: @Composable () -> Unit = {},
 ) {
     Column(
         modifier = modifier
@@ -77,6 +80,9 @@ fun LockScreen(
                 Text("Unlock Nexus")
             }
         }
+
+        Spacer(Modifier.height(28.dp))
+        footer()
     }
 }
 

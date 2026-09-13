@@ -565,6 +565,11 @@ public sealed class RemoteTransportTests : IAsyncLifetime
                 "session.status",
                 "system.get_info",
                 "system.list_processes",
+
+                // The phone's own app update: read the release, download the APK. Installing on the
+                // PC (update.install) is deliberately not here.
+                "update.apk.get",
+                "update.check",
             ],
             DefaultCapabilityPolicy.RemoteAllowedActions.Order(StringComparer.Ordinal));
     }
@@ -586,6 +591,11 @@ public sealed class RemoteTransportTests : IAsyncLifetime
                 "session.resume",
                 "session.status",
                 "system.get_info",
+
+                // The update path, because an app too old to finish owner authentication is exactly
+                // the one that needs it. It reaches a version number and a public APK, nothing else.
+                "update.apk.get",
+                "update.check",
             ],
             DefaultCapabilityPolicy.ActionsWithoutOwnerAuthorization.Order(StringComparer.Ordinal));
     }

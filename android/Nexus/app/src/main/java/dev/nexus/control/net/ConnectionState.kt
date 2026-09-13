@@ -50,12 +50,18 @@ sealed interface ConnectionState {
     /** Socket open, proving possession of the shared secret. */
     data object Authenticating : ConnectionState
 
-    /** Authenticated. Requests and events flow. */
+    /**
+     * Authenticated. Requests and events flow.
+     *
+     * @param updateRequired the PC serves only newer builds of this app, and will refuse everything
+     *   but the update until it has one.
+     */
     data class Connected(
         val deviceId: String,
         val sessionId: String,
         val pcInstanceId: String,
         val allowedRoots: List<String>,
+        val updateRequired: Boolean = false,
     ) : ConnectionState
 
     /**

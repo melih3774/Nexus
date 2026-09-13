@@ -315,8 +315,9 @@ public sealed class CallerIdentityTests
     public void CallerDescriptorCarriesNoTransportInternals()
     {
         // The v0.1 invariant: a capability must not be able to branch on how the caller arrived.
+        // The app version and the update gate describe the client, not the transport.
         Assert.Equal(
-            ["ActorType", "ConnectionId", "DeviceId", "Transport"],
+            ["ActorType", "ClientVersionCode", "ConnectionId", "DeviceId", "RequiresUpdate", "Transport"],
             typeof(CallerDescriptor).GetProperties().Select(p => p.Name).Order());
     }
 

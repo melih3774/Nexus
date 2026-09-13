@@ -3,12 +3,15 @@ using PcCore.Protocol;
 
 namespace PcCore.Capabilities.Abstractions;
 
-/// <summary>Outcome of a policy check. Denials carry an internal reason that is logged, not returned.</summary>
-public readonly record struct PolicyDecision(bool Allowed, string? DeniedReason)
+/// <summary>
+/// Outcome of a policy check. Denials carry an internal reason that is logged, not returned, and the
+/// protocol error code the caller receives (<c>not_authorized</c> unless a denial says otherwise).
+/// </summary>
+public readonly record struct PolicyDecision(bool Allowed, string? DeniedReason, string? Code = null)
 {
     public static readonly PolicyDecision Allow = new(true, null);
 
-    public static PolicyDecision Deny(string reason) => new(false, reason);
+    public static PolicyDecision Deny(string reason, string? code = null) => new(false, reason, code);
 }
 
 /// <summary>
@@ -115,6 +118,11 @@ public sealed class DefaultCapabilityPolicy : ICapabilityPolicy
         "media.live.status",
         "media.live.keyframe",
         "media.live.report",
+
+        // v1.3 - the phone updates its own app from its PC. Reading the release and downloading the
+        // APK are the whole of it; installing anything on the PC (update.install) stays local.
+        "update.check",
+        "update.apk.get",
     }.ToFrozenSet(StringComparer.Ordinal);
 
     /// <summary>
@@ -143,6 +151,27 @@ public sealed class DefaultCapabilityPolicy : ICapabilityPolicy
         "session.resume",
         "session.lock",
         "session.enroll_key",
+
+        // The update path must not depend on the owner session: the case it exists for is a phone
+        // whose app is too old to complete that session at all. What it reaches is a version number
+        // and the bytes of the Nexus APK, which is not a secret and which Android will still refuse
+        // to install without the owner confirming it on the phone.
+        "update.check",
+        "update.apk.get",
+    }.ToFrozenSet(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Everything a phone whose app is too old for this PC Core may do: find out, and fetch the fix.
+    /// <para>
+    /// Nothing else, whatever the owner session says. An old client is by definition one whose
+    /// behaviour against the current protocol is untested, and access to screen, input, files or
+    /// evidence is not granted just because it can reach the update.
+    /// </para>
+    /// </summary>
+    private static readonly FrozenSet<string> WhenUpdateRequired = new[]
+    {
+        "update.check",
+        "update.apk.get",
     }.ToFrozenSet(StringComparer.Ordinal);
 
     private readonly IRemoteAuthorityProvider _authority;
@@ -177,6 +206,15 @@ public sealed class DefaultCapabilityPolicy : ICapabilityPolicy
 
     private PolicyDecision EvaluateDevice(string action, CallerDescriptor caller)
     {
+        if (caller.RequiresUpdate)
+        {
+            return WhenUpdateRequired.Contains(action)
+                ? PolicyDecision.Allow
+                : PolicyDecision.Deny(
+                    $"'{action}' refused: the app (version code {caller.ClientVersionCode?.ToString() ?? "unreported"}) is older than this PC Core serves",
+                    ErrorCodes.UpdateRequired);
+        }
+
         if (!DeviceAllowed.Contains(action))
         {
             return PolicyDecision.Deny($"'{action}' is not available to a remote device");

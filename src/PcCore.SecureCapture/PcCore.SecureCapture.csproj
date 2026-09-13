@@ -21,6 +21,14 @@
     <!-- No settings file, no config, no logging framework: it writes to the event log and stops. -->
     <InvariantGlobalization>true</InvariantGlobalization>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+
+    <!--
+      Its own version, not the product's. Replacing this component needs administrator approval, so
+      the updater only asks for it when this number differs from the installed service's. Bump it
+      whenever anything in this project changes; tools/publish-release.ps1 refuses to publish a
+      changed SecureCapture under an unchanged version.
+    -->
+    <VersionPrefix>1.0.0</VersionPrefix>
   </PropertyGroup>
 
 </Project>
