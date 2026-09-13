@@ -1,4 +1,4 @@
-# Nexus v1.3.0
+# Nexus v1.4.0
 
 A user-level Windows process that exposes a **small, explicit set of capabilities** over a structured request/response/event protocol — locally over loopback, and remotely to one paired phone over Tailscale.
 
@@ -21,6 +21,8 @@ A user-level Windows process that exposes a **small, explicit set of capabilitie
 - **v1.1.2 — Live monitoring could never start:** the host handed the live-sensor service an authorisation predicate that rebuilt a caller identity from a connection id. A rebuilt caller has no device id, and authority is keyed to the device, so it answered "not authorised" for every session that ever asked — while the same phone on the same socket drove remote control and evidence fine. The caller is now passed through whole, and the predicate is a named function the tests exercise instead of a lambda in the composition root.
 
 - **v1.3 — Nexus updates itself:** one release manifest, one publish command, a separate updater that swaps only changed files and rolls back if the new PC Core does not answer, and a phone that downloads its own APK from its PC over the authenticated session. See [Updating Nexus](#updating-nexus-v13).
+
+- **v1.4 — Files and Clipboard:** browse the PC's drives from the phone, open or save a file, upload into any folder Windows lets you write to, with progress, cancel and resume; and text between the two clipboards. All of it behind the owner session. See [Files and Clipboard](#files-and-clipboard-v14).
 
 Still deliberately absent: no AI integration, no virtual display (IDD), no multi-user support, no internet exposure — the remote path is Tailscale only. See [SPEC.md](SPEC.md) and [PLAN.md](PLAN.md).
 
@@ -116,7 +118,7 @@ The token is also written to `%LOCALAPPDATA%\PcCore\session.token`.
 | `pairing.cancel` | — | `{ cancelled }` |
 | `device.unpair_primary` | — | `{ unpaired }`; deletes the stored credential |
 
-Read-only with respect to your machine: there is no `files.read`, no write/delete/move, no input injection, no shell execution. The `pairing.*` and `device.*` actions change only PC Core's own pairing state.
+That was the v0.1 surface. Later milestones add screen, input, security, update, and (v1.4) file transfer and clipboard capabilities, each described in its own section below; there is still no delete/move and no shell execution. The `pairing.*` and `device.*` actions change only PC Core's own pairing state.
 
 The phone-facing operations are deliberately **not** capabilities, because a phone completing pairing or proving its identity has not authenticated yet:
 
@@ -291,7 +293,7 @@ address. The phone will say the same thing rather than failing vaguely.
 |---|---|---|
 | Home | `system.get_info` | Connection state and which machine answered |
 | Screen | `screen.capture` | One screenshot, fitted to the phone. Manual refresh — not streaming |
-| Files | `files.list`, `files.stat` | Read-only, confined to PC Core's allowed roots. No download, write, rename or delete |
+| Files | `files.*` | Browse, open, save and upload since v1.4 — see [Files and Clipboard](#files-and-clipboard-v14). No rename, move or delete |
 | System | `system.get_info`, `system.list_processes` | Filterable process list. Nothing can be started or killed |
 | Security | `security.get_state`, `security.arm`, `security.disarm` | Live: `security.state_changed` updates the screen without a refresh |
 
@@ -955,6 +957,69 @@ is local-only. A phone whose app is below `NexusMinAndroidVersionCode` is still 
 `update_required`, and every other action is refused with that code — it can fetch the update and
 nothing else. A phone that reports no version is treated as build 14, the last one before this.
 
+## Files and Clipboard (v1.4)
+
+The **Files** card now browses the PC itself, not three folders: every local fixed or removable drive,
+with Home, Desktop, Documents, Downloads, Pictures and Videos as shortcuts. Tap a folder to go in,
+**Up** to go out, **Show hidden** for AppData and friends. A file shows its type, size and modification
+time, and offers:
+
+- **Open** — downloads into the app's cache and hands it to whatever Android app opens that type.
+- **Save to phone** — downloads into `Download/Nexus` through MediaStore (no storage permission).
+- **Upload here** — the system picker, one file or several, into the folder on screen.
+
+Transfers run two at a time with progress and **Cancel**, and keep going when you leave Files.
+
+| Action | What it does |
+|---|---|
+| `files.roots` | drives (label, free space) and the usual places inside the boundary |
+| `files.list` | now also `parent` and `truncated` (a listing stops at 5,000 entries) |
+| `files.read` | one range, default 1 MB, max 4 MB, with `expected_size_bytes`/`expected_modified_utc` |
+| `files.hash` | SHA-256 of the file as it is on disk now |
+| `files.upload.begin` / `.chunk` / `.finish` / `.cancel` | an upload into a folder, ranges of at most 1 MB, strictly in order |
+| `clipboard.get` / `clipboard.set` | text only, up to 262,144 characters |
+
+**Who may.** Every one of these is in the phone's allowlist and none is in the pre-owner subset: a paired
+phone whose owner has not unlocked Nexus gets `not_authorized`, and so does a session the phone has
+locked, mid-transfer. There is no HTTP endpoint for any of it; it is the same authenticated WebSocket and
+the same dispatcher as everything else. The remote transport accepts messages up to 2 MB once a device
+has authenticated (a 1 MB upload chunk is 1.4 MB of base64); before that the limit is still 64 KB.
+
+**What Windows says still goes.** PC Core runs as you and never elevated, so a folder you cannot open in
+Explorer is `access_denied` here too, a file another program holds exclusively is `file_in_use`, and a
+full disk is `disk_full` — at the start of an upload, because the space is reserved up front. The
+filesystem boundary is unchanged in kind: `{Drives}` is now the default root, and the shape checks,
+real-path resolution and segment containment all still apply. Nexus's own folders
+(`%LOCALAPPDATA%\Nexus`, the install folder, `%ProgramFiles%\Nexus`) are refused whatever the roots say,
+so Files cannot become a way round the rules about evidence and owner keys.
+
+**Downloads** are stateless ranged reads. Each range names the size and modification time the download
+started from, and a file that changed is `file_changed` rather than two versions stitched together. At
+the end the phone hashes what it holds and compares it with `files.hash`; only a match is kept.
+
+**Uploads** go into a hidden `name.<id>.nexus-upload` file beside the destination — so the new file
+inherits that folder's permissions like anything saved there — and are renamed over the real name only
+once the whole file has arrived and matches the SHA-256 the phone sends. A name that is already taken is
+`already_exists`, and the phone asks before replacing it; replacing is the only change Files can make to
+an existing file. There is no delete, rename or move yet.
+
+**When the link drops.** The transfer stops as *Resume*, never as a frozen bar. A download keeps its
+partial file on the phone; an upload's partial file stays on the PC, owned by the device rather than the
+socket, and beginning the same upload again answers with how much arrived. When the owner session comes
+back, interrupted transfers resume once by themselves. An upload that receives nothing for
+`PcCore:Files:UploadIdleMinutes` (10) is deleted, PC Core stopping deletes them all, and a small journal
+(`uploads.json`) deletes what a crash left at the next start.
+
+**Clipboard** is two buttons on the home screen: **Copy from PC** and **Send to PC** (which opens with the
+phone's clipboard in it, to send or edit). There is no automatic sync. Echoes cannot loop: setting text
+the PC already has is `changed: false` and not a new version, `clipboard.get` says `origin: "phone"` while
+the PC still holds what the phone sent, and the phone does not rewrite its own clipboard with text it
+knows is already there. Only hashes are remembered, in memory on both ends.
+
+**Not in this version:** folder downloads, image or file clipboard formats, background transfers after
+Nexus leaves the screen (the connection closes then; transfers resume when it is back), drives attached
+after PC Core started (restart it), and delete/rename/move.
+
 ## Protocol vectors
 
 `shared/protocol/protocol-vectors.json` is generated from PC Core's own implementations and asserted
@@ -971,7 +1036,7 @@ Then run the Android tests and expect them to fail until they agree.
 
 
 
-Nothing on disk is reachable unless it is listed in `PcCore:Files:AllowedRoots` (default: Desktop, Documents, Downloads). Every caller-supplied path is rejected by shape (relative, UNC, device namespace, alternate data stream, wildcards), canonicalised, then **resolved to its real path by the kernel** (`GetFinalPathNameByHandle`) so that junctions, symlinks, mount points and 8.3 short names cannot alias past the boundary — and only then containment-tested **segment by segment**, not by string prefix. Unresolvable means denied. Zero roots means everything is denied, never everything allowed. [SPEC.md §6](SPEC.md) documents the pipeline and, just as importantly, the Windows edge cases that remain (TOCTOU, hardlinks, mount points inside a root).
+Nothing on disk is reachable unless it is inside `PcCore:Files:AllowedRoots` (default since v1.4: `{Drives}`, every local drive; before that Desktop, Documents, Downloads), and Nexus's own state and install folders are refused regardless. Every caller-supplied path is rejected by shape (relative, UNC, device namespace, alternate data stream, wildcards), canonicalised, then **resolved to its real path by the kernel** (`GetFinalPathNameByHandle`) so that junctions, symlinks, mount points and 8.3 short names cannot alias past the boundary — and only then containment-tested **segment by segment**, not by string prefix. Unresolvable means denied. Zero roots means everything is denied, never everything allowed. [SPEC.md §6](SPEC.md) documents the pipeline and, just as importantly, the Windows edge cases that remain (TOCTOU, hardlinks, mount points inside a root).
 
 Loopback is not an authorisation boundary, so `/rpc` and `/ws` also require the session token and validate `Host` and `Origin` to block DNS rebinding. See [SPEC.md §7.3](SPEC.md).
 
@@ -983,7 +1048,7 @@ Loopback is not an authorisation boundary, so `/rpc` and `/ws` also require the 
 {
   "PcCore": {
     "Transport": { "Port": 47811, "RequireToken": true, "MaxRequestBytes": 65536 },
-    "Files": { "AllowedRoots": [ "{Desktop}", "{Documents}", "{Downloads}" ] },
+    "Files": { "AllowedRoots": [ "{Drives}" ], "UploadIdleMinutes": 10 },
     "Screen": { "Enabled": true, "MaxWidthLimit": 7680 },
     "Pairing": { "SessionTimeoutSeconds": 300, "ChallengeTimeoutSeconds": 60, "DefaultDisplayName": "Primary Phone" },
     "Startup": { "Enabled": true },
@@ -992,7 +1057,7 @@ Loopback is not an authorisation boundary, so `/rpc` and `/ws` also require the 
 }
 ```
 
-Tokens: `{Desktop}` `{Documents}` `{Downloads}` `{Pictures}` `{Music}` `{Videos}` `{UserProfile}`, or absolute paths. A root that cannot be resolved is logged and dropped, never silently widened.
+Tokens: `{Drives}` `{Desktop}` `{Documents}` `{Downloads}` `{Pictures}` `{Music}` `{Videos}` `{UserProfile}`, or absolute paths. A root that cannot be resolved is logged and dropped, never silently widened.
 
 The bind **address** is not configurable. That is deliberate: an "allowed bind address" setting is exactly how a localhost-only service ends up on the LAN.
 

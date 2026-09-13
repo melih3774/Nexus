@@ -97,6 +97,17 @@ object NexusProtocol {
         // an app too old for anything else, so an out-of-date phone can always fetch the fix.
         const val UPDATE_CHECK = "update.check"
         const val UPDATE_APK_GET = "update.apk.get"
+
+        // v1.4 - Files and Clipboard. All of them need the owner session on the PC side.
+        const val FILES_ROOTS = "files.roots"
+        const val FILES_READ = "files.read"
+        const val FILES_HASH = "files.hash"
+        const val FILES_UPLOAD_BEGIN = "files.upload.begin"
+        const val FILES_UPLOAD_CHUNK = "files.upload.chunk"
+        const val FILES_UPLOAD_FINISH = "files.upload.finish"
+        const val FILES_UPLOAD_CANCEL = "files.upload.cancel"
+        const val CLIPBOARD_GET = "clipboard.get"
+        const val CLIPBOARD_SET = "clipboard.set"
     }
 
     object Events {
@@ -135,6 +146,14 @@ object NexusProtocol {
 
         /** This app is older than the PC serves; only the update path is open. */
         const val UPDATE_REQUIRED = "update_required"
+
+        // v1.4 - Files and Clipboard.
+        const val ALREADY_EXISTS = "already_exists"
+        const val FILE_IN_USE = "file_in_use"
+        const val FILE_CHANGED = "file_changed"
+        const val DISK_FULL = "disk_full"
+        const val CHECKSUM_MISMATCH = "checksum_mismatch"
+        const val CLIPBOARD_UNAVAILABLE = "clipboard_unavailable"
     }
 
     object MessageTypes {

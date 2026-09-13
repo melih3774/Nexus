@@ -7,7 +7,10 @@ import android.content.Intent
 import android.content.IntentFilter
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.CreationExtras
+import dev.nexus.control.clipboard.ClipboardSync
 import dev.nexus.control.data.CredentialStore
+import dev.nexus.control.files.FileClient
+import dev.nexus.control.files.TransferManager
 import dev.nexus.control.data.NexusRepository
 import dev.nexus.control.net.AndroidPrivateNetworkProbe
 import dev.nexus.control.net.AppVersion
@@ -75,6 +78,23 @@ class NexusContainer(context: Context) {
      * started it: Android's confirmation takes the foreground, and the answer comes back to a receiver.
      */
     val updates = UpdateManager(context.applicationContext, scope, connection.state, UpdateClient(connection), appVersion)
+
+    /** Files and Clipboard calls. Every one needs the owner session on the PC. */
+    val files = FileClient(connection)
+
+    /**
+     * Downloads and uploads. In the container so leaving the Files screen does not cancel them, and
+     * so they can resume when the owner session comes back after the link dropped.
+     */
+    val transfers = TransferManager(
+        context.applicationContext,
+        scope,
+        files,
+        ownerAuthorizations = gate.authorizations,
+    )
+
+    /** What Nexus knows is on this phone's clipboard, kept across screens so an echo is recognised. */
+    val clipboardSync = ClipboardSync()
 }
 
 class NexusApplication : Application() {

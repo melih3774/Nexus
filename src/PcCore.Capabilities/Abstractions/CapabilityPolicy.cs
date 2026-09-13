@@ -123,6 +123,22 @@ public sealed class DefaultCapabilityPolicy : ICapabilityPolicy
         // APK are the whole of it; installing anything on the PC (update.install) stays local.
         "update.check",
         "update.apk.get",
+
+        // v1.4 - Files and Clipboard. Browsing, downloading and uploading within the filesystem
+        // boundary, and text to and from the clipboard. Every one of these needs Full Remote - none is
+        // in WithoutOwnerAuthorization below - and none reaches further than that session already
+        // does: a session that can type into Explorer can already open, copy and save any of these
+        // files. What they add is doing it without driving a desktop from a phone screen. Windows
+        // permissions still apply, because PC Core runs as the owner and never elevated.
+        "files.roots",
+        "files.read",
+        "files.hash",
+        "files.upload.begin",
+        "files.upload.chunk",
+        "files.upload.finish",
+        "files.upload.cancel",
+        "clipboard.get",
+        "clipboard.set",
     }.ToFrozenSet(StringComparer.Ordinal);
 
     /// <summary>

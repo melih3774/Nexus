@@ -60,6 +60,19 @@ public sealed record ListFilesResult
 
     /// <summary>Entries the OS refused to describe. They are counted, never named.</summary>
     public required int SkippedCount { get; init; }
+
+    /// <summary>
+    /// The directory above this one, when it is inside the boundary too; <see langword="null"/> at a
+    /// root. Added in v1.4 so "up" is a path the PC produced, like every other path the phone sends.
+    /// </summary>
+    public string? Parent { get; init; }
+
+    /// <summary>
+    /// More entries exist than <see cref="ListFilesAction.MaxEntries"/>; the first ones in listing
+    /// order were returned. A folder like <c>C:\Windows\WinSxS</c> is tens of thousands of entries, which
+    /// is megabytes of JSON for a list nobody scrolls.
+    /// </summary>
+    public bool Truncated { get; init; }
 }
 
 public sealed record StatParameters
@@ -136,9 +149,17 @@ internal static class FileMetadata
 
 public sealed class ListFilesAction : CapabilityAction<ListFilesParameters, ListFilesResult>
 {
-    private readonly PathAuthorizer _authorizer;
+    /// <summary>The most entries one listing returns. See <see cref="ListFilesResult.Truncated"/>.</summary>
+    public const int MaxEntries = 5000;
 
-    public ListFilesAction(PathAuthorizer authorizer) => _authorizer = authorizer;
+    private readonly PathAuthorizer _authorizer;
+    private readonly FileProtections _protections;
+
+    public ListFilesAction(PathAuthorizer authorizer, FileProtections? protections = null)
+    {
+        _authorizer = authorizer;
+        _protections = protections ?? FileProtections.None;
+    }
 
     public override string Name => "files.list";
 
@@ -149,7 +170,7 @@ public sealed class ListFilesAction : CapabilityAction<ListFilesParameters, List
         CapabilityContext context,
         CancellationToken cancellationToken)
     {
-        var path = _authorizer.Authorize(parameters.Path).EnsureAllowed();
+        var path = _protections.EnsureReachable(_authorizer.Authorize(parameters.Path).EnsureAllowed());
 
         var directory = new DirectoryInfo(path);
         if (!directory.Exists)
@@ -161,30 +182,39 @@ public sealed class ListFilesAction : CapabilityAction<ListFilesParameters, List
 
         var entries = new List<FileEntry>();
         var skipped = 0;
+        var truncated = false;
 
-        IEnumerable<FileSystemInfo> children;
+        IEnumerator<FileSystemInfo> enumerator;
         try
         {
             // EnumerateFileSystemInfos does not follow reparse points, which is what we want:
             // a junction inside the root is reported as an entry, never walked into.
-            children = directory.EnumerateFileSystemInfos("*", new EnumerationOptions
+            //
+            // IgnoreInaccessible stays false. With it on, a directory this account may not list at all
+            // - C:\System Volume Information, another user's profile - enumerates as empty, and the
+            // phone would show "This folder is empty" for a folder Windows refused to open. The first
+            // MoveNext is where that refusal arrives, so it is taken here and reported as such.
+            enumerator = directory.EnumerateFileSystemInfos("*", new EnumerationOptions
             {
                 RecurseSubdirectories = false,
-                IgnoreInaccessible = true,
+                IgnoreInaccessible = false,
                 AttributesToSkip = FileAttributes.None,
                 ReturnSpecialDirectories = false,
-            });
+            }).GetEnumerator();
+
+            if (!enumerator.MoveNext())
+            {
+                enumerator.Dispose();
+                return ValueTask.FromResult(Result(path, [], 0, truncated: false));
+            }
         }
-        catch (UnauthorizedAccessException)
+        catch (Exception ex) when (FileErrors.IsFileSystemFailure(ex))
         {
-            throw new CapabilityException(ErrorCodes.AccessDenied, "Access to the directory was denied.");
-        }
-        catch (IOException)
-        {
-            throw new CapabilityException(ErrorCodes.AccessDenied, "The directory could not be read.");
+            throw FileErrors.From(ex, "access to that folder");
         }
 
-        using var enumerator = children.GetEnumerator();
+        using var _ = enumerator;
+        var first = true;
 
         while (true)
         {
@@ -193,18 +223,20 @@ public sealed class ListFilesAction : CapabilityAction<ListFilesParameters, List
             FileSystemInfo child;
             try
             {
-                if (!enumerator.MoveNext())
+                if (!first && !enumerator.MoveNext())
                 {
                     break;
                 }
 
+                first = false;
                 child = enumerator.Current;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                // A single unreadable entry must not fail the whole listing.
+                // The directory was opened, so this is a failure part-way through reading it. What was
+                // read is still worth returning; an enumerator that has thrown is not worth asking again.
                 skipped++;
-                continue;
+                break;
             }
 
             var attributes = FileMetadata.SafeAttributes(child);
@@ -212,6 +244,12 @@ public sealed class ListFilesAction : CapabilityAction<ListFilesParameters, List
             if (!parameters.IncludeHidden && attributes.HasFlag(FileAttributes.Hidden))
             {
                 continue;
+            }
+
+            if (entries.Count == MaxEntries)
+            {
+                truncated = true;
+                break;
             }
 
             entries.Add(FileMetadata.Describe(child, child is DirectoryInfo));
@@ -224,21 +262,45 @@ public sealed class ListFilesAction : CapabilityAction<ListFilesParameters, List
             return byType != 0 ? -byType : string.Compare(left.Name, right.Name, StringComparison.OrdinalIgnoreCase);
         });
 
-        return ValueTask.FromResult(new ListFilesResult
+        return ValueTask.FromResult(Result(path, entries, skipped, truncated));
+    }
+
+    private ListFilesResult Result(string path, List<FileEntry> entries, int skipped, bool truncated) => new()
+    {
+        Path = path,
+        EntryCount = entries.Count,
+        Entries = entries,
+        SkippedCount = skipped,
+        Truncated = truncated,
+        Parent = ParentOf(path),
+    };
+
+    /// <summary>The parent, authorised like any other path; null at a root or where the parent is not reachable.</summary>
+    private string? ParentOf(string path)
+    {
+        var parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(path));
+
+        if (string.IsNullOrEmpty(parent))
         {
-            Path = path,
-            EntryCount = entries.Count,
-            Entries = entries,
-            SkippedCount = skipped,
-        });
+            return null;
+        }
+
+        var authorized = _authorizer.Authorize(parent);
+
+        return authorized.Allowed && !_protections.IsProtected(authorized.RealPath!) ? authorized.RealPath : null;
     }
 }
 
 public sealed class StatFileAction : CapabilityAction<StatParameters, StatResult>
 {
     private readonly PathAuthorizer _authorizer;
+    private readonly FileProtections _protections;
 
-    public StatFileAction(PathAuthorizer authorizer) => _authorizer = authorizer;
+    public StatFileAction(PathAuthorizer authorizer, FileProtections? protections = null)
+    {
+        _authorizer = authorizer;
+        _protections = protections ?? FileProtections.None;
+    }
 
     public override string Name => "files.stat";
 
@@ -249,7 +311,7 @@ public sealed class StatFileAction : CapabilityAction<StatParameters, StatResult
         CapabilityContext context,
         CancellationToken cancellationToken)
     {
-        var path = _authorizer.Authorize(parameters.Path).EnsureAllowed();
+        var path = _protections.EnsureReachable(_authorizer.Authorize(parameters.Path).EnsureAllowed());
 
         var isDirectory = Directory.Exists(path);
         FileSystemInfo info = isDirectory ? new DirectoryInfo(path) : new FileInfo(path);

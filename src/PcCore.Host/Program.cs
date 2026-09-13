@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using PcCore.Capabilities.Abstractions;
+using PcCore.Capabilities.Clipboard;
 using PcCore.Capabilities.Files;
 using PcCore.Capabilities.Indicator;
 using PcCore.Capabilities.Input;
@@ -439,6 +440,25 @@ public static class Program
             provider.GetRequiredService<ILoggerFactory>().CreateLogger<AllowedRoots>()));
         services.AddSingleton<PathAuthorizer>();
 
+        // Inside the boundary and still refused: Nexus's own state and installation. Pairing, owner
+        // keys and evidence each have rules about who may change them, and a file browser must not be a
+        // second way round those rules.
+        services.AddSingleton(filesOptions);
+        services.AddSingleton(provider =>
+        {
+            var resolver = provider.GetRequiredService<IRealPathResolver>();
+            var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles, Environment.SpecialFolderOption.DoNotVerify);
+
+            return new FileProtections(
+                new[]
+                {
+                    provider.GetRequiredService<StateDirectory>().Root,
+                    UpdatePaths.ForCurrentUser().InstallDirectory,
+                    Path.Combine(programFiles, "Nexus"),
+                }
+                .Select(path => resolver.Resolve(Path.GetFullPath(path)) ?? Path.GetFullPath(path)));
+        });
+
         // The single authoritative owner-presence state. Singleton because "authoritative" and
         // "one per request" are incompatible.
         services.AddSingleton<ISecurityStateService, SecurityStateService>();
@@ -658,6 +678,24 @@ public static class Program
         services.AddSingleton<ICapabilityAction, CheckForUpdatesAction>();
         services.AddSingleton<ICapabilityAction, GetAndroidPackageAction>();
         services.AddSingleton<ICapabilityAction, InstallUpdateAction>();
+
+        // --- Capabilities added by v1.4: Files and Clipboard --------------------------------------
+        // Everything the phone reaches here needs Full Remote. Downloads are stateless ranged reads;
+        // uploads hold a partial file per upload, which the service deletes when an upload is
+        // abandoned, when PC Core stops (the container disposes it), and after a crash at next start.
+        services.AddSingleton<FileUploadService>();
+        services.AddSingleton<ICapabilityAction, ListFileRootsAction>();
+        services.AddSingleton<ICapabilityAction, ReadFileAction>();
+        services.AddSingleton<ICapabilityAction, HashFileAction>();
+        services.AddSingleton<ICapabilityAction, BeginUploadAction>();
+        services.AddSingleton<ICapabilityAction, UploadChunkAction>();
+        services.AddSingleton<ICapabilityAction, FinishUploadAction>();
+        services.AddSingleton<ICapabilityAction, CancelUploadAction>();
+
+        services.AddSingleton<IClipboardAccess, WindowsClipboard>();
+        services.AddSingleton<ClipboardService>();
+        services.AddSingleton<ICapabilityAction, GetClipboardAction>();
+        services.AddSingleton<ICapabilityAction, SetClipboardAction>();
     }
 
     /// <summary>

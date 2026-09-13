@@ -56,6 +56,9 @@ class AppViewModel(
 
     /** Updating this app. Held by the container for the same reason the gate is. */
     val updates: UpdateManager,
+
+    /** Files moving to and from the PC; forgetting the PC stops them and empties their cache. */
+    private val transfers: dev.nexus.control.files.TransferManager? = null,
 ) : ViewModel() {
 
     private val systemInfo = MutableStateFlow<SystemInfo?>(null)
@@ -137,6 +140,7 @@ class AppViewModel(
     }
 
     fun forgetPc() {
+        transfers?.cancelAll()
         repository.forgetPc()
         _pairing.value = PairingProgress.Idle
     }
@@ -166,7 +170,7 @@ class AppViewModel(
         val Factory = viewModelFactory {
             initializer {
                 val container = this.nexusContainer
-                AppViewModel(container.repository, container.gate, container.updates)
+                AppViewModel(container.repository, container.gate, container.updates, container.transfers)
             }
         }
     }

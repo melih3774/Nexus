@@ -8,7 +8,6 @@ import dev.nexus.control.data.NexusRepository
 import dev.nexus.control.net.NexusRequestException
 import dev.nexus.control.net.NotConnectedException
 import dev.nexus.control.nexusContainer
-import dev.nexus.control.protocol.FileEntry
 import dev.nexus.control.protocol.NexusJson
 import dev.nexus.control.protocol.NexusProtocol
 import dev.nexus.control.protocol.ProcessEntry
@@ -58,113 +57,6 @@ internal fun describeFailure(cause: Throwable): String = when {
     }
 
     else -> "Could not reach the PC."
-}
-
-// --- Files ------------------------------------------------------------------------------------
-
-data class FilesUiState(
-    val roots: List<String> = emptyList(),
-    val path: String? = null,
-    val entries: List<FileEntry> = emptyList(),
-    val skipped: Int = 0,
-    val loading: Boolean = false,
-    val error: String? = null,
-    val selected: FileEntry? = null,
-)
-
-/**
- * A read-only browser over the roots PC Core allows.
- *
- * Navigation uses the `path` PC Core put on each entry, verbatim. The app never joins a parent and
- * a name, never guesses a separator, and has no notion of `..` — every path it sends came back from
- * the PC in a previous response. PC Core re-authorises each one regardless; this simply means the
- * phone never invents a path to be refused.
- *
- * The back stack is the visited paths, not derived from the path text.
- */
-class FilesViewModel(private val repository: NexusRepository) : ViewModel() {
-
-    private val _state = MutableStateFlow(FilesUiState())
-    val state: StateFlow<FilesUiState> = _state.asStateFlow()
-
-    private val history = ArrayDeque<String>()
-
-    fun start() {
-        _state.value = _state.value.copy(roots = repository.allowedRoots)
-
-        if (repository.allowedRoots.size == 1 && _state.value.path == null) {
-            // One root is not a choice; go straight into it.
-            open(repository.allowedRoots.first(), remember = false)
-        }
-    }
-
-    fun open(path: String, remember: Boolean = true) {
-        val current = _state.value.path
-        if (remember && current != null) history.addLast(current)
-
-        _state.value = _state.value.copy(path = path, loading = true, error = null, selected = null)
-
-        viewModelScope.launch {
-            runCatching { repository.listFiles(path) }
-                .onSuccess {
-                    _state.value = _state.value.copy(
-                        path = it.path,
-                        entries = it.entries,
-                        skipped = it.skippedCount,
-                        loading = false,
-                    )
-                }
-                .onFailure {
-                    _state.value = _state.value.copy(loading = false, error = describeFailure(it))
-                }
-        }
-    }
-
-    /** @return false when there is nowhere to go back to, so the caller can leave the screen. */
-    fun back(): Boolean {
-        _state.value.selected?.let {
-            _state.value = _state.value.copy(selected = null)
-            return true
-        }
-
-        val previous = history.removeLastOrNull() ?: run {
-            if (_state.value.roots.size > 1 && _state.value.path != null) {
-                _state.value = _state.value.copy(path = null, entries = emptyList())
-                return true
-            }
-            return false
-        }
-
-        open(previous, remember = false)
-        return true
-    }
-
-    fun select(entry: FileEntry) {
-        if (entry.isDirectory) {
-            open(entry.path)
-            return
-        }
-
-        _state.value = _state.value.copy(selected = entry)
-
-        // files.stat for the one extra fact a listing does not carry.
-        viewModelScope.launch {
-            runCatching { repository.stat(entry.path) }
-                .onSuccess { result ->
-                    if (_state.value.selected?.path == entry.path) {
-                        _state.value = _state.value.copy(selected = result.entry)
-                    }
-                }
-        }
-    }
-
-    fun clearSelection() {
-        _state.value = _state.value.copy(selected = null)
-    }
-
-    companion object {
-        val Factory = viewModelFactory { initializer { FilesViewModel(this.nexusContainer.repository) } }
-    }
 }
 
 // --- System -----------------------------------------------------------------------------------

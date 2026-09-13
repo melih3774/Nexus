@@ -64,6 +64,20 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
     private const int ReceiveBufferSize = 8 * 1024;
     private const int MaxConcurrentRequests = 4;
 
+    /// <summary>The largest message accepted before the peer has authenticated. The handshake is a few hundred bytes.</summary>
+    internal const int MaxHandshakeMessageBytes = 64 * 1024;
+
+    /// <summary>
+    /// The largest message accepted from an authenticated device.
+    /// <para>
+    /// Larger than the handshake's limit for one reason: an upload chunk is a megabyte of file, which is
+    /// about 1.4 MB of base64. Only a peer that has already proved it holds the Primary Phone's secret
+    /// gets it, at most <see cref="MaxConcurrentRequests"/> at a time, so what it bounds is a few tens
+    /// of megabytes from a caller that could already do far more with a screen and a keyboard.
+    /// </para>
+    /// </summary>
+    internal const int MaxAuthenticatedMessageBytes = 2 * 1024 * 1024;
+
     private readonly WebSocket _socket;
     private readonly ICapabilityDispatcher _dispatcher;
     private readonly IDeviceAuthenticator _authenticator;
@@ -198,7 +212,7 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
             }),
             cancellationToken).ConfigureAwait(false);
 
-        var message = await ReceiveMessageAsync(cancellationToken).ConfigureAwait(false);
+        var message = await ReceiveMessageAsync(MaxHandshakeMessageBytes, cancellationToken).ConfigureAwait(false);
         if (message is null)
         {
             return false;
@@ -445,7 +459,7 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
         {
             while (_socket.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested)
             {
-                var message = await ReceiveMessageAsync(cancellationToken).ConfigureAwait(false);
+                var message = await ReceiveMessageAsync(MaxAuthenticatedMessageBytes, cancellationToken).ConfigureAwait(false);
                 if (message is null)
                 {
                     break;
@@ -547,7 +561,7 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
         _ = SendAsync(ProtocolCodec.Encode(envelope), CancellationToken.None);
     }
 
-    private async Task<string?> ReceiveMessageAsync(CancellationToken cancellationToken)
+    private async Task<string?> ReceiveMessageAsync(int maxBytes, CancellationToken cancellationToken)
     {
         var buffer = new byte[ReceiveBufferSize];
         using var message = new MemoryStream();
@@ -570,7 +584,7 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
                 return null;
             }
 
-            if (message.Length + result.Count > 64 * 1024)
+            if (message.Length + result.Count > maxBytes)
             {
                 await CloseAsync(WebSocketCloseStatus.MessageTooBig, "message too large", CancellationToken.None)
                     .ConfigureAwait(false);

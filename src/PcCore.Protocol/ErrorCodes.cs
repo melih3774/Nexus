@@ -74,6 +74,27 @@ public static class ErrorCodes
     /// </summary>
     public const string UpdateRequired = "update_required";
 
+    /// <summary>Something is already at the path a write would create, and replacing it was not asked for.</summary>
+    public const string AlreadyExists = "already_exists";
+
+    /// <summary>
+    /// Another program holds the file open in a way that excludes this one. Distinct from
+    /// <see cref="AccessDenied"/> because the remedy is different: close the program, not change permissions.
+    /// </summary>
+    public const string FileInUse = "file_in_use";
+
+    /// <summary>The file changed on the PC between two ranges of one transfer, so the ranges do not belong together.</summary>
+    public const string FileChanged = "file_changed";
+
+    /// <summary>The volume has no room for what is being written.</summary>
+    public const string DiskFull = "disk_full";
+
+    /// <summary>What arrived did not hash to what the sender said it sent. Nothing was kept.</summary>
+    public const string ChecksumMismatch = "checksum_mismatch";
+
+    /// <summary>The Windows clipboard could not be opened, usually because another program is holding it.</summary>
+    public const string ClipboardUnavailable = "clipboard_unavailable";
+
     /// <summary>An unexpected fault. Details are deliberately suppressed.</summary>
     public const string InternalError = "internal_error";
 }

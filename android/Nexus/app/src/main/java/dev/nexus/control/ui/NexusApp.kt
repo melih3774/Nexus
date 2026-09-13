@@ -290,6 +290,7 @@ private fun PairedFlow(
                         installedVersion = viewModel.updates.installedVersion,
                         onCheckUpdates = { viewModel.updates.check() },
                         onUpdate = { viewModel.updates.update() },
+                        clipboard = { ClipboardPanel(enabled = state.connection.isConnected) },
                     )
                 }
 

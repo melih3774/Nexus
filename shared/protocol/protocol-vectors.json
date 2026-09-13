@@ -348,5 +348,32 @@
   },
   "update_required_error": {
     "code": "update_required"
+  },
+  "file_roots": {
+    "encoded": "{\u0022roots\u0022:[{\u0022path\u0022:\u0022C:\\\\\u0022,\u0022name\u0022:\u0022Windows (C:)\u0022,\u0022kind\u0022:\u0022drive\u0022,\u0022total_bytes\u0022:1000204886016,\u0022free_bytes\u0022:402000000000}],\u0022places\u0022:[{\u0022name\u0022:\u0022Home\u0022,\u0022path\u0022:\u0022C:\\\\Users\\\\Owner\u0022}]}"
+  },
+  "file_listing": {
+    "encoded": "{\u0022path\u0022:\u0022C:\\\\Users\\\\Owner\u0022,\u0022entry_count\u0022:2,\u0022entries\u0022:[{\u0022name\u0022:\u0022Documents\u0022,\u0022path\u0022:\u0022C:\\\\Users\\\\Owner\\\\Documents\u0022,\u0022type\u0022:\u0022directory\u0022,\u0022size_bytes\u0022:null,\u0022modified_utc\u0022:\u00222026-08-29T12:34:56.789\u002B00:00\u0022,\u0022created_utc\u0022:null,\u0022is_hidden\u0022:false,\u0022is_read_only\u0022:false,\u0022is_link\u0022:false},{\u0022name\u0022:\u0022notes \\u2713.txt\u0022,\u0022path\u0022:\u0022C:\\\\Users\\\\Owner\\\\notes \\u2713.txt\u0022,\u0022type\u0022:\u0022file\u0022,\u0022size_bytes\u0022:1234,\u0022modified_utc\u0022:\u00222026-08-29T12:34:56.789\u002B00:00\u0022,\u0022created_utc\u0022:null,\u0022is_hidden\u0022:false,\u0022is_read_only\u0022:false,\u0022is_link\u0022:false}],\u0022skipped_count\u0022:0,\u0022parent\u0022:\u0022C:\\\\Users\u0022,\u0022truncated\u0022:false}"
+  },
+  "file_chunk": {
+    "encoded": "{\u0022path\u0022:\u0022C:\\\\Users\\\\Owner\\\\video.mp4\u0022,\u0022size_bytes\u0022:3145731,\u0022modified_utc\u0022:\u00222026-08-29T12:34:56.789\u002B00:00\u0022,\u0022offset\u0022:3145728,\u0022chunk_bytes\u0022:3,\u0022end_of_file\u0022:true,\u0022encoding\u0022:\u0022base64\u0022,\u0022data\u0022:\u0022BwgJ\u0022}",
+    "data_hex": "070809"
+  },
+  "upload_state": {
+    "encoded": "{\u0022upload_id\u0022:\u00220123456789abcdef01234567\u0022,\u0022path\u0022:\u0022C:\\\\Users\\\\Owner\\\\Downloads\\\\photo.jpg\u0022,\u0022size_bytes\u0022:2048576,\u0022received_bytes\u0022:1048576,\u0022max_chunk_bytes\u0022:1048576,\u0022resumed\u0022:true}"
+  },
+  "clipboard_content": {
+    "encoded": "{\u0022has_text\u0022:true,\u0022text\u0022:\u0022kopyaland\\u0131 \\u2713\u0022,\u0022length\u0022:12,\u0022truncated\u0022:false,\u0022version\u0022:7,\u0022origin\u0022:\u0022phone\u0022}",
+    "origin_pc": "pc",
+    "origin_phone": "phone",
+    "max_text_chars": 262144
+  },
+  "file_error_codes": {
+    "already_exists": "already_exists",
+    "file_in_use": "file_in_use",
+    "file_changed": "file_changed",
+    "disk_full": "disk_full",
+    "checksum_mismatch": "checksum_mismatch",
+    "clipboard_unavailable": "clipboard_unavailable"
   }
 }

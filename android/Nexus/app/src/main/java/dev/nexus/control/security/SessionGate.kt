@@ -52,6 +52,15 @@ class SessionGate(
     private val _state = MutableStateFlow<SessionGateState>(SessionGateState.Locked(LockReason.Started))
     val state: StateFlow<SessionGateState> = _state.asStateFlow()
 
+    private val _authorizations = MutableStateFlow(0L)
+
+    /**
+     * Counts each time the PC granted the owner session, on this connection or a new one. [state] can
+     * stay `Unlocked(remoteAuthorized = true)` straight across a reconnect, so work that has to wait for
+     * the PC to accept requests again - resuming an interrupted transfer - watches this instead.
+     */
+    val authorizations: StateFlow<Long> = _authorizations.asStateFlow()
+
     private var authenticatedAtMs: Long? = null
     private var leftForegroundAtMs: Long? = null
     private var screenLockedSinceAuth: Boolean = false
@@ -215,6 +224,7 @@ class SessionGate(
                 OwnerSessionResult.Authorized -> {
                     ticket = issued ?: ticket
                     _state.value = SessionGateState.Unlocked(remoteAuthorized = true)
+                    _authorizations.value++
                 }
 
                 OwnerSessionResult.NeedsAuthentication -> {

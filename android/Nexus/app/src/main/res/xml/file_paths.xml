@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What FileProvider may hand to another app: PC files downloaded to be opened, and nothing else. -->
+<paths>
+    <cache-path name="pc-files" path="nexus-files/" />
+</paths>

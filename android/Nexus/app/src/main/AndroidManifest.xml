@@ -63,5 +63,19 @@
         <receiver
             android:name=".update.UpdateInstallReceiver"
             android:exported="false" />
+
+        <!--
+          Hands a PC file downloaded to be opened to the app that opens it, one read grant at a time.
+          Only the Files cache is shared: not the credential, not evidence, not the update.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

@@ -154,6 +154,12 @@ data class ListFilesResult(
     @SerialName("entry_count") val entryCount: Int = 0,
     val entries: List<FileEntry> = emptyList(),
     @SerialName("skipped_count") val skippedCount: Int = 0,
+
+    /** The folder above, as PC Core resolved it; null at a root. Absent from a PC Core before v1.4. */
+    val parent: String? = null,
+
+    /** More entries exist than the PC returns in one listing. */
+    val truncated: Boolean = false,
 )
 
 @Serializable

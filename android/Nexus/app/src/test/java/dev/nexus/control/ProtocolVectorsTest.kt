@@ -710,6 +710,75 @@ class ProtocolVectorsTest {
         assertEquals(text("update_required_error", "code"), NexusProtocol.Errors.UPDATE_REQUIRED)
     }
 
+    // --- v1.4: Files and Clipboard ------------------------------------------------------------------
+
+    @Test
+    fun `drives and places from PC Core decode`() {
+        val roots = NexusJson.decodeFromString(dev.nexus.control.files.FileRootsResult.serializer(), text("file_roots", "encoded"))
+
+        assertEquals("""C:\""", roots.roots.single().path)
+        assertEquals("drive", roots.roots.single().kind)
+        assertEquals(402000000000L, roots.roots.single().freeBytes)
+        assertEquals("Home", roots.places.single().name)
+    }
+
+    @Test
+    fun `a listing carries its parent and each entry's metadata`() {
+        val listing = NexusJson.decodeFromString(dev.nexus.control.protocol.ListFilesResult.serializer(), text("file_listing", "encoded"))
+
+        assertEquals("""C:\Users""", listing.parent)
+        assertFalse(listing.truncated)
+        assertTrue(listing.entries[0].isDirectory)
+
+        val file = listing.entries[1]
+        assertFalse(file.isDirectory)
+        assertEquals("notes ✓.txt", file.name)
+        assertEquals(1234L, file.sizeBytes)
+        assertEquals(OffsetDateTime.parse("2026-08-29T12:34:56.789Z").toInstant(), OffsetDateTime.parse(file.modifiedUtc).toInstant())
+    }
+
+    @Test
+    fun `a file range from PC Core decodes to its bytes`() {
+        val chunk = NexusJson.decodeFromString(dev.nexus.control.files.FileChunk.serializer(), text("file_chunk", "encoded"))
+
+        assertEquals(3145728L, chunk.offset)
+        assertTrue(chunk.endOfFile)
+        assertEquals(text("file_chunk", "data_hex"), toHex(java.util.Base64.getDecoder().decode(chunk.data)))
+    }
+
+    @Test
+    fun `an upload's begin answer decodes`() {
+        val state = NexusJson.decodeFromString(dev.nexus.control.files.UploadState.serializer(), text("upload_state", "encoded"))
+
+        assertTrue(state.resumed)
+        assertEquals(1048576L, state.receivedBytes)
+        assertEquals(dev.nexus.control.files.FileUploader.CHUNK_BYTES, state.maxChunkBytes)
+    }
+
+    @Test
+    fun `the clipboard and its origin words match PC Core`() {
+        val clipboard = NexusJson.decodeFromString(dev.nexus.control.files.PcClipboard.serializer(), text("clipboard_content", "encoded"))
+
+        assertEquals("kopyalandı ✓", clipboard.text)
+        assertEquals(7L, clipboard.version)
+        assertEquals(text("clipboard_content", "origin_phone"), clipboard.origin)
+        assertEquals(text("clipboard_content", "origin_pc"), dev.nexus.control.files.PcClipboard.ORIGIN_PC)
+        assertEquals(text("clipboard_content", "origin_phone"), dev.nexus.control.files.PcClipboard.ORIGIN_PHONE)
+        assertEquals(vector("clipboard_content")["max_text_chars"]!!.jsonPrimitive.int, dev.nexus.control.files.PcClipboard.MAX_TEXT_CHARS)
+    }
+
+    @Test
+    fun `the file error codes match PC Core`() {
+        val codes = vector("file_error_codes")
+
+        assertEquals(codes["already_exists"]!!.jsonPrimitive.content, NexusProtocol.Errors.ALREADY_EXISTS)
+        assertEquals(codes["file_in_use"]!!.jsonPrimitive.content, NexusProtocol.Errors.FILE_IN_USE)
+        assertEquals(codes["file_changed"]!!.jsonPrimitive.content, NexusProtocol.Errors.FILE_CHANGED)
+        assertEquals(codes["disk_full"]!!.jsonPrimitive.content, NexusProtocol.Errors.DISK_FULL)
+        assertEquals(codes["checksum_mismatch"]!!.jsonPrimitive.content, NexusProtocol.Errors.CHECKSUM_MISMATCH)
+        assertEquals(codes["clipboard_unavailable"]!!.jsonPrimitive.content, NexusProtocol.Errors.CLIPBOARD_UNAVAILABLE)
+    }
+
     private fun assertEnumMatches(name: String, fromPhone: List<String>) {
         val fromPc = vector("security_enum_names")[name]!!.jsonArray.map { it.jsonPrimitive.content }.toSet()
         val phone = fromPhone.toSet()

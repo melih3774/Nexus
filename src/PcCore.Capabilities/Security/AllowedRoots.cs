@@ -9,9 +9,13 @@ public sealed class FilesOptions
 
     /// <summary>
     /// Absolute paths, or well-known-folder tokens such as <c>{Desktop}</c>, <c>{Documents}</c>,
-    /// <c>{Downloads}</c>, <c>{Pictures}</c>, <c>{Music}</c>, <c>{Videos}</c>, <c>{UserProfile}</c>.
+    /// <c>{Downloads}</c>, <c>{Pictures}</c>, <c>{Music}</c>, <c>{Videos}</c>, <c>{UserProfile}</c>,
+    /// or <c>{Drives}</c> for every local drive (the v1.4 default, so Files can browse the PC).
     /// </summary>
     public IList<string> AllowedRoots { get; set; } = new List<string>();
+
+    /// <summary>How long an upload may sit without a chunk before its partial file is deleted.</summary>
+    public int UploadIdleMinutes { get; set; } = 10;
 }
 
 /// <summary>
@@ -68,20 +72,18 @@ public sealed class AllowedRoots
         IEnumerable<string> configuredRoots,
         IRealPathResolver resolver,
         IKnownFolderResolver knownFolders,
-        ILogger logger)
+        ILogger logger,
+        Func<IEnumerable<string>>? drives = null)
     {
         ArgumentNullException.ThrowIfNull(configuredRoots);
+        drives ??= LocalDrives;
 
         var resolved = new List<string>();
 
-        foreach (var configured in configuredRoots)
+        foreach (var (configured, expanded) in configuredRoots
+                     .Where(c => !string.IsNullOrWhiteSpace(c))
+                     .SelectMany(c => ExpandAll(c.Trim(), knownFolders, drives).Select(e => (c, e))))
         {
-            if (string.IsNullOrWhiteSpace(configured))
-            {
-                continue;
-            }
-
-            var expanded = Expand(configured.Trim(), knownFolders);
             if (expanded is null)
             {
                 logger.LogWarning("Allowed root '{Root}' could not be expanded and was dropped.", configured);
@@ -138,6 +140,45 @@ public sealed class AllowedRoots
     /// <summary>Creates a boundary from already-real paths. Used by tests.</summary>
     public static AllowedRoots FromRealPaths(params string[] realRoots) =>
         new([.. realRoots.Select(Path.TrimEndingDirectorySeparator)]);
+
+    /// <summary>The token that stands for every local drive: <c>{Drives}</c>.</summary>
+    public const string DrivesToken = "{Drives}";
+
+    /// <summary>
+    /// Fixed and removable drives that are ready now. Not network drives: a mapped letter is a UNC
+    /// share underneath, and the authorizer refuses those whatever the roots say. Not CD-ROMs or RAM
+    /// disks either - nothing worth browsing from a phone.
+    /// </summary>
+    public static IEnumerable<string> LocalDrives()
+    {
+        foreach (var drive in DriveInfo.GetDrives())
+        {
+            bool usable;
+            try
+            {
+                usable = drive.DriveType is DriveType.Fixed or DriveType.Removable && drive.IsReady;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                usable = false;
+            }
+
+            if (usable)
+            {
+                yield return drive.RootDirectory.FullName;
+            }
+        }
+    }
+
+    private static IEnumerable<string?> ExpandAll(string configured, IKnownFolderResolver knownFolders, Func<IEnumerable<string>> drives)
+    {
+        if (configured.Equals(DrivesToken, StringComparison.OrdinalIgnoreCase))
+        {
+            return drives();
+        }
+
+        return [Expand(configured, knownFolders)];
+    }
 
     private static string? Expand(string configured, IKnownFolderResolver knownFolders)
     {

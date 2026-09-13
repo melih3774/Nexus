@@ -518,8 +518,19 @@ public sealed class RemoteTransportTests : IAsyncLifetime
         // test - which is a moment to think about whether it belongs there.
         Assert.Equal(
             [
+                // v1.4 - Files and Clipboard: browse, download, upload, and text both ways. Every one
+                // of them behind the owner session (see the unauthorised subset below).
+                "clipboard.get",
+                "clipboard.set",
+                "files.hash",
                 "files.list",
+                "files.read",
+                "files.roots",
                 "files.stat",
+                "files.upload.begin",
+                "files.upload.cancel",
+                "files.upload.chunk",
+                "files.upload.finish",
                 "input.begin",
                 "input.button",
                 "input.end",

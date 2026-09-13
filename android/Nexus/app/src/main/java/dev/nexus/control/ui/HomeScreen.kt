@@ -44,6 +44,9 @@ fun HomeScreen(
     installedVersion: AppVersion = AppVersion.UNKNOWN,
     onCheckUpdates: () -> Unit = {},
     onUpdate: () -> Unit = {},
+
+    /** The clipboard panel, supplied by the shell so this screen stays renderable without a container. */
+    clipboard: @Composable () -> Unit = {},
 ) {
     var confirmForget by remember { mutableStateOf(false) }
     val connected = state.connection.isConnected
@@ -101,7 +104,7 @@ fun HomeScreen(
             )
             ActionCard(
                 title = "Files",
-                subtitle = "Browse allowed folders",
+                subtitle = "Browse and transfer",
                 glyph = "▤",
                 enabled = connected,
                 onClick = { onOpen(Destination.Files) },
@@ -129,6 +132,10 @@ fun HomeScreen(
                 modifier = Modifier.weight(1f),
             )
         }
+
+        Spacer(Modifier.height(20.dp))
+
+        clipboard()
 
         Spacer(Modifier.height(20.dp))
 

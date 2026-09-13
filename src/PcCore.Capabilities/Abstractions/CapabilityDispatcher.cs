@@ -41,6 +41,11 @@ public sealed class CapabilityDispatcher : ICapabilityDispatcher
         "media.time",
         "media.live.report",
         "media.live.keyframe",
+
+        // A megabyte per request: a large download is thousands of these. The begin, finish and
+        // hash of each transfer stay at information, which is the record of what moved.
+        "files.read",
+        "files.upload.chunk",
     };
 
     private readonly ICapabilityRegistry _registry;

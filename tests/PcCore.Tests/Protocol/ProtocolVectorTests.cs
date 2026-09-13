@@ -820,6 +820,101 @@ public sealed class ProtocolVectorTests
             {
                 ["code"] = ErrorCodes.UpdateRequired,
             },
+
+            // v1.4 - Files and Clipboard. Where browsing starts, a listing with its way up, one range of
+            // a download, what an upload's begin answers, and the clipboard with its origin.
+            ["file_roots"] = new JsonObject
+            {
+                ["encoded"] = JsonSerializer.Serialize(
+                    new PcCore.Capabilities.Files.FileRootsResult
+                    {
+                        Roots =
+                        [
+                            new PcCore.Capabilities.Files.FileRoot { Path = @"C:\", Name = "Windows (C:)", Kind = "drive", TotalBytes = 1000204886016, FreeBytes = 402000000000 },
+                        ],
+                        Places = [new PcCore.Capabilities.Files.FilePlace("Home", @"C:\Users\Owner")],
+                    },
+                    ProtocolCodec.Options),
+            },
+
+            ["file_listing"] = new JsonObject
+            {
+                ["encoded"] = JsonSerializer.Serialize(
+                    new PcCore.Capabilities.Files.ListFilesResult
+                    {
+                        Path = @"C:\Users\Owner",
+                        Parent = @"C:\Users",
+                        EntryCount = 2,
+                        SkippedCount = 0,
+                        Truncated = false,
+                        Entries =
+                        [
+                            new PcCore.Capabilities.Files.FileEntry { Name = "Documents", Path = @"C:\Users\Owner\Documents", Type = PcCore.Capabilities.Files.FileEntryType.Directory, ModifiedUtc = Timestamp },
+                            new PcCore.Capabilities.Files.FileEntry { Name = "notes ✓.txt", Path = @"C:\Users\Owner\notes ✓.txt", Type = PcCore.Capabilities.Files.FileEntryType.File, SizeBytes = 1234, ModifiedUtc = Timestamp },
+                        ],
+                    },
+                    ProtocolCodec.Options),
+            },
+
+            ["file_chunk"] = new JsonObject
+            {
+                ["encoded"] = JsonSerializer.Serialize(
+                    new PcCore.Capabilities.Files.FileChunk
+                    {
+                        Path = @"C:\Users\Owner\video.mp4",
+                        SizeBytes = 3145731,
+                        ModifiedUtc = Timestamp,
+                        Offset = 3145728,
+                        ChunkBytes = 3,
+                        EndOfFile = true,
+                        Data = Convert.ToBase64String([7, 8, 9]),
+                    },
+                    ProtocolCodec.Options),
+                ["data_hex"] = "070809",
+            },
+
+            ["upload_state"] = new JsonObject
+            {
+                ["encoded"] = JsonSerializer.Serialize(
+                    new PcCore.Capabilities.Files.UploadState
+                    {
+                        UploadId = "0123456789abcdef01234567",
+                        Path = @"C:\Users\Owner\Downloads\photo.jpg",
+                        SizeBytes = 2048576,
+                        ReceivedBytes = 1048576,
+                        MaxChunkBytes = PcCore.Capabilities.Files.FileUploadService.MaxChunkBytes,
+                        Resumed = true,
+                    },
+                    ProtocolCodec.Options),
+            },
+
+            ["clipboard_content"] = new JsonObject
+            {
+                ["encoded"] = JsonSerializer.Serialize(
+                    new PcCore.Capabilities.Clipboard.ClipboardContent
+                    {
+                        HasText = true,
+                        Text = "kopyalandı ✓",
+                        Length = 12,
+                        Truncated = false,
+                        Version = 7,
+                        Origin = PcCore.Capabilities.Clipboard.ClipboardService.OriginPhone,
+                    },
+                    ProtocolCodec.Options),
+                ["origin_pc"] = PcCore.Capabilities.Clipboard.ClipboardService.OriginPc,
+                ["origin_phone"] = PcCore.Capabilities.Clipboard.ClipboardService.OriginPhone,
+                ["max_text_chars"] = PcCore.Capabilities.Clipboard.ClipboardService.MaxTextChars,
+            },
+
+            ["file_error_codes"] = new JsonObject
+            {
+                ["already_exists"] = ErrorCodes.AlreadyExists,
+                ["file_in_use"] = ErrorCodes.FileInUse,
+                ["file_changed"] = ErrorCodes.FileChanged,
+                ["disk_full"] = ErrorCodes.DiskFull,
+                ["checksum_mismatch"] = ErrorCodes.ChecksumMismatch,
+                ["clipboard_unavailable"] = ErrorCodes.ClipboardUnavailable,
+            },
         };
 
         return JsonSerializer.Serialize(vectors, new JsonSerializerOptions { WriteIndented = true }) + "\n";
