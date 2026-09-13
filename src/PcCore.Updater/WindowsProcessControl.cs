@@ -95,8 +95,9 @@ internal sealed class WindowsProcessControl(Action<string> log) : INexusProcessC
 
     public int Start(string executable)
     {
-        // Shell-executed, so it starts exactly as it does from the Start Menu or at sign-in, and
-        // inherits nothing from this process.
+        // Shell-executed, so it inherits neither this process's console nor its handles. It does inherit
+        // a packaged app's AppData redirection, when there is one - which is why Program refuses to run
+        // where that would give PC Core a different copy of its state than the Start Menu gives it.
         using var process = Process.Start(new ProcessStartInfo(executable)
         {
             UseShellExecute = true,

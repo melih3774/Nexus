@@ -51,6 +51,12 @@ public sealed record UpdatePaths(string InstallDirectory, string WorkDirectory)
     /// <summary>Held while an update runs, so two cannot interleave.</summary>
     public const string UpdateMutexName = @"Local\Nexus.Updater";
 
+    /// <summary>Nexus's per-user state, relative to <c>%LOCALAPPDATA%</c>. The update work directory and the release store are inside it.</summary>
+    public const string StateFolder = "Nexus";
+
+    /// <summary>The per-user install, relative to <c>%LOCALAPPDATA%</c>.</summary>
+    public const string InstallFolder = @"Programs\Nexus";
+
     public string InstalledExecutable => Path.Combine(InstallDirectory, HostExecutableName);
 
     public string StagingRoot => Path.Combine(WorkDirectory, "staging");
@@ -71,13 +77,11 @@ public sealed record UpdatePaths(string InstallDirectory, string WorkDirectory)
     /// The per-user install (<c>%LOCALAPPDATA%\Programs\Nexus</c>, where <c>--install-app</c> puts
     /// it) and the per-user work directory beside PC Core's own state.
     /// </summary>
-    public static UpdatePaths ForCurrentUser()
-    {
-        var local = Environment.GetFolderPath(
-            Environment.SpecialFolder.LocalApplicationData, Environment.SpecialFolderOption.DoNotVerify);
+    public static UpdatePaths ForCurrentUser() => ForLocalAppData(AppDataRedirection.LocalAppData);
 
-        return new UpdatePaths(Path.Combine(local, "Programs", "Nexus"), Path.Combine(local, "Nexus", "update"));
-    }
+    /// <summary>The same locations under another <c>%LOCALAPPDATA%</c>, the way a freshly started process resolves them.</summary>
+    public static UpdatePaths ForLocalAppData(string localAppData) =>
+        new(Path.Combine(localAppData, InstallFolder), Path.Combine(localAppData, StateFolder, "update"));
 
     public UpdateStatus? ReadStatus() => TryRead<UpdateStatus>(StatusPath);
 

@@ -122,6 +122,36 @@ function Get-Property($object, [string] $name) {
     return $property.Value
 }
 
+# ------------------------------------------------------------------------------------- state location
+
+# A process started from inside a packaged (MSIX) app - its terminal, and this script when run there -
+# is shown that app's private copy of any AppData folder the app created first, under
+# %LOCALAPPDATA%\Packages\<package>\LocalCache\Local. A release published into that copy, and an update
+# recorded there, are invisible to Nexus started from the Start Menu: its next restart comes up as if
+# neither happened. PcCore.Updater and PC Core refuse the same situation (PcCore.Update AppDataRedirection).
+function Get-DirectoryId([string] $path) {
+    if (-not (Test-Path -LiteralPath $path -PathType Container)) { return $null }
+    $answer = & fsutil file queryFileID $path 2>$null
+    if ($LASTEXITCODE -ne 0) { return $null }
+    return [regex]::Match(($answer -join ' '), '0x[0-9a-fA-F]+').Value
+}
+
+$stateFolder = Join-Path $env:LOCALAPPDATA 'Nexus'
+$releasesInState = ([IO.Path]::GetFullPath($ReleaseRoot).TrimEnd('\') + '\').StartsWith($stateFolder + '\', [StringComparison]::OrdinalIgnoreCase)
+
+if ($Install -or $releasesInState) {
+    $stateId = Get-DirectoryId $stateFolder
+
+    foreach ($package in @(Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Packages') -Directory -ErrorAction SilentlyContinue)) {
+        $copy = Join-Path $package.FullName 'LocalCache\Local\Nexus'
+        if ($stateId -and (Get-DirectoryId $copy) -eq $stateId) {
+            throw "This shell runs inside $($package.Name), and Windows shows it a private copy of $stateFolder ($copy). " +
+                  'A release published or installed from here would be invisible to Nexus started from the Start Menu. ' +
+                  "Run this from a terminal outside $($package.Name), or move what is needed out of the copy into $stateFolder and delete the copy."
+        }
+    }
+}
+
 # --------------------------------------------------------------------------------------------- versions
 
 Step 'Versions'

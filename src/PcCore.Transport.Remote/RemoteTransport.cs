@@ -55,6 +55,9 @@ public sealed class RemoteTransport : IAsyncDisposable
     public const string TransportName = "tailscale-remote";
     public const string Path = "/nexus";
 
+    /// <summary>The longest the listener waits for its connections once it is stopping.</summary>
+    public static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(5);
+
     private readonly IServiceProvider _services;
     private readonly RemoteTransportOptions _options;
     private readonly RemoteSessionRegistry _sessions;
@@ -100,6 +103,11 @@ public sealed class RemoteTransport : IAsyncDisposable
         builder.Logging.ClearProviders();
         builder.WebHost.UseSetting(WebHostDefaults.ServerUrlsKey, string.Empty);
 
+        // A backstop, not the mechanism: connections end as soon as stopping begins (below). Anything
+        // that still ignores that is cut off here rather than at the default thirty seconds, which is
+        // longer than the updater waits before killing PC Core.
+        builder.Services.Configure<HostOptions>(host => host.ShutdownTimeout = ShutdownTimeout);
+
         builder.WebHost.ConfigureKestrel(kestrel =>
         {
             // One address, one port. Never IPAddress.Any, never IPAddress.Loopback in production.
@@ -122,6 +130,12 @@ public sealed class RemoteTransport : IAsyncDisposable
         var identity = _services.GetRequiredService<IPcIdentityProvider>();
         var events = _services.GetRequiredService<IEventStream>();
         var connectionLogger = _loggerFactory.CreateLogger("PcCore.Transport.Remote.Connection");
+
+        // Either stop ends every connection: this listener's own (a rebind, or the transport stopping)
+        // and PC Core's (a tray Exit, the updater's stop event) - the latter the moment it begins, not
+        // when the host reaches this transport in its list of things to stop.
+        var listenerStopping = app.Lifetime.ApplicationStopping;
+        var pcCoreStopping = _services.GetService<IHostApplicationLifetime>()?.ApplicationStopping ?? CancellationToken.None;
 
         // Resolved optionally: a host composed without the filesystem capabilities simply has no
         // roots to offer, and an authenticated session with an empty list is correct there.
@@ -166,7 +180,11 @@ public sealed class RemoteTransport : IAsyncDisposable
                 _options,
                 connectionLogger);
 
-            await connection.RunAsync(events, requestAborted).ConfigureAwait(false);
+            // Not only when the phone hangs up. A graceful shutdown waits for every open request, and a
+            // phone never hangs up on its own, so this used to last until the host's timeout cut it off.
+            using var connectionEnds = CancellationTokenSource.CreateLinkedTokenSource(requestAborted, listenerStopping, pcCoreStopping);
+
+            await connection.RunAsync(events, connectionEnds.Token).ConfigureAwait(false);
 
             _logger.LogInformation("Remote connection {ConnectionId} closed.", connectionId);
             return Results.Empty;

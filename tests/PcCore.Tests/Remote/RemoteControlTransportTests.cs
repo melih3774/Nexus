@@ -4,6 +4,8 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Hosting.Internal;
 using Microsoft.Extensions.Logging;
 using PcCore.Capabilities.Abstractions;
 using PcCore.Capabilities.Files;
@@ -65,6 +67,9 @@ public sealed class RemoteControlTransportTests : IAsyncLifetime
         services.AddSingleton<IEventStream>(p => p.GetRequiredService<EventBus>());
         services.AddSingleton<ISecurityStateService, SecurityStateService>();
         services.AddSingleton<ISystemInfoProvider, FakeSystemInfoProvider>();
+
+        // PC Core's own lifetime, which the transport shares a container with in the real host.
+        services.AddSingleton<IHostApplicationLifetime, ApplicationLifetime>();
 
         var options = new RemoteTransportOptions { Port = FreePort() };
         services.AddSingleton(options);
@@ -363,6 +368,83 @@ public sealed class RemoteControlTransportTests : IAsyncLifetime
         Assert.False(_indicator.Last.Overlay);
 
         await client.SendRequestAsync("screen.stream.stop", null, token);
+    }
+
+    // --- Shutdown ---------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// PC Core stopping while the owner is watching and holding a button.
+    /// <para>
+    /// The transport used to wait for the phone to hang up, which a phone never does: shutdown sat out
+    /// the host's thirty-second timeout, the updater's twenty-second grace ran out first and PC Core was
+    /// killed - skipping the very cleanup below - and a tray Exit left a closing PC Core behind long
+    /// enough for the owner to start a second one. This phone does not answer the close either, the way
+    /// one asleep in a pocket would not.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task StoppingWhileAStreamIsLiveEndsTheSessionPromptlyAndReleasesEverything()
+    {
+        var token = TestContext.Current.CancellationToken;
+        await using var client = await ConnectAsync(token);
+
+        Assert.True((await client.SendRequestAsync("input.begin", null, token)).Success);
+        Assert.True((await client.SendRequestAsync("input.button", new { button = "LEFT", action = "DOWN" }, token)).Success);
+        Assert.True((await client.SendRequestAsync("screen.stream.start", null, token)).Success);
+        Assert.NotNull(await client.WaitForFrameAsync(TimeSpan.FromSeconds(10), token));
+
+        _input.Events.Clear();
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        await _transport.StopAsync(token);
+        clock.Stop();
+
+        // Well inside the listener's shutdown backstop, so what is measured is the session ending,
+        // not the timeout that would otherwise cut it off.
+        Assert.True(
+            clock.Elapsed < RemoteTransport.ShutdownTimeout - TimeSpan.FromSeconds(2),
+            $"stopping the remote transport took {clock.Elapsed.TotalSeconds:F1} s");
+
+        // Everything a normal shutdown exists to do, done before it returned.
+        Assert.True(_capture.Opened.Count > 0 && _capture.Opened.All(s => s.Disposed), "the capture outlived the transport");
+        Assert.Contains("button Left up", _input.Events);
+        Assert.Equal(0, _services.GetRequiredService<RemoteSessionRegistry>().Count);
+    }
+
+    /// <summary>
+    /// The moment PC Core starts stopping - a tray Exit, the updater's stop event - is when the phone's
+    /// session ends, not whenever the host gets round to stopping the remote transport. Until then the
+    /// phone could keep working a PC that was leaving: after one tray Exit it resumed its session and
+    /// started a new stream.
+    /// </summary>
+    [Fact]
+    public async Task PcCoreStartingToStopEndsTheSessionBeforeTheTransportIsStopped()
+    {
+        var token = TestContext.Current.CancellationToken;
+        await using var client = await ConnectAsync(token);
+
+        Assert.True((await client.SendRequestAsync("input.begin", null, token)).Success);
+        Assert.True((await client.SendRequestAsync("input.button", new { button = "LEFT", action = "DOWN" }, token)).Success);
+        Assert.True((await client.SendRequestAsync("screen.stream.start", null, token)).Success);
+        Assert.NotNull(await client.WaitForFrameAsync(TimeSpan.FromSeconds(10), token));
+
+        _input.Events.Clear();
+
+        _services.GetRequiredService<IHostApplicationLifetime>().StopApplication();
+
+        Assert.True(await WaitAsync(() => _capture.Opened.All(s => s.Disposed), token), "the stream kept running after PC Core began stopping");
+        Assert.True(await WaitAsync(() => _input.Events.Contains("button Left up"), token), "a held button survived PC Core stopping");
+        Assert.True(await WaitAsync(() => _services.GetRequiredService<RemoteSessionRegistry>().Count == 0, token), "the session outlived PC Core stopping");
+
+        // Nothing further is served by a PC that is leaving: the connection itself is gone.
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(token);
+        bounded.CancelAfter(TimeSpan.FromSeconds(5));
+
+        var refused = await Record.ExceptionAsync(() => client.SendRequestAsync("system.get_info", null, bounded.Token));
+
+        Assert.True(
+            refused is WebSocketException or InvalidOperationException,
+            $"expected the connection to be gone, got {refused?.GetType().Name ?? "a response"}");
     }
 
     // --- Input ------------------------------------------------------------------------------------------

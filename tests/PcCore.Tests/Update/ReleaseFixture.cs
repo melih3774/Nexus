@@ -13,15 +13,38 @@ internal sealed class ReleaseFixture : IDisposable
     private readonly TempDirectory _root = new("update");
 
     public ReleaseFixture()
+        : this(localAppDataLayout: false)
     {
-        Store = new ReleaseStore(_root.CreateDirectory("releases"));
-        Paths = new UpdatePaths(_root.CreateDirectory("install"), _root.CreateDirectory("work"));
-        StateDirectory = _root.CreateDirectory("state");
+    }
+
+    /// <param name="localAppDataLayout">
+    /// Lay everything out under a stand-in <c>%LOCALAPPDATA%</c>, where a real process resolves it, so a
+    /// test can resolve it all again the way a restarted one does.
+    /// </param>
+    public ReleaseFixture(bool localAppDataLayout)
+    {
+        if (!localAppDataLayout)
+        {
+            Store = new ReleaseStore(_root.CreateDirectory("releases"));
+            Paths = new UpdatePaths(_root.CreateDirectory("install"), _root.CreateDirectory("work"));
+            StateDirectory = _root.CreateDirectory("state");
+            return;
+        }
+
+        LocalAppData = _root.CreateDirectory("LocalAppData");
+        Store = new ReleaseStore(Directory.CreateDirectory(ReleaseStore.RootIn(LocalAppData)).FullName);
+        Paths = UpdatePaths.ForLocalAppData(LocalAppData);
+        Directory.CreateDirectory(Paths.InstallDirectory);
+        Directory.CreateDirectory(Paths.WorkDirectory);
+        StateDirectory = Path.Combine(LocalAppData, UpdatePaths.StateFolder);
     }
 
     public ReleaseStore Store { get; }
 
     public UpdatePaths Paths { get; }
+
+    /// <summary>The stand-in <c>%LOCALAPPDATA%</c>, when the fixture was laid out under one.</summary>
+    public string? LocalAppData { get; }
 
     /// <summary>Stands in for <c>%LOCALAPPDATA%\Nexus</c>: pairing, keys, settings, logs, evidence.</summary>
     public string StateDirectory { get; }

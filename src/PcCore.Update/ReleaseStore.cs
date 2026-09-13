@@ -67,10 +67,9 @@ public sealed class ReleaseStore
 
     public string PointerPath => Path.Combine(Root, PointerFileName);
 
-    public static string DefaultRoot => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData, Environment.SpecialFolderOption.DoNotVerify),
-        "Nexus",
-        "Releases");
+    public static string DefaultRoot => RootIn(AppDataRedirection.LocalAppData);
+
+    public static string RootIn(string localAppData) => Path.Combine(localAppData, UpdatePaths.StateFolder, "Releases");
 
     public static ReleaseStore ForCurrentUser() => new(DefaultRoot);
 

@@ -157,6 +157,11 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
                 .ConfigureAwait(false);
             return;
         }
+        catch (OperationCanceledException)
+        {
+            // The phone hung up, or PC Core is stopping, before the handshake finished.
+            return;
+        }
 
         await PumpAsync(cancellationToken).ConfigureAwait(false);
     }

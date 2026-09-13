@@ -22,6 +22,9 @@ namespace PcCore.Updater;
 /// </summary>
 public static class Program
 {
+    /// <summary>Nothing was done: this process would only have reached a packaged app's private copy of Nexus's folders.</summary>
+    private const int RedirectedExitCode = 5;
+
     public static async Task<int> Main(string[] args)
     {
         if (args.Contains("--elevated"))
@@ -40,6 +43,16 @@ public static class Program
         var store = new ReleaseStore(Value(args, "--releases") ?? ReleaseStore.DefaultRoot);
 
         var log = new UpdaterLog(paths.LogPath, attachConsole: true);
+
+        // Before anything is read or stopped. An updater that sees a packaged app's private copy of the
+        // update state installs from a release store, and records into a status file, that the PC Core
+        // started from the Start Menu never reads: its next restart comes up as if nothing happened.
+        if (AppDataRedirection.FirstUsedByThisProcess(AppDataRedirection.LocalAppData, DefaultFoldersIn(args), DirectoryIdentity.Of) is { } redirected)
+        {
+            log.Write(redirected.Describe());
+            return RedirectedExitCode;
+        }
+
         var processes = new WindowsProcessControl(log.Write);
 
         // The one outcome an update must never have: PC Core stopped and nobody left to start it.
@@ -170,6 +183,20 @@ public static class Program
             {
                 // Nothing else to fall back to; the remaining steps still run.
             }
+        }
+    }
+
+    /// <summary>The per-user folders this run uses at their default locations; an explicit path is the caller's to vouch for.</summary>
+    private static IEnumerable<string> DefaultFoldersIn(string[] args)
+    {
+        if (Value(args, "--work-dir") is null || Value(args, "--releases") is null)
+        {
+            yield return UpdatePaths.StateFolder;
+        }
+
+        if (Value(args, "--install-dir") is null)
+        {
+            yield return UpdatePaths.InstallFolder;
         }
     }
 

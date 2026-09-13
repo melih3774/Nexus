@@ -925,6 +925,17 @@ If step 5 fails, the new process is ended, the moved-aside files are moved back,
 is started again and the tray says the update was rolled back. A journal left by an updater that died
 mid-swap is undone on its next run. The updater's account is in `%LOCALAPPDATA%\Nexus\update\updater.log`.
 
+**One state folder, whoever starts Nexus.** A terminal inside a packaged (MSIX) app - the Claude
+desktop app is one - can be shown a private copy of `%LOCALAPPDATA%\Nexus` under
+`%LOCALAPPDATA%\Packages\<package>\LocalCache\Local\Nexus`: Windows creates one when a process started
+from that app creates the folder before it exists. From then on Nexus started from the app and Nexus
+started from the Start Menu read two different pairings, release stores and update records, and a
+restart from the Start Menu comes up as if the last update never happened. PC Core, the updater and
+`publish-release.ps1` therefore refuse to run on such a copy (the updater and PC Core exit with 5, and
+say which copy), and PC Core started normally logs a warning while one exists. Move what you need from
+the copy into `%LOCALAPPDATA%\Nexus` and delete it; where no copy exists, the same terminal writes to the
+real folder and everything works from it.
+
 Never touched: `%LOCALAPPDATA%\Nexus` state (pairing, owner keys, settings, logs, evidence), the driver
 certificate stores, and any file in the install directory that no manifest listed. An edited
 `appsettings.json` is kept; `appsettings.Local.json` beside it is loaded after it and never shipped.

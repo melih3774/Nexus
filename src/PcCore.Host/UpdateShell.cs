@@ -4,6 +4,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 using PcCore.Update;
+using PcCore.Update.Windows;
 
 namespace PcCore.Host;
 
@@ -21,31 +22,20 @@ internal static class UpdateShell
     /// </summary>
     public static IDisposable ListenForStop(IHostApplicationLifetime lifetime, ILogger logger)
     {
-        EventWaitHandle signal;
-
         try
         {
-            signal = new EventWaitHandle(false, EventResetMode.AutoReset, UpdatePaths.StopEventName);
+            return UpdateStopSignal.Listen(() =>
+            {
+                logger.LogWarning("Nexus is stopping: the updater asked it to, so it can be replaced.");
+                lifetime.StopApplication();
+            });
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or WaitHandleCannotBeOpenedException)
         {
             // Not fatal: the updater falls back to Ctrl+C and then to ending the process.
             logger.LogWarning(ex, "The update stop signal could not be created; an update will have to end PC Core instead.");
-            return new Listener(null, null);
+            return new NoListener();
         }
-
-        var registration = ThreadPool.RegisterWaitForSingleObject(
-            signal,
-            (_, _) =>
-            {
-                logger.LogWarning("Nexus is stopping: the updater asked it to, so it can be replaced.");
-                lifetime.StopApplication();
-            },
-            state: null,
-            Timeout.Infinite,
-            executeOnlyOnce: true);
-
-        return new Listener(signal, registration);
     }
 
     /// <summary>The balloon for an update's outcome, or null when it is not one worth interrupting for.</summary>
@@ -58,12 +48,10 @@ internal static class UpdateShell
         _ => null,
     };
 
-    private sealed class Listener(EventWaitHandle? signal, RegisteredWaitHandle? registration) : IDisposable
+    private sealed class NoListener : IDisposable
     {
         public void Dispose()
         {
-            registration?.Unregister(signal);
-            signal?.Dispose();
         }
     }
 }

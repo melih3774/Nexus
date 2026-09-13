@@ -40,6 +40,9 @@ namespace PcCore.Host;
 /// </summary>
 public static class Program
 {
+    /// <summary>PC Core did not start: it would only have reached a packaged app's private copy of Nexus's state.</summary>
+    private const int StateRedirectedExitCode = 5;
+
     public static async Task<int> Main(string[] args)
     {
         // Startup registration is management, not serving: handle it and exit without opening a
@@ -127,6 +130,18 @@ public static class Program
                 : await PhoneSimulator.RunAsync(args, simulatorLogs).ConfigureAwait(false);
         }
 
+        // Before any state is read or written. Nexus's state is one folder that every PC Core must share;
+        // started from inside a packaged app that holds a private copy of it, this process would serve,
+        // pair and update from a copy the Start Menu PC Core never reads - which is how a restart once
+        // brought back the state from before an update.
+        var stateRedirection = AppDataRedirection.ForCurrentUser(UpdatePaths.StateFolder);
+
+        if (stateRedirection is { UsedByThisProcess: true })
+        {
+            Console.Error.WriteLine(stateRedirection.Describe());
+            return StateRedirectedExitCode;
+        }
+
         // Must run before any GDI work. Without it Windows DPI-virtualises the process on a scaled
         // display and screenshots come back silently downscaled rather than failing outright.
         var dpiAware = DpiAwareness.TryEnablePerMonitorV2();
@@ -210,6 +225,11 @@ public static class Program
             // Named in the log itself, which is the only place it is certain to be seen by someone
             // who is already looking for it.
             logger.LogInformation("Log file: {LogPath}", fileLog.Path);
+        }
+
+        if (stateRedirection is not null)
+        {
+            logger.LogWarning("Nexus state exists twice. {Detail}", stateRedirection.Describe());
         }
 
         if (info.IsElevated)
@@ -970,6 +990,21 @@ public static class Program
     private static void WatchForUpdates(IServiceProvider services, NexusTray? tray, ILogger logger)
     {
         var updates = services.GetRequiredService<NexusUpdateService>();
+
+        // What this start read back, so a restart that comes up in an unexpected state shows which
+        // record it came from rather than only the conclusion drawn from it.
+        var paths = services.GetRequiredService<UpdatePaths>();
+        var status = updates.LastStatus;
+        var installed = paths.ReadInstalledRecord();
+
+        logger.LogInformation(
+            "Update state at start: running {Running}; last update {State} for release {StatusRelease} at {At}; installed record: release {InstalledRelease}; work directory {WorkDirectory}",
+            ProductInfo.Version,
+            status?.State.ToString() ?? "none",
+            status?.Release?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "-",
+            status?.UpdatedAtUtc.ToString("u", System.Globalization.CultureInfo.InvariantCulture) ?? "-",
+            installed?.Release.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "none",
+            paths.WorkDirectory);
 
         updates.UpdateAvailable += result =>
             tray?.Notify("Nexus update available", DescribeUpdates(result).Line + ". Install it from the Nexus tray menu.");

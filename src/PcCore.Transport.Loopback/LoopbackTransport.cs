@@ -122,8 +122,14 @@ public static class LoopbackTransport
             return Results.Json(response, ProtocolCodec.Options);
         });
 
-        app.MapGet("/ws", async (HttpContext context, CancellationToken cancellationToken) =>
+        app.MapGet("/ws", async (HttpContext context, CancellationToken requestAborted) =>
         {
+            // Ends when PC Core stops, not only when the browser closes the page. A graceful shutdown
+            // waits for every open request, so an open control panel used to hold PC Core up until the
+            // host's thirty-second shutdown timeout cut it off.
+            using var connectionEnds = CancellationTokenSource.CreateLinkedTokenSource(requestAborted, app.Lifetime.ApplicationStopping);
+            var cancellationToken = connectionEnds.Token;
+
             if (!context.WebSockets.IsWebSocketRequest)
             {
                 return Results.BadRequest(new { error = "Expected a WebSocket upgrade request." });

@@ -233,6 +233,26 @@ public sealed class LoopbackTransportTests : IAsyncLifetime
 
     // --- WebSocket ----------------------------------------------------------------------------
 
+    /// <summary>
+    /// An open control panel must not hold PC Core up when it stops. Its socket used to be released
+    /// only when the browser hung up or the host's thirty-second shutdown timeout ran out.
+    /// </summary>
+    [Fact]
+    public async Task WebSocket_AnOpenControlPanelDoesNotHoldShutdownUp()
+    {
+        var token = TestContext.Current.CancellationToken;
+        using var socket = await ConnectAsync(withToken: true, token);
+
+        // The greeting: the connection is established and being served.
+        Assert.Equal("core.connected", (await ReceiveAsync(socket, token)).GetProperty("event").GetString());
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        await _app.StopAsync(token);
+        clock.Stop();
+
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(5), $"stopping with a control panel open took {clock.Elapsed.TotalSeconds:F1} s");
+    }
+
     private async Task<ClientWebSocket> ConnectAsync(bool withToken, CancellationToken cancellationToken)
     {
         var socket = new ClientWebSocket();
