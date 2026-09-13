@@ -65,6 +65,11 @@ fun UpdateCard(
                 TextButton(onClick = onCheck) { Text("Check for updates") }
             }
 
+            is AppUpdateState.NotOffered -> Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(state.message, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                TextButton(onClick = onCheck) { Text("Check again") }
+            }
+
             is AppUpdateState.Updated -> Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Updated to Nexus ${state.versionName}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
                 TextButton(onClick = onCheck) { Text("Check for updates") }

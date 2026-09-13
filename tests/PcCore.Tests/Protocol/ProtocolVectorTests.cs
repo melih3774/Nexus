@@ -766,6 +766,60 @@ public sealed class ProtocolVectorTests
                 ["security_state"] = new JsonArray(
                     [.. Enum.GetValues<SecurityState>().Select(v => (JsonNode)JsonValue.Create(WireName(v))!)]),
             },
+
+            // v1.3 - the phone updating itself. The check it reads on every connection, one range of
+            // the APK, and the refusal an app too old for its PC receives.
+            ["update_check_result"] = new JsonObject
+            {
+                ["encoded"] = JsonSerializer.Serialize(
+                    new PcCore.Capabilities.Update.UpdateCheckResult
+                    {
+                        RunningVersion = "1.3.0",
+                        ReleaseAvailable = true,
+                        LatestVersion = "1.3.1",
+                        LatestRelease = 18,
+                        InstalledRelease = 17,
+                        PcUpdateAvailable = true,
+                        Android = new PcCore.Capabilities.Update.AndroidUpdateInfo
+                        {
+                            VersionName = "1.3.1",
+                            VersionCode = 18,
+                            SizeBytes = 35058580,
+                            Sha256 = new string('b', 64),
+                            SigningCertSha256 = new string('c', 64),
+                            MinSdk = 31,
+                            UpdateAvailable = true,
+                            Required = true,
+                        },
+                        MinimumAndroidVersionCode = 16,
+                        State = "idle",
+                        CheckedAtUtc = Timestamp,
+                    },
+                    ProtocolCodec.Options),
+                ["version_code"] = 18,
+            },
+
+            ["android_package_chunk"] = new JsonObject
+            {
+                ["encoded"] = JsonSerializer.Serialize(
+                    new PcCore.Capabilities.Update.AndroidPackageChunk
+                    {
+                        VersionCode = 18,
+                        SizeBytes = 35058580,
+                        Sha256 = new string('b', 64),
+                        Offset = 1048576,
+                        ChunkBytes = 3,
+                        EndOfFile = false,
+                        Data = Convert.ToBase64String([1, 2, 3]),
+                    },
+                    ProtocolCodec.Options),
+                ["data_hex"] = "010203",
+            },
+
+            ["update_required_error"] = new JsonObject
+            {
+                ["code"] = ErrorCodes.UpdateRequired,
+            },
         };
 
         return JsonSerializer.Serialize(vectors, new JsonSerializerOptions { WriteIndented = true }) + "\n";

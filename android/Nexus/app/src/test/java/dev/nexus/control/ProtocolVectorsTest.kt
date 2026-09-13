@@ -669,6 +669,47 @@ class ProtocolVectorsTest {
         assertEnumMatches("security_state", SecurityState.entries.map { it.wire })
     }
 
+    // --- v1.3: updating the app from its PC -------------------------------------------------------
+
+    @Test
+    fun `the update check PC Core sends decodes into what the update card reads`() {
+        val result = NexusJson.decodeFromString(
+            dev.nexus.control.update.UpdateCheckResult.serializer(),
+            text("update_check_result", "encoded"),
+        )
+
+        assertTrue(result.releaseAvailable)
+        assertEquals("1.3.1", result.latestVersion)
+        assertEquals(16, result.minimumAndroidVersionCode)
+
+        val android = result.android
+        assertNotNull("the check carried no Android package", android)
+        assertEquals(vector("update_check_result")["version_code"]!!.jsonPrimitive.int, android!!.versionCode)
+        assertEquals(35058580L, android.sizeBytes)
+        assertEquals("b".repeat(64), android.sha256)
+        assertEquals("c".repeat(64), android.signingCertSha256)
+        assertTrue(android.updateAvailable)
+        assertTrue(android.required)
+    }
+
+    @Test
+    fun `an APK range from PC Core decodes to its bytes`() {
+        val chunk = NexusJson.decodeFromString(
+            dev.nexus.control.update.AndroidPackageChunk.serializer(),
+            text("android_package_chunk", "encoded"),
+        )
+
+        assertEquals(18, chunk.versionCode)
+        assertEquals(1048576L, chunk.offset)
+        assertFalse(chunk.endOfFile)
+        assertEquals(text("android_package_chunk", "data_hex"), toHex(java.util.Base64.getDecoder().decode(chunk.data)))
+    }
+
+    @Test
+    fun `the update required error code matches PC Core`() {
+        assertEquals(text("update_required_error", "code"), NexusProtocol.Errors.UPDATE_REQUIRED)
+    }
+
     private fun assertEnumMatches(name: String, fromPhone: List<String>) {
         val fromPc = vector("security_enum_names")[name]!!.jsonArray.map { it.jsonPrimitive.content }.toSet()
         val phone = fromPhone.toSet()

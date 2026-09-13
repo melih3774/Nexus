@@ -1,4 +1,4 @@
-# Nexus v1.1.2
+# Nexus v1.3.0
 
 A user-level Windows process that exposes a **small, explicit set of capabilities** over a structured request/response/event protocol — locally over loopback, and remotely to one paired phone over Tailscale.
 
@@ -19,6 +19,8 @@ A user-level Windows process that exposes a **small, explicit set of capabilitie
 - **v1.1.1 — Why a phone was refused:** every failed device authentication used to print one sentence, "invalid proof for device X", for three different problems with three different remedies. It now names which one, using identifiers only, in the PC's own log — while the answer sent back over the wire stays a single opaque `authentication_failed`, so the detail cannot be used to enumerate device ids. Repeats are collapsed instead of filling the log, the phone stops retrying a credential the PC has already refused, and both ends print the device id, the installation id and a one-way credential fingerprint, so the three values that make up the signed message can actually be compared. PC Core also keeps a log on disk now (`%LOCALAPPDATA%\Nexus\pccore.log`, one previous generation kept, reachable from the tray) - started from the Start Menu or at sign-in it has no console, so every diagnostic it wrote used to go nowhere.
 
 - **v1.1.2 — Live monitoring could never start:** the host handed the live-sensor service an authorisation predicate that rebuilt a caller identity from a connection id. A rebuilt caller has no device id, and authority is keyed to the device, so it answered "not authorised" for every session that ever asked — while the same phone on the same socket drove remote control and evidence fine. The caller is now passed through whole, and the predicate is a named function the tests exercise instead of a lambda in the composition root.
+
+- **v1.3 — Nexus updates itself:** one release manifest, one publish command, a separate updater that swaps only changed files and rolls back if the new PC Core does not answer, and a phone that downloads its own APK from its PC over the authenticated session. See [Updating Nexus](#updating-nexus-v13).
 
 Still deliberately absent: no AI integration, no virtual display (IDD), no multi-user support, no internet exposure — the remote path is Tailscale only. See [SPEC.md](SPEC.md) and [PLAN.md](PLAN.md).
 
@@ -857,6 +859,91 @@ Captures from both devices for a few seconds and reports frame counts, rates and
 frame. Worth having because a device that produces nothing looks exactly like a device nobody is
 watching — this separates "the PC cannot capture" from "the phone is not receiving".
 
+## Updating Nexus (v1.3)
+
+```
+change code  ->  .\tools\publish-release.ps1 -Install  ->  PC restarts on the new build
+                                                        ->  phone: "Nexus x.y.z available  [Update]"
+```
+
+Everything stays on this PC. There is no update server: the PC that builds a release is the one that
+installs it and the one the phone downloads it from.
+
+### One-time setup
+
+```bash
+powershell -ExecutionPolicy Bypass -File tools/setup-android-signing.ps1
+```
+
+Android upgrades an app in place — keeping its data, Keystore keys and pairing — only when the new APK
+has the same signer. The phone app was installed as debug builds signed by this PC's SDK debug key, so
+the script adopts that certificate into `%USERPROFILE%\.nexus\release-signing\` with a new random
+password (user-only ACL, never in the repository). **Back that directory up**: without it no future
+build installs over the app on the phone. `-NewKey` makes a fresh key instead, at the cost of one
+reinstall and re-pair.
+
+The very first 1.3 APK has to reach the phone once by hand (`adb install -r <apk>`, in place), because
+the app already installed predates the updater.
+
+### Publishing
+
+```bash
+powershell -ExecutionPolicy Bypass -File tools/publish-release.ps1 -Install
+```
+
+Builds PC Core, the input broker, the updater and SecureCapture; builds the signed Android release APK
+only if `android/Nexus`, `shared/protocol` or `Directory.Build.props` changed since the last release
+(otherwise the previous APK is carried forward, so the phone is not offered a non-update); hashes
+everything; writes `manifest.json`; moves the release to `%LOCALAPPDATA%\Nexus\Releases\<release>` and
+only then points `latest.json` at it. The newest three releases are kept. A publish in which nothing
+changed publishes nothing. `-Install` then updates this PC. Without it, the tray offers the update.
+
+The manifest records the product version (`Directory.Build.props`), a release number that increases on
+every publish and doubles as the Android `versionCode`, the SecureCapture version (its own `csproj`),
+the HID driver version (`DriverVer` of the signed package in `artifacts\NexusHidPackage`), SHA-256 and
+size of every file, the APK's signer certificate, and `NexusMinAndroidVersionCode`. The script refuses a
+changed SecureCapture or driver under an unchanged version, and an APK signed by a different key.
+
+### How the PC updates
+
+The tray (`Update available … → Install update`), the control panel's **updates** box, or `-Install`
+all do the same thing: PC Core copies the release's `PcCore.Updater.exe` into
+`%LOCALAPPDATA%\Nexus\update\runner` and starts it. The updater:
+
+1. compares the release with the install directory — PC Core by file hash, SecureCapture and the driver
+   by version — and stages only what differs, verifying every file against the manifest, **while the old
+   PC Core keeps serving**;
+2. asks for UAC **only** if SecureCapture or the driver changed, for that step alone; the elevated half
+   copies the files into `%ProgramFiles%\Nexus\Updates`, re-hashes them there, and runs
+   `PcCore.SecureCapture.exe --install` or `pnputil /add-driver … /install` (no new device, no
+   certificate changes). Declining changes nothing;
+3. stops PC Core through its stop event (Ctrl+C for builds that predate it, kill as a last resort);
+4. moves each changed file aside and copies the new one in, journalled;
+5. starts PC Core and waits for `system.get_info` over loopback to report the new version and stay up.
+
+If step 5 fails, the new process is ended, the moved-aside files are moved back, the previous PC Core
+is started again and the tray says the update was rolled back. A journal left by an updater that died
+mid-swap is undone on its next run. The updater's account is in `%LOCALAPPDATA%\Nexus\update\updater.log`.
+
+Never touched: `%LOCALAPPDATA%\Nexus` state (pairing, owner keys, settings, logs, evidence), the driver
+certificate stores, and any file in the install directory that no manifest listed. An edited
+`appsettings.json` is kept; `appsettings.Local.json` beside it is loaded after it and never shipped.
+
+### How the phone updates
+
+The phone reports its `versionCode` when it authenticates and calls `update.check` once per session.
+When the PC's release has a newer APK the home screen (and the lock screen — no unlock is needed to
+update) shows **Nexus x.y.z available → Update**. The app downloads it with `update.apk.get` in 1 MB
+ranges into a `.part` file that resumes after an interruption, checks the whole file's SHA-256,
+package name, versionCode and signer against the installed app, and hands it to Android's
+`PackageInstaller` with user action required. Android shows its own confirmation — and, once, asks
+whether Nexus may install apps. On the next start the app says **Updated to Nexus x.y.z**.
+
+`update.check` and `update.apk.get` are the only additions to the phone's allowlist; `update.install`
+is local-only. A phone whose app is below `NexusMinAndroidVersionCode` is still authenticated but told
+`update_required`, and every other action is refused with that code — it can fetch the update and
+nothing else. A phone that reports no version is treated as build 14, the last one before this.
+
 ## Protocol vectors
 
 `shared/protocol/protocol-vectors.json` is generated from PC Core's own implementations and asserted
@@ -911,6 +998,8 @@ src/
   PcCore.Transport.Loopback/  Kestrel, /rpc, /ws, token + loopback guards (127.0.0.1 only)
   PcCore.Transport.Remote/    Tailscale-bound WebSocket, device authentication, sessions
   PcCore.Host/                composition root, config, logging, device endpoints, QR, test page
+  PcCore.Update/              release manifest, store, plan, staging, file swap and rollback
+  PcCore.Updater/             the separate updater process; the only part that ever asks for UAC
 tests/
   PcCore.Tests/               586 tests
 android/

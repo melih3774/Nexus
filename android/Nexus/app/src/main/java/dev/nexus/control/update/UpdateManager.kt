@@ -6,6 +6,7 @@ import dev.nexus.control.net.AppVersion
 import dev.nexus.control.net.ConnectionState
 import dev.nexus.control.net.NexusRequestException
 import dev.nexus.control.net.NotConnectedException
+import dev.nexus.control.protocol.NexusProtocol
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,6 +24,9 @@ sealed interface AppUpdateState {
     data object Checking : AppUpdateState
 
     data class UpToDate(val pcHasRelease: Boolean) : AppUpdateState
+
+    /** The PC cannot offer updates at all - its Nexus predates them. Not an error the owner can fix here. */
+    data class NotOffered(val message: String) : AppUpdateState
 
     /** A newer build is on the PC. [required] when the PC will serve nothing else until it is installed. */
     data class Available(val info: AndroidUpdateInfo, val required: Boolean) : AppUpdateState
@@ -97,7 +101,11 @@ class UpdateManager(
             } catch (e: NotConnectedException) {
                 AppUpdateState.Unknown
             } catch (e: NexusRequestException) {
-                AppUpdateState.Failed("The PC could not check for updates: ${e.error.message}", null)
+                if (e.error.code == NexusProtocol.Errors.UNKNOWN_ACTION) {
+                    AppUpdateState.NotOffered("Your PC's Nexus is older than this app and cannot offer updates. Update Nexus on the PC.")
+                } else {
+                    AppUpdateState.Failed("The PC could not check for updates: ${e.error.message}", null)
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "Update check failed: ${e.javaClass.simpleName}")
                 AppUpdateState.Unknown
@@ -157,7 +165,8 @@ class UpdateManager(
 
     /** Whether an old state can be replaced by a fresh check without losing something the owner is looking at. */
     private fun AppUpdateState.isIdle(): Boolean =
-        this is AppUpdateState.Unknown || this is AppUpdateState.UpToDate || this is AppUpdateState.Updated
+        this is AppUpdateState.Unknown || this is AppUpdateState.UpToDate || this is AppUpdateState.Updated ||
+            this is AppUpdateState.NotOffered
 
     /**
      * An install replaces this process, so success is recognised on the way back in: the build that

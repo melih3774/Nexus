@@ -337,5 +337,16 @@
       "ARMED",
       "SECURITY_SESSION"
     ]
+  },
+  "update_check_result": {
+    "encoded": "{\u0022running_version\u0022:\u00221.3.0\u0022,\u0022release_available\u0022:true,\u0022latest_version\u0022:\u00221.3.1\u0022,\u0022latest_release\u0022:18,\u0022installed_release\u0022:17,\u0022pc_update_available\u0022:true,\u0022pc_changed_files\u0022:0,\u0022needs_administrator_approval\u0022:false,\u0022components\u0022:[],\u0022android\u0022:{\u0022version_name\u0022:\u00221.3.1\u0022,\u0022version_code\u0022:18,\u0022size_bytes\u0022:35058580,\u0022sha256\u0022:\u0022bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\u0022,\u0022signing_cert_sha256\u0022:\u0022cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\u0022,\u0022min_sdk\u0022:31,\u0022update_available\u0022:true,\u0022required\u0022:true},\u0022minimum_android_version_code\u0022:16,\u0022state\u0022:\u0022idle\u0022,\u0022message\u0022:null,\u0022problem\u0022:null,\u0022checked_at_utc\u0022:\u00222026-08-29T12:34:56.789\u002B00:00\u0022}",
+    "version_code": 18
+  },
+  "android_package_chunk": {
+    "encoded": "{\u0022version_code\u0022:18,\u0022size_bytes\u0022:35058580,\u0022sha256\u0022:\u0022bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\u0022,\u0022offset\u0022:1048576,\u0022chunk_bytes\u0022:3,\u0022end_of_file\u0022:false,\u0022encoding\u0022:\u0022base64\u0022,\u0022data\u0022:\u0022AQID\u0022}",
+    "data_hex": "010203"
+  },
+  "update_required_error": {
+    "code": "update_required"
   }
 }
