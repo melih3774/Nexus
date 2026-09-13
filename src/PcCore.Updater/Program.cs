@@ -80,20 +80,11 @@ public static class Program
         }
 
         // One update at a time, whoever started it: the tray, the control panel, or the publish script.
-        using var mutex = new Mutex(false, UpdatePaths.UpdateMutexName);
+        // A semaphore rather than a mutex: a mutex belongs to the thread that took it, and the update
+        // awaits - so the release ran on another thread and threw, after a successful update.
+        using var gate = new Semaphore(1, 1, UpdatePaths.UpdateMutexName);
 
-        bool owned;
-
-        try
-        {
-            owned = mutex.WaitOne(TimeSpan.Zero);
-        }
-        catch (AbandonedMutexException)
-        {
-            owned = true;
-        }
-
-        if (!owned)
+        if (!gate.WaitOne(TimeSpan.Zero))
         {
             log.Write("Another Nexus update is already running.");
             return 4;
@@ -126,7 +117,7 @@ public static class Program
         }
         finally
         {
-            mutex.ReleaseMutex();
+            gate.Release();
         }
     }
 
@@ -150,14 +141,24 @@ public static class Program
             }
         });
 
-        Attempt(() => paths.WriteStatus(new UpdateStatus
+        Attempt(() =>
         {
-            State = UpdateState.Failed,
-            Message = stuck.Count == 0
-                ? $"The update failed unexpectedly ({ex?.GetType().Name}); the previous version was kept."
-                : $"The update failed unexpectedly ({ex?.GetType().Name}) and could not be fully undone. See {paths.LogPath}.",
-            UpdatedAtUtc = DateTimeOffset.UtcNow,
-        }));
+            // An outcome already recorded stands. A failure after the update finished - in cleanup -
+            // must not turn "updated" into "failed" for the owner.
+            if (paths.ReadStatus() is { InProgress: false, State: not UpdateState.Idle })
+            {
+                return;
+            }
+
+            paths.WriteStatus(new UpdateStatus
+            {
+                State = UpdateState.Failed,
+                Message = stuck.Count == 0
+                    ? $"The update failed unexpectedly ({ex?.GetType().Name}); the previous version was kept."
+                    : $"The update failed unexpectedly ({ex?.GetType().Name}) and could not be fully undone. See {paths.LogPath}.",
+                UpdatedAtUtc = DateTimeOffset.UtcNow,
+            });
+        });
 
         static void Attempt(Action step)
         {
