@@ -1,5 +1,10 @@
 # PC Core — Specification
 
+> **Historical design record.** This specification was written milestone by milestone, v0.1 to v0.7,
+> and is kept for the reasoning behind those decisions — code comments cite its sections as
+> `SPEC.md §n`. Its "current version" and "not started" lines describe the project when they were
+> written. For how Nexus works today, start at the [documentation index](../README.md).
+
 **Current version: v0.4 (Authenticated Tailscale Remote Transport).**
 
 This document is cumulative. Sections 1–11 describe the v0.1 foundation, 12 covers v0.2, 13–25 cover v0.3, and **26–37 cover v0.4**. Throughout, what is *implemented* is separated from what is *deliberately postponed* — nothing here describes behaviour that does not exist.
@@ -131,7 +136,7 @@ Three message shapes. All JSON, all `snake_case` on the wire.
   "id": "b1c9de70",
   "type": "request",
   "action": "files.list",
-  "params": { "path": "C:\\Users\\Melih\\Desktop" }
+  "params": { "path": "C:\\Users\\you\\Desktop" }
 }
 ```
 

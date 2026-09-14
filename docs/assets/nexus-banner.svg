@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 300" role="img" aria-label="Nexus: an Android phone connected to one Windows PC">
+  <defs>
+    <radialGradient id="glow" cx="72%" cy="50%" r="45%">
+      <stop offset="0" stop-color="#2FD8A8" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#2FD8A8" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="1" y="1" width="1278" height="298" rx="22" fill="#0B0F14" stroke="#1B232C" stroke-width="2"/>
+  <rect x="1" y="1" width="1278" height="298" rx="22" fill="url(#glow)"/>
+
+  <!-- Wordmark, drawn the way the app draws it -->
+  <text x="92" y="166" fill="#2FD8A8" font-family="Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif"
+        font-size="92" font-weight="300" letter-spacing="24">NEXUS</text>
+  <text x="96" y="214" fill="#8A97A6" font-family="Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif"
+        font-size="21" letter-spacing="5">ONE OWNER · ONE PHONE · ONE PC</text>
+
+  <!-- Phone -->
+  <rect x="742" y="74" width="92" height="160" rx="16" fill="#12181F" stroke="#2FD8A8" stroke-width="3"/>
+  <rect x="751" y="90" width="74" height="122" rx="5" fill="#1B232C"/>
+  <rect x="776" y="220" width="24" height="4" rx="2" fill="#2A343F"/>
+  <!-- The launcher glyph -->
+  <path transform="translate(739.4 99.4) scale(0.9)" fill="#2FD8A8"
+        d="M38,34h6.5l19,25.5V34H70v40h-6.5l-19,-25.5V74H38z"/>
+
+  <!-- Private link -->
+  <line x1="850" y1="150" x2="986" y2="150" stroke="#2FD8A8" stroke-width="3" stroke-dasharray="7 9" stroke-linecap="round"/>
+  <g transform="translate(907 128)">
+    <rect x="0" y="0" width="30" height="44" rx="8" fill="#0B0F14"/>
+    <path d="M8 18 V13 a7 7 0 0 1 14 0 V18" fill="none" stroke="#E8EDF2" stroke-width="2.5"/>
+    <rect x="5" y="18" width="20" height="16" rx="3" fill="#E8EDF2"/>
+  </g>
+  <text x="918" y="196" fill="#8A97A6" text-anchor="middle" font-family="Consolas, SFMono-Regular, Menlo, monospace"
+        font-size="15" letter-spacing="2">tailnet</text>
+
+  <!-- PC -->
+  <rect x="1000" y="70" width="200" height="130" rx="10" fill="#12181F" stroke="#8A97A6" stroke-width="3"/>
+  <rect x="1010" y="80" width="180" height="110" rx="3" fill="#1B232C"/>
+  <path d="M1100 200 V226" stroke="#8A97A6" stroke-width="3"/>
+  <path d="M1066 230 H1134" stroke="#8A97A6" stroke-width="3" stroke-linecap="round"/>
+  <!-- A pointer on the remote desktop -->
+  <path transform="translate(1092 116)" fill="#2FD8A8" stroke="#0B0F14" stroke-width="1.5" stroke-linejoin="round"
+        d="M0 0 L0 30 L8 23 L13 35 L19 32 L14 21 L24 21 Z"/>
+</svg>

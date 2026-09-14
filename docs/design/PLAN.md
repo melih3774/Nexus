@@ -1,5 +1,9 @@
 # PC Core — Implementation Plan
 
+> **Historical record.** The step-by-step plans for v0.1 to v0.7, including what could and could not
+> be verified at the time. Later milestones are recorded in their commits and in the topic guides —
+> see the [documentation index](../README.md).
+
 ## v0.1 — Foundation (shipped)
 
 Derived from [SPEC.md](SPEC.md). Each step ends in a compiling, testable state.

@@ -1,0 +1,135 @@
+# Updating Nexus
+
+```
+change code  ->  .\tools\publish-release.ps1 -Install  ->  PC restarts on the new build
+                                                        ->  phone: "Nexus x.y.z available  [Update]"
+```
+
+Everything stays on the PC. There is no update server: the PC that builds a release is the one that
+installs it and the one the phone downloads it from.
+
+- [One-time setup](#one-time-setup)
+- [Publishing](#publishing)
+- [How the PC updates](#how-the-pc-updates)
+- [How the phone updates](#how-the-phone-updates)
+- [One state folder, whoever starts Nexus](#one-state-folder-whoever-starts-nexus)
+
+---
+
+## One-time setup
+
+```bash
+powershell -ExecutionPolicy Bypass -File tools/setup-android-signing.ps1
+```
+
+Android upgrades an app in place, keeping its data, Keystore keys and pairing, only when the new APK
+has the same signer. The script sets up a stable local signing key in
+`%USERPROFILE%\.nexus\release-signing\`, with a new random password and an ACL that allows only the
+current user. It never lives in the repository. By default it adopts the certificate the installed
+debug builds already carry. **Back that directory up**: without it, no future build will install
+over the app on the phone. `-NewKey` creates a fresh key instead, at the cost of one reinstall and
+re-pair.
+
+The very first updater-capable APK has to reach the phone once by hand (`adb install -r <apk>`),
+because the app already installed predates the updater.
+
+## Publishing
+
+```bash
+powershell -ExecutionPolicy Bypass -File tools/publish-release.ps1 -Install
+```
+
+The script:
+
+- builds PC Core, the input broker, the updater and SecureCapture
+- builds the signed Android release APK only if `android/Nexus`, `shared/protocol` or
+  `Directory.Build.props` changed since the last release; otherwise the previous APK is carried
+  forward, so the phone is not offered an update that changes nothing
+- hashes everything and writes `manifest.json`
+- moves the release to `%LOCALAPPDATA%\Nexus\Releases\<release>`, and only then points `latest.json`
+  at it
+
+The newest three releases are kept, and a publish in which nothing changed publishes nothing.
+`-Install` then updates this PC. Without it, the tray offers the update.
+
+The manifest records:
+
+- the product version (`Directory.Build.props`)
+- a release number that goes up on every publish and doubles as the Android `versionCode`
+- the SecureCapture version (its own `csproj`)
+- the HID driver version (`DriverVer` of the signed package)
+- SHA-256 and size of every file
+- the APK's signer certificate
+- `NexusMinAndroidVersionCode`
+
+The script refuses a changed SecureCapture or driver whose version number did not change, and an APK
+signed by a different key.
+
+## How the PC updates
+
+The tray (`Update available … → Install update`), the control panel's **updates** box and `-Install`
+all do the same thing: PC Core copies the release's `PcCore.Updater.exe` to a runner folder and starts
+it. The updater then:
+
+1. compares the release with the install directory (PC Core by file hash, SecureCapture and the
+   driver by version) and stages only what differs, verifying every file against the manifest
+   **while the old PC Core keeps serving**;
+2. asks for UAC **only** if SecureCapture or the driver changed, and only for that step. The elevated
+   half copies the files into `%ProgramFiles%\Nexus\Updates`, re-hashes them there, and runs
+   `PcCore.SecureCapture.exe --install` or `pnputil /add-driver … /install`. It creates no new device
+   and changes no certificate. Declining the prompt changes nothing;
+3. stops PC Core through its stop event (Ctrl+C for builds that predate it, and a kill as a last
+   resort);
+4. moves each changed file aside and copies the new one in, recording each step in a journal;
+5. starts PC Core and waits for `system.get_info` over loopback to report the new version and keep
+   running.
+
+If step 5 fails, the new process is ended, the moved-aside files are put back, the previous PC Core
+is started again, and the tray says the update was rolled back. A journal left by an updater that
+died mid-swap is undone on its next run. The updater's own log is
+`%LOCALAPPDATA%\Nexus\update\updater.log`.
+
+**Never touched:** `%LOCALAPPDATA%\Nexus` state (pairing, owner keys, settings, logs, evidence), the
+certificate stores, and any file in the install directory that no manifest listed. An edited
+`appsettings.json` is kept, and `appsettings.Local.json` beside it is loaded after it and never
+shipped.
+
+The first real updates of an installed Nexus found three updater defects: a console handle left dead
+by Ctrl+C, a mutex released from the wrong thread, and a rolled-back release that could be resumed
+by mistake. See commits `d59460e`, `b0cefb5` and `9947faf`.
+
+## How the phone updates
+
+The phone reports its `versionCode` when it authenticates and calls `update.check` once per session.
+When the PC's release has a newer APK, the home screen shows **Nexus x.y.z available → Update**. So
+does the lock screen, since updating does not require unlocking.
+
+The app then:
+
+1. downloads the APK with `update.apk.get` in 1 MB ranges into a `.part` file that resumes after an
+   interruption;
+2. checks the whole file's SHA-256, package name, versionCode and signer against the installed app;
+3. hands it to Android's `PackageInstaller`, which requires the user to confirm.
+
+Android shows its own confirmation, and the first time it also asks whether Nexus may install apps.
+On the next start the app says **Updated to Nexus x.y.z**.
+
+`update.check` and `update.apk.get` are the only additions to what the phone may call, and
+`update.install` is local-only. A phone whose app is older than `NexusMinAndroidVersionCode` still
+authenticates, but it is told `update_required` and every other action is refused with that code: it
+can fetch the update and nothing else. A phone that reports no version is treated as build 14, the
+last one before the updater existed.
+
+## One state folder, whoever starts Nexus
+
+A terminal running inside a packaged (MSIX) desktop app can be shown a private copy of
+`%LOCALAPPDATA%\Nexus` under `%LOCALAPPDATA%\Packages\<package>\LocalCache\Local\Nexus`. Windows
+creates that copy when a process started from the app creates the folder before it exists. From then
+on, Nexus started from that app and Nexus started from the Start Menu read different pairings,
+release stores and update records, and a restart from the Start Menu comes up as if the last update
+never happened.
+
+PC Core, the updater and `publish-release.ps1` therefore refuse to run against such a copy: the
+updater and PC Core exit with code 5 and say which copy they found. PC Core started normally logs a
+warning while one exists. Move what you need from the copy into `%LOCALAPPDATA%\Nexus` and delete
+it.

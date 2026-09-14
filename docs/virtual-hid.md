@@ -257,8 +257,8 @@ it could not *see* it, because Desktop Duplication stops there. `PcCore.SecureCa
 service, starts a capture process in the console session and returns frames; no frame is produced
 without a live owner-authenticated session, checked per frame. UAC is not disabled, Secure Desktop is
 not disabled, no policy is changed and consent is never automated. Where Windows requires a local
-confirmation, that requirement is preserved and reported as a platform limitation. See the
-"Secure Desktop" section of [../README.md](../README.md).
+confirmation, that requirement is preserved and reported as a platform limitation. See
+[remote-control.md — The Secure Desktop](remote-control.md#the-secure-desktop).
 
 ## 7. Virtual display — researched only, and not recommended yet
 
