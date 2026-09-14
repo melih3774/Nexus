@@ -174,7 +174,10 @@ private fun TaskList(state: AssistantUiState, viewModel: AssistantViewModel) {
                     value = prompt,
                     onValueChange = { prompt = it },
                     placeholder = { Text("What should PC Assistant do?") },
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 96.dp),
+                    // Capped as well as floored: with the keyboard up there is about half a screen to
+                    // work in, and a field that grows with every line walks Start down behind the
+                    // keyboard. Past this it scrolls inside itself, the way the follow-up field does.
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 96.dp, max = 168.dp),
                     enabled = canWork && !state.busy,
                 )
                 Spacer(Modifier.size(8.dp))

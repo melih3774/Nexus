@@ -98,10 +98,26 @@ object AssistantConversation {
     fun withoutApproval(open: OpenTask, approvalId: String): OpenTask =
         open.copy(approvals = open.approvals.filterNot { it.id == approvalId })
 
-    /** Messages and shown progress, in time order. Timestamps are ISO-8601 UTC, so text order is time order. */
-    fun timeline(open: OpenTask): List<TimelineItem> =
-        (open.messages.map { TimelineItem.Message(it) } + open.progress.filter { it.kind in shownKinds }.map { TimelineItem.Step(it) })
+    /**
+     * Messages and shown progress, in time order. Timestamps are ISO-8601 UTC, so text order is time
+     * order.
+     *
+     * A tool that started and then finished is **one** line, not two. PC Assistant reports both, and on
+     * the PC's wide list that reads fine; on a phone the completion repeats the start's own words with
+     * less in them — "Write: C:\…\notes.txt" followed by "Write" — and a handful of tool calls fills
+     * the screen with echoes. The start is the informative half, so the completion is dropped when its
+     * start is already on the timeline. A completion whose start is missing (an older, truncated
+     * transcript) still shows, and a failure is never hidden: it is a different kind with its own line.
+     */
+    fun timeline(open: OpenTask): List<TimelineItem> {
+        val started = open.progress.filter { it.kind == "tool_started" }.mapNotNull { it.toolName }.toSet()
+        val steps = open.progress
+            .filter { it.kind in shownKinds }
+            .filterNot { it.kind == "tool_completed" && it.toolName != null && it.toolName in started }
+
+        return (open.messages.map { TimelineItem.Message(it) } + steps.map { TimelineItem.Step(it) })
             .sortedBy { it.at }
+    }
 
     /** A task changed somewhere: the list keeps one row per task, most recently active first. */
     fun upsert(tasks: List<AssistantTaskSummary>, task: AssistantTaskSummary): List<AssistantTaskSummary> =

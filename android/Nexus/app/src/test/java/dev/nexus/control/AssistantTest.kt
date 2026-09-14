@@ -16,10 +16,22 @@ import dev.nexus.control.assistant.OpenTask
 import dev.nexus.control.assistant.TimelineItem
 import dev.nexus.control.net.NexusCommandChannel
 import dev.nexus.control.net.NexusRequestException
+import dev.nexus.control.protocol.EventEnvelope
 import dev.nexus.control.protocol.NexusJson
 import dev.nexus.control.protocol.NexusProtocol
 import dev.nexus.control.protocol.ProtocolError
+import dev.nexus.control.security.LockReason
+import dev.nexus.control.security.SessionGateState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.setMain
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
@@ -88,6 +100,35 @@ class AssistantTest {
         )
 
         assertEquals(listOf("m:m1", "p:p1", "m:m2"), AssistantConversation.timeline(open).map(TimelineItem::key))
+    }
+
+    @Test
+    fun `a tool that finished is one line, not the same line twice`() {
+        val open = OpenTask(
+            task,
+            progress = listOf(
+                AssistantProgress(id = "p1", kind = "tool_started", title = "Write: C:\\notes.txt", toolName = "Write", createdAt = "2026-09-14T10:00:01+00:00"),
+                AssistantProgress(id = "p2", kind = "tool_completed", title = "Write", toolName = "Write", createdAt = "2026-09-14T10:00:02+00:00"),
+            ),
+        )
+
+        val steps = AssistantConversation.timeline(open)
+        assertEquals(listOf("p:p1"), steps.map(TimelineItem::key))
+    }
+
+    @Test
+    fun `a finish without its start still shows, and a failure always does`() {
+        val open = OpenTask(
+            task,
+            progress = listOf(
+                // The transcript was truncated before this tool's start, so its finish is all there is.
+                AssistantProgress(id = "p1", kind = "tool_completed", title = "Read", toolName = "Read", createdAt = "2026-09-14T10:00:01+00:00"),
+                AssistantProgress(id = "p2", kind = "tool_started", title = "Write: C:\\notes.txt", toolName = "Write", createdAt = "2026-09-14T10:00:02+00:00"),
+                AssistantProgress(id = "p3", kind = "tool_failed", title = "Write failed", toolName = "Write", createdAt = "2026-09-14T10:00:03+00:00"),
+            ),
+        )
+
+        assertEquals(listOf("p:p1", "p:p2", "p:p3"), AssistantConversation.timeline(open).map(TimelineItem::key))
     }
 
     @Test
@@ -173,6 +214,97 @@ class AssistantTest {
 
         assertEquals(listOf("allow_once", "deny"), channel.sent.map { it.second!!["decision"]!!.jsonPrimitive.content })
         assertEquals(listOf("a1", "a2"), channel.sent.map { it.second!!["approval_id"]!!.jsonPrimitive.content })
+    }
+
+    // --- The screen -------------------------------------------------------------------------------
+
+    /** Answers each action with its own canned result, the way PC Core does. */
+    private class ScriptedChannel(private val replies: Map<String, String>) : NexusCommandChannel {
+        val sent = mutableListOf<String>()
+
+        override suspend fun request(action: String, params: JsonElement?, timeoutMs: Long): JsonElement? {
+            sent += action
+            return replies[action]?.let(NexusJson::parseToJsonElement)
+        }
+
+        override fun notify(action: String, params: JsonElement?): Boolean {
+            sent += action
+            return true
+        }
+    }
+
+    private fun statusEvent(state: String, canWork: Boolean) = EventEnvelope(
+        eventName = NexusProtocol.Events.ASSISTANT_STATUS_CHANGED,
+        payload = NexusJson.parseToJsonElement("""{"state":"$state","can_work":$canWork}""").jsonObject,
+    )
+
+    private fun screen(channel: ScriptedChannel, events: MutableSharedFlow<EventEnvelope>, gate: MutableStateFlow<SessionGateState>) =
+        AssistantViewModel(AssistantClient(channel), events, gate, MutableStateFlow(0L))
+
+    private val readyReplies = mapOf(
+        NexusProtocol.Actions.ASSISTANT_SUBSCRIBE to """{"subscribed":true,"status":{"state":"READY","can_work":true}}""",
+        NexusProtocol.Actions.ASSISTANT_TASKS_LIST to """{"tasks":[{"id":"t1","title":"Plan","mode":"ask","state":"running","running":true}]}""",
+        NexusProtocol.Actions.ASSISTANT_TASKS_GET to """{"task":{"id":"t1","title":"Plan","mode":"ask","state":"running","running":true},"messages":[{"id":"m1","role":"owner","text":"plan my week"}]}""",
+    )
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `PC Assistant closing and coming back puts the owner back in the task they were reading`() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        try {
+            val events = MutableSharedFlow<EventEnvelope>(extraBufferCapacity = 8)
+            val gate = MutableStateFlow<SessionGateState>(SessionGateState.Unlocked(remoteAuthorized = true))
+            val screen = screen(ScriptedChannel(readyReplies), events, gate)
+
+            screen.start()
+            advanceUntilIdle()
+            screen.open("t1")
+            advanceUntilIdle()
+            assertEquals("t1", screen.state.value.open?.task?.id)
+
+            // PC Assistant is closed: nothing read from it is still true, so it all goes.
+            events.emit(statusEvent("NOT_RUNNING", canWork = false))
+            advanceUntilIdle()
+            assertEquals(null, screen.state.value.open)
+            assertTrue(screen.state.value.tasks.isEmpty())
+
+            events.emit(statusEvent("READY", canWork = true))
+            advanceUntilIdle()
+            assertEquals("t1", screen.state.value.open?.task?.id)
+            assertEquals("plan my week", screen.state.value.open?.messages?.single()?.text)
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `a lock in between is not a place to come back to`() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        try {
+            val events = MutableSharedFlow<EventEnvelope>(extraBufferCapacity = 8)
+            val gate = MutableStateFlow<SessionGateState>(SessionGateState.Unlocked(remoteAuthorized = true))
+            val screen = screen(ScriptedChannel(readyReplies), events, gate)
+
+            screen.start()
+            advanceUntilIdle()
+            screen.open("t1")
+            advanceUntilIdle()
+
+            events.emit(statusEvent("NOT_RUNNING", canWork = false))
+            advanceUntilIdle()
+
+            gate.value = SessionGateState.Locked(LockReason.ScreenLocked)
+            advanceUntilIdle()
+
+            events.emit(statusEvent("READY", canWork = true))
+            advanceUntilIdle()
+
+            // The owner has to ask for the task again, in the open, rather than find it waiting.
+            assertEquals(null, screen.state.value.open)
+        } finally {
+            Dispatchers.resetMain()
+        }
     }
 
     @Test

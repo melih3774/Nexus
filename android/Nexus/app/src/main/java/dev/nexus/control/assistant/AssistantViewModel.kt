@@ -58,6 +58,14 @@ class AssistantViewModel(
     private var started = false
     private var refreshing: Job? = null
 
+    /**
+     * The task that was open when PC Assistant went away, so returning puts the owner back where they
+     * were rather than at the list. It survives PC Assistant closing and reopening — and nothing else:
+     * [forget] clears it with everything else when Nexus locks, because a remembered task id is one
+     * more thing a locked phone would be holding.
+     */
+    private var interruptedTaskId: String? = null
+
     init {
         viewModelScope.launch {
             events.collect(::onEvent)
@@ -99,14 +107,17 @@ class AssistantViewModel(
             _state.update { it.copy(status = status, checking = false) }
 
             if (!status.canRead) {
-                _state.update { it.copy(tasks = emptyList(), open = null) }
+                dropUnreadableTasks()
                 return@launch
             }
 
             loadTasks()
 
-            val open = _state.value.open
-            if (reopen && open != null) load(open.task.id)
+            val resume = _state.value.open?.task?.id ?: interruptedTaskId
+            if (reopen && resume != null) {
+                interruptedTaskId = null
+                open(resume)
+            }
         }
     }
 
@@ -127,6 +138,7 @@ class AssistantViewModel(
     }
 
     fun close() {
+        interruptedTaskId = null
         _state.update { it.copy(open = null, opening = false, error = null) }
         loadTasks()
     }
@@ -236,7 +248,7 @@ class AssistantViewModel(
                 _state.update { it.copy(status = status) }
 
                 if (status.canRead && !wasReadable) refresh(reopen = true)
-                if (!status.canRead) _state.update { it.copy(tasks = emptyList(), open = null) }
+                if (!status.canRead) dropUnreadableTasks()
             }
 
             NexusProtocol.Events.ASSISTANT_TASK_CHANGED -> decode(payload, AssistantTaskResult.serializer())?.let { result ->
@@ -275,8 +287,19 @@ class AssistantViewModel(
     }
 
     /** Drops everything the owner's session was needed to see. */
+    /**
+     * PC Assistant can no longer be read, so nothing held here describes it any more. The task that was
+     * open is remembered — only its id, and only until it is reopened or Nexus locks — because closing
+     * PC Assistant while reading a task should not also lose the owner's place in it.
+     */
+    private fun dropUnreadableTasks() {
+        interruptedTaskId = _state.value.open?.task?.id ?: interruptedTaskId
+        _state.update { it.copy(tasks = emptyList(), open = null) }
+    }
+
     private fun forget() {
         refreshing?.cancel()
+        interruptedTaskId = null
         _state.update { AssistantUiState(newTaskMode = it.newTaskMode) }
     }
 
