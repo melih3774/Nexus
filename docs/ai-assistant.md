@@ -1,8 +1,14 @@
 # AI Assistant
 
-Ask PC Assistant to do something on the PC, from the phone, and watch it work. PC Assistant is a
-separate Windows program that runs Claude Code. Nexus does not contain it and does not run it. Nexus
-carries an authenticated owner's requests to it, and brings its answers and approval cards back.
+Ask the Assistant to do something on the PC, from the phone, and watch it work. The **Nexus AI
+Assistant** is a Windows program of its own that runs Claude Code. Its source lives in this
+repository, at [`src/Assistant/`](../src/Assistant/), under its original `PcAssistant.*` project and
+namespace names; the executable is still `PcAssistant.Desktop.exe`.
+
+**It is part of Nexus, and it is still a separate process.** PC Core does not reference its
+assemblies, does not host it, and does not start it. The two talk over the same local named pipe they
+always have, and each verifies which executable is on the other end. Sharing a repository changed
+where the code is kept and nothing about how the two programs meet.
 
 - [How it fits together](#how-it-fits-together)
 - [Setting it up](#setting-it-up)
@@ -25,8 +31,8 @@ Nexus for Android ── Tailscale ──> PC Core ── owner-only named pipe 
 
 | | Owns |
 |---|---|
-| **Nexus** | the phone link, pairing, the biometric owner session, who may use `assistant.*`, the Android screen |
-| **PC Assistant** | Claude Code and its sessions, AUTO/ASK, approval cards, task history, browser and PC tools |
+| **PC Core and the app** | the phone link, pairing, the biometric owner session, who may use `assistant.*`, the Android screen |
+| **The Assistant** | Claude Code and its sessions, AUTO/ASK, approval cards, task history, browser and PC tools |
 
 The phone never talks to PC Assistant. PC Core never talks to Claude. A task started from the phone is an
 ordinary PC Assistant task: it appears in PC Assistant's window, lives in its database, and can be

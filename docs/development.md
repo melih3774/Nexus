@@ -28,6 +28,8 @@ src/
   PcCore.Updater/             the separate updater process; the only part that ever asks for UAC
   PcCore.Host/                composition root, tray, control panel, self-tests, simulator
   driver/NexusHid/            the UMDF2 + VHF source driver (C) and its INF
+  Assistant/                  the AI Assistant component: its own solution, projects and tests,
+                              kept in the layout it was developed in (see below)
 tests/
   PcCore.Tests/               xUnit v3 suite for everything above
 android/
@@ -72,9 +74,17 @@ A complete, signed, versioned release of every component is one command
 powershell -ExecutionPolicy Bypass -File tools/publish-release.ps1
 ```
 
-`TreatWarningsAsErrors` is on for every .NET project, and the product version has a single source:
-`VersionPrefix` in `Directory.Build.props`. The Android app and the release manifest read it from
-there.
+The AI Assistant component builds separately, from its own directory, because it keeps its own
+solution, SDK pin and build settings:
+
+```bash
+cd src/Assistant && dotnet build -c Release
+```
+
+`TreatWarningsAsErrors` is on for every .NET project **except** the Assistant's, which has its own
+`Directory.Build.props` (and its own `<Version>`, currently 0.10.0, separate from the product
+version). The product version has a single source: `VersionPrefix` in the root
+`Directory.Build.props`. The Android app and the release manifest read it from there.
 
 ## Testing
 
@@ -86,6 +96,17 @@ Run the suite this way rather than with `dotnet test`. The Microsoft.Testing.Pla
 with `xunit.v3` did not support the server mode this SDK's `dotnet test` drives it with, so
 `dotnet test` reported zero tests. `dotnet run` is a first-class xUnit v3 entry point and runs
 everything. Add `--filter-class <name>` to run one class.
+
+The Assistant's suite is xUnit v2 on VSTest and is run with `dotnet test`, from its own directory so
+that its `global.json` applies rather than the root one, which selects the Microsoft.Testing.Platform
+runner:
+
+```bash
+cd src/Assistant && dotnet test
+```
+
+Some of its tests drive real windows on the desktop, so they want a session nobody else is typing in.
+A handful of live suites skip themselves unless opted into with `PCASSISTANT_REAL_CLAUDE=1`.
 
 Android unit tests (JVM):
 

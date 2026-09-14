@@ -229,6 +229,8 @@ local control panel. The optional driver and SecureCapture installs are describe
 ```
 src/            PC Core (C#): protocol, capabilities, Windows integration, transports, host,
                 SecureCapture, updater, and the UMDF2 HID driver (src/driver, C)
+src/Assistant/  the AI Assistant component (C#): its own solution, projects and tests. A separate
+                process that PC Core reaches over a local named pipe, never by reference
 android/Nexus/  the Android app (Kotlin, Jetpack Compose)
 tests/          the .NET test suite
 shared/         protocol vectors asserted by both the C# and Kotlin tests
