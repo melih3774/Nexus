@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.CreationExtras
+import dev.nexus.control.assistant.AssistantClient
 import dev.nexus.control.clipboard.ClipboardSync
 import dev.nexus.control.data.CredentialStore
 import dev.nexus.control.files.FileClient
@@ -95,6 +96,9 @@ class NexusContainer(context: Context) {
 
     /** What Nexus knows is on this phone's clipboard, kept across screens so an echo is recognised. */
     val clipboardSync = ClipboardSync()
+
+    /** PC Assistant, through PC Core. Every call needs the owner session there. */
+    val assistant = AssistantClient(connection)
 }
 
 class NexusApplication : Application() {

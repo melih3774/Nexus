@@ -54,6 +54,7 @@ enum class Destination(val route: String, val title: String) {
     Files("files", "Files"),
     System("system", "System"),
     Security("security", "Security"),
+    Assistant("assistant", "AI Assistant"),
     Pairing("pairing", "Pair"),
     Scanner("scanner", "Scan"),
 }
@@ -297,6 +298,7 @@ private fun PairedFlow(
                 composable(Destination.Screen.route) { RemoteScreen() }
                 composable(Destination.Files.route) { FilesScreen() }
                 composable(Destination.System.route) { SystemScreen() }
+                composable(Destination.Assistant.route) { AssistantScreen() }
                 composable(Destination.Security.route) {
                     // The alert says "activity on your PC"; the natural next step is to look at it.
                     SecurityScreen(onViewLive = { navController.navigate(Destination.Screen.route) })

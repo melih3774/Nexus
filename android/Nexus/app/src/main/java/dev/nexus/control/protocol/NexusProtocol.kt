@@ -108,6 +108,18 @@ object NexusProtocol {
         const val FILES_UPLOAD_CANCEL = "files.upload.cancel"
         const val CLIPBOARD_GET = "clipboard.get"
         const val CLIPBOARD_SET = "clipboard.set"
+
+        // v1.5 - PC Assistant. Every one needs the owner session.
+        const val ASSISTANT_STATUS = "assistant.status"
+        const val ASSISTANT_SUBSCRIBE = "assistant.subscribe"
+        const val ASSISTANT_UNSUBSCRIBE = "assistant.unsubscribe"
+        const val ASSISTANT_TASKS_LIST = "assistant.tasks.list"
+        const val ASSISTANT_TASKS_GET = "assistant.tasks.get"
+        const val ASSISTANT_TASKS_CREATE = "assistant.tasks.create"
+        const val ASSISTANT_TASKS_SEND = "assistant.tasks.send"
+        const val ASSISTANT_TASKS_STOP = "assistant.tasks.stop"
+        const val ASSISTANT_TASKS_SET_MODE = "assistant.tasks.set_mode"
+        const val ASSISTANT_APPROVALS_RESOLVE = "assistant.approvals.resolve"
     }
 
     object Events {
@@ -121,6 +133,15 @@ object NexusProtocol {
         const val SECURITY_SESSION_UPDATED = "security.session_updated"
 
         const val SECURITY_SESSION_RESOLVED = "security.session_resolved"
+
+        // v1.5 - PC Assistant. Delivered only after assistant.subscribe, and only while the owner
+        // session holds on this connection.
+        const val ASSISTANT_STATUS_CHANGED = "assistant.status_changed"
+        const val ASSISTANT_TASK_CHANGED = "assistant.task_changed"
+        const val ASSISTANT_MESSAGE = "assistant.message"
+        const val ASSISTANT_PROGRESS = "assistant.progress"
+        const val ASSISTANT_APPROVAL_REQUESTED = "assistant.approval_requested"
+        const val ASSISTANT_APPROVAL_RESOLVED = "assistant.approval_resolved"
     }
 
     /**
@@ -154,6 +175,11 @@ object NexusProtocol {
         const val DISK_FULL = "disk_full"
         const val CHECKSUM_MISMATCH = "checksum_mismatch"
         const val CLIPBOARD_UNAVAILABLE = "clipboard_unavailable"
+
+        // v1.5 - PC Assistant.
+        const val ASSISTANT_UNAVAILABLE = "assistant_unavailable"
+        const val ASSISTANT_TASK_BUSY = "assistant_task_busy"
+        const val ASSISTANT_REQUIRES_LOCAL_APPROVAL = "assistant_requires_local_approval"
     }
 
     object MessageTypes {

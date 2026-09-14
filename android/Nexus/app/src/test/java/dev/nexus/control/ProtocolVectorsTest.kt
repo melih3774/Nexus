@@ -779,6 +779,55 @@ class ProtocolVectorsTest {
         assertEquals(codes["clipboard_unavailable"]!!.jsonPrimitive.content, NexusProtocol.Errors.CLIPBOARD_UNAVAILABLE)
     }
 
+    @Test
+    fun `every PC Assistant state PC Core can report is one the phone knows`() {
+        val fromPc = vector("assistant_availability").values.map { it.jsonPrimitive.content }.toSet()
+        val phone = dev.nexus.control.assistant.AssistantAvailability.entries.map { it.wire }.toSet()
+
+        assertEquals(fromPc, phone)
+    }
+
+    @Test
+    fun `a PC Assistant status and an opened task decode as PC Core sends them`() {
+        val status = NexusJson.decodeFromString(dev.nexus.control.assistant.AssistantStatus.serializer(), text("assistant_status", "encoded"))
+        assertEquals(dev.nexus.control.assistant.AssistantAvailability.ClaudeNotReady, status.availability)
+        assertEquals("signed_out", status.claude)
+        assertEquals("2.1.270", status.claudeVersion)
+        assertEquals(1, status.protocolVersion)
+        assertFalse(status.canWork)
+        assertTrue(status.canRead)
+
+        val detail = NexusJson.decodeFromString(dev.nexus.control.assistant.AssistantTaskDetail.serializer(), text("assistant_task_detail", "encoded"))
+        assertEquals("6f1c1f0a-3a8e-4c55-9d7b-1f2e3d4c5b6a", detail.task.id)
+        assertEquals("Özetle: bugünkü e-postalar", detail.task.title)
+        assertEquals("ask", detail.task.mode)
+        assertEquals("waiting_for_approval", detail.task.state)
+        assertEquals(1, detail.task.pendingApprovals)
+        assertEquals("Looking ✓", detail.messages.single().text)
+        assertEquals("tool_started", detail.progress.single().kind)
+
+        val approval = detail.pendingApprovals.single()
+        assertEquals("git status", approval.target)
+        assertTrue(approval.remoteResolvable)
+        assertEquals(detail.task.id, approval.taskId)
+    }
+
+    @Test
+    fun `the PC Assistant event names and refusal codes match PC Core`() {
+        val events = vector("assistant_events")
+        assertEquals(events["status_changed"]!!.jsonPrimitive.content, NexusProtocol.Events.ASSISTANT_STATUS_CHANGED)
+        assertEquals(events["task_changed"]!!.jsonPrimitive.content, NexusProtocol.Events.ASSISTANT_TASK_CHANGED)
+        assertEquals(events["message"]!!.jsonPrimitive.content, NexusProtocol.Events.ASSISTANT_MESSAGE)
+        assertEquals(events["progress"]!!.jsonPrimitive.content, NexusProtocol.Events.ASSISTANT_PROGRESS)
+        assertEquals(events["approval_requested"]!!.jsonPrimitive.content, NexusProtocol.Events.ASSISTANT_APPROVAL_REQUESTED)
+        assertEquals(events["approval_resolved"]!!.jsonPrimitive.content, NexusProtocol.Events.ASSISTANT_APPROVAL_RESOLVED)
+
+        val codes = vector("assistant_error_codes")
+        assertEquals(codes["assistant_unavailable"]!!.jsonPrimitive.content, NexusProtocol.Errors.ASSISTANT_UNAVAILABLE)
+        assertEquals(codes["assistant_task_busy"]!!.jsonPrimitive.content, NexusProtocol.Errors.ASSISTANT_TASK_BUSY)
+        assertEquals(codes["assistant_requires_local_approval"]!!.jsonPrimitive.content, NexusProtocol.Errors.ASSISTANT_REQUIRES_LOCAL_APPROVAL)
+    }
+
     private fun assertEnumMatches(name: String, fromPhone: List<String>) {
         val fromPc = vector("security_enum_names")[name]!!.jsonArray.map { it.jsonPrimitive.content }.toSet()
         val phone = fromPhone.toSet()

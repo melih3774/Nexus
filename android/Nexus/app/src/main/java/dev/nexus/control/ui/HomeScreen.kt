@@ -133,6 +133,17 @@ fun HomeScreen(
             )
         }
 
+        Spacer(Modifier.height(14.dp))
+
+        ActionCard(
+            title = "AI Assistant",
+            subtitle = "Ask PC Assistant to do something on your PC",
+            glyph = "✦",
+            enabled = connected,
+            onClick = { onOpen(Destination.Assistant) },
+            modifier = Modifier.fillMaxWidth(),
+        )
+
         Spacer(Modifier.height(20.dp))
 
         clipboard()
