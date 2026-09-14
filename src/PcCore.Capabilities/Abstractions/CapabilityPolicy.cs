@@ -139,6 +139,22 @@ public sealed class DefaultCapabilityPolicy : ICapabilityPolicy
         "files.upload.cancel",
         "clipboard.get",
         "clipboard.set",
+
+        // v1.5 - PC Assistant. The owner, authenticated on the phone, can instruct PC Assistant: open and
+        // continue tasks, start General ones, stop them, switch AUTO/ASK and answer ordinary approval
+        // cards. Every one needs Full Remote, and not one of them runs anything itself. PC Assistant
+        // runs Claude Code under its own policy and approvals, and administrator approvals stay on the
+        // PC. This is still not a shell: there is no way through here to name a command or a process.
+        "assistant.status",
+        "assistant.subscribe",
+        "assistant.unsubscribe",
+        "assistant.tasks.list",
+        "assistant.tasks.get",
+        "assistant.tasks.create",
+        "assistant.tasks.send",
+        "assistant.tasks.stop",
+        "assistant.tasks.set_mode",
+        "assistant.approvals.resolve",
     }.ToFrozenSet(StringComparer.Ordinal);
 
     /// <summary>

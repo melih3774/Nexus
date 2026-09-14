@@ -518,6 +518,20 @@ public sealed class RemoteTransportTests : IAsyncLifetime
         // test - which is a moment to think about whether it belongs there.
         Assert.Equal(
             [
+                // v1.5 - PC Assistant: the owner instructing a separate program that runs Claude Code
+                // under its own policy and approvals. Every one behind the owner session; none of them
+                // can name a command or a process, so this is still not a remote shell.
+                "assistant.approvals.resolve",
+                "assistant.status",
+                "assistant.subscribe",
+                "assistant.tasks.create",
+                "assistant.tasks.get",
+                "assistant.tasks.list",
+                "assistant.tasks.send",
+                "assistant.tasks.set_mode",
+                "assistant.tasks.stop",
+                "assistant.unsubscribe",
+
                 // v1.4 - Files and Clipboard: browse, download, upload, and text both ways. Every one
                 // of them behind the owner session (see the unauthorised subset below).
                 "clipboard.get",

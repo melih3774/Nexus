@@ -915,6 +915,97 @@ public sealed class ProtocolVectorTests
                 ["checksum_mismatch"] = ErrorCodes.ChecksumMismatch,
                 ["clipboard_unavailable"] = ErrorCodes.ClipboardUnavailable,
             },
+
+            // v1.5 - PC Assistant. Every state the phone switches on, a status, one task opened with a
+            // message, a progress line and a pending approval, the event names and the refusal codes.
+            ["assistant_availability"] = new JsonObject
+            {
+                ["disabled"] = WireName(PcCore.Capabilities.Assistant.AssistantAvailability.Disabled),
+                ["not_configured"] = WireName(PcCore.Capabilities.Assistant.AssistantAvailability.NotConfigured),
+                ["not_running"] = WireName(PcCore.Capabilities.Assistant.AssistantAvailability.NotRunning),
+                ["not_trusted"] = WireName(PcCore.Capabilities.Assistant.AssistantAvailability.NotTrusted),
+                ["incompatible"] = WireName(PcCore.Capabilities.Assistant.AssistantAvailability.Incompatible),
+                ["claude_not_ready"] = WireName(PcCore.Capabilities.Assistant.AssistantAvailability.ClaudeNotReady),
+                ["ready"] = WireName(PcCore.Capabilities.Assistant.AssistantAvailability.Ready),
+                ["unavailable"] = WireName(PcCore.Capabilities.Assistant.AssistantAvailability.Unavailable),
+            },
+
+            ["assistant_status"] = new JsonObject
+            {
+                ["encoded"] = JsonSerializer.Serialize(
+                    new PcCore.Capabilities.Assistant.AssistantStatus
+                    {
+                        State = PcCore.Capabilities.Assistant.AssistantAvailability.ClaudeNotReady,
+                        Detail = "Claude Code is signed out on the PC. Run claude auth login there.",
+                        ServerVersion = "0.9.0",
+                        ProtocolVersion = 1,
+                        Claude = "signed_out",
+                        ClaudeVersion = "2.1.270",
+                    },
+                    ProtocolCodec.Options),
+            },
+
+            ["assistant_task_detail"] = new JsonObject
+            {
+                ["encoded"] = JsonSerializer.Serialize(
+                    new PcCore.Capabilities.Assistant.AssistantTaskDetail
+                    {
+                        Task = new PcCore.Capabilities.Assistant.AssistantTaskSummary
+                        {
+                            Id = Guid.Parse("6f1c1f0a-3a8e-4c55-9d7b-1f2e3d4c5b6a"),
+                            Title = "Özetle: bugünkü e-postalar",
+                            Kind = "general",
+                            Mode = "ask",
+                            State = "waiting_for_approval",
+                            Running = true,
+                            PendingApprovals = 1,
+                            CreatedAt = Timestamp,
+                            UpdatedAt = Timestamp,
+                        },
+                        Messages =
+                        [
+                            new PcCore.Capabilities.Assistant.AssistantMessage { Id = Guid.Parse("0b0b0b0b-1111-2222-3333-444444444444"), Role = "assistant", Text = "Looking ✓", CreatedAt = Timestamp },
+                        ],
+                        Progress =
+                        [
+                            new PcCore.Capabilities.Assistant.AssistantProgress { Id = Guid.Parse("0c0c0c0c-1111-2222-3333-444444444444"), Kind = "tool_started", Title = "Read", ToolName = "Read", CreatedAt = Timestamp },
+                        ],
+                        PendingApprovals =
+                        [
+                            new PcCore.Capabilities.Assistant.AssistantApproval
+                            {
+                                Id = Guid.Parse("0d0d0d0d-1111-2222-3333-444444444444"),
+                                TaskId = Guid.Parse("6f1c1f0a-3a8e-4c55-9d7b-1f2e3d4c5b6a"),
+                                ToolName = "Bash",
+                                Action = "Claude wants to run",
+                                Target = "git status",
+                                Reason = "ASK mode asks before commands.",
+                                Category = "command_safe",
+                                RemoteResolvable = true,
+                                CreatedAt = Timestamp,
+                            },
+                        ],
+                        OlderOmitted = false,
+                    },
+                    ProtocolCodec.Options),
+            },
+
+            ["assistant_events"] = new JsonObject
+            {
+                ["status_changed"] = PcCore.Capabilities.Assistant.AssistantEvents.StatusChanged,
+                ["task_changed"] = PcCore.Capabilities.Assistant.AssistantEvents.TaskChanged,
+                ["message"] = PcCore.Capabilities.Assistant.AssistantEvents.Message,
+                ["progress"] = PcCore.Capabilities.Assistant.AssistantEvents.Progress,
+                ["approval_requested"] = PcCore.Capabilities.Assistant.AssistantEvents.ApprovalRequested,
+                ["approval_resolved"] = PcCore.Capabilities.Assistant.AssistantEvents.ApprovalResolved,
+            },
+
+            ["assistant_error_codes"] = new JsonObject
+            {
+                ["assistant_unavailable"] = ErrorCodes.AssistantUnavailable,
+                ["assistant_task_busy"] = ErrorCodes.AssistantTaskBusy,
+                ["assistant_requires_local_approval"] = ErrorCodes.AssistantRequiresLocalApproval,
+            },
         };
 
         return JsonSerializer.Serialize(vectors, new JsonSerializerOptions { WriteIndented = true }) + "\n";

@@ -375,5 +375,34 @@
     "disk_full": "disk_full",
     "checksum_mismatch": "checksum_mismatch",
     "clipboard_unavailable": "clipboard_unavailable"
+  },
+  "assistant_availability": {
+    "disabled": "DISABLED",
+    "not_configured": "NOT_CONFIGURED",
+    "not_running": "NOT_RUNNING",
+    "not_trusted": "NOT_TRUSTED",
+    "incompatible": "INCOMPATIBLE",
+    "claude_not_ready": "CLAUDE_NOT_READY",
+    "ready": "READY",
+    "unavailable": "UNAVAILABLE"
+  },
+  "assistant_status": {
+    "encoded": "{\u0022state\u0022:\u0022CLAUDE_NOT_READY\u0022,\u0022detail\u0022:\u0022Claude Code is signed out on the PC. Run claude auth login there.\u0022,\u0022server_version\u0022:\u00220.9.0\u0022,\u0022protocol_version\u0022:1,\u0022claude\u0022:\u0022signed_out\u0022,\u0022claude_version\u0022:\u00222.1.270\u0022,\u0022can_work\u0022:false}"
+  },
+  "assistant_task_detail": {
+    "encoded": "{\u0022task\u0022:{\u0022id\u0022:\u00226f1c1f0a-3a8e-4c55-9d7b-1f2e3d4c5b6a\u0022,\u0022title\u0022:\u0022\\u00D6zetle: bug\\u00FCnk\\u00FC e-postalar\u0022,\u0022kind\u0022:\u0022general\u0022,\u0022mode\u0022:\u0022ask\u0022,\u0022state\u0022:\u0022waiting_for_approval\u0022,\u0022running\u0022:true,\u0022pending_approvals\u0022:1,\u0022workspace_name\u0022:null,\u0022created_at\u0022:\u00222026-08-29T12:34:56.789\u002B00:00\u0022,\u0022updated_at\u0022:\u00222026-08-29T12:34:56.789\u002B00:00\u0022,\u0022last_error\u0022:null},\u0022messages\u0022:[{\u0022id\u0022:\u00220b0b0b0b-1111-2222-3333-444444444444\u0022,\u0022role\u0022:\u0022assistant\u0022,\u0022text\u0022:\u0022Looking \\u2713\u0022,\u0022truncated\u0022:false,\u0022created_at\u0022:\u00222026-08-29T12:34:56.789\u002B00:00\u0022}],\u0022progress\u0022:[{\u0022id\u0022:\u00220c0c0c0c-1111-2222-3333-444444444444\u0022,\u0022kind\u0022:\u0022tool_started\u0022,\u0022title\u0022:\u0022Read\u0022,\u0022detail\u0022:null,\u0022tool_name\u0022:\u0022Read\u0022,\u0022created_at\u0022:\u00222026-08-29T12:34:56.789\u002B00:00\u0022}],\u0022pending_approvals\u0022:[{\u0022id\u0022:\u00220d0d0d0d-1111-2222-3333-444444444444\u0022,\u0022task_id\u0022:\u00226f1c1f0a-3a8e-4c55-9d7b-1f2e3d4c5b6a\u0022,\u0022task_title\u0022:null,\u0022tool_name\u0022:\u0022Bash\u0022,\u0022action\u0022:\u0022Claude wants to run\u0022,\u0022target\u0022:\u0022git status\u0022,\u0022reason\u0022:\u0022ASK mode asks before commands.\u0022,\u0022category\u0022:\u0022command_safe\u0022,\u0022remote_resolvable\u0022:true,\u0022created_at\u0022:\u00222026-08-29T12:34:56.789\u002B00:00\u0022}],\u0022older_omitted\u0022:false}"
+  },
+  "assistant_events": {
+    "status_changed": "assistant.status_changed",
+    "task_changed": "assistant.task_changed",
+    "message": "assistant.message",
+    "progress": "assistant.progress",
+    "approval_requested": "assistant.approval_requested",
+    "approval_resolved": "assistant.approval_resolved"
+  },
+  "assistant_error_codes": {
+    "assistant_unavailable": "assistant_unavailable",
+    "assistant_task_busy": "assistant_task_busy",
+    "assistant_requires_local_approval": "assistant_requires_local_approval"
   }
 }

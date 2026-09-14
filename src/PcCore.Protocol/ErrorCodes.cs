@@ -95,6 +95,23 @@ public static class ErrorCodes
     /// <summary>The Windows clipboard could not be opened, usually because another program is holding it.</summary>
     public const string ClipboardUnavailable = "clipboard_unavailable";
 
+    /// <summary>
+    /// PC Assistant cannot be used right now: the bridge is off, not configured, PC Assistant is not
+    /// running or does not trust this PC Core, or the two speak different bridge versions.
+    /// <see cref="ProtocolError.Details"/> carries the <c>assistant.status</c> state word, so the phone
+    /// can say which without a second request.
+    /// </summary>
+    public const string AssistantUnavailable = "assistant_unavailable";
+
+    /// <summary>The task is still working on its previous message. Stop it, or wait for it to finish.</summary>
+    public const string AssistantTaskBusy = "assistant_task_busy";
+
+    /// <summary>
+    /// The approval is for an administrator operation, which PC Assistant only accepts at the PC. The
+    /// phone shows it and cannot answer it.
+    /// </summary>
+    public const string AssistantRequiresLocalApproval = "assistant_requires_local_approval";
+
     /// <summary>An unexpected fault. Details are deliberately suppressed.</summary>
     public const string InternalError = "internal_error";
 }

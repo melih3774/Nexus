@@ -169,6 +169,9 @@ public static class LoopbackTransport
 
             await connection.RunAsync(cancellationToken).ConfigureAwait(false);
 
+            // Whatever this connection subscribed to ends with it.
+            app.Services.GetService<IEventAudience>()?.ConnectionClosed(caller.ConnectionId);
+
             logger.LogInformation("WebSocket client disconnected: {Caller}", caller);
             return Results.Empty;
         });

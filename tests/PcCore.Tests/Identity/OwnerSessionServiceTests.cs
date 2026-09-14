@@ -300,6 +300,39 @@ public sealed class OwnerSessionServiceTests : IDisposable
         Assert.Equal(ErrorCodes.InvalidParameters, refused.Code);
     }
 
+    /// <summary>
+    /// Deciding whether to push an event to a connection is not the owner doing anything. PC Assistant can
+    /// stream a reply for minutes; if every event asked through the sliding check, a phone left on the
+    /// table with a task running would never time out.
+    /// </summary>
+    [Fact]
+    public void AskingWhetherToPushAnEventDoesNotKeepAnIdleSessionAlive()
+    {
+        Authorize();
+        Assert.True(_sessions.HoldsFullRemote(Caller()));
+
+        for (var minute = 0; minute <= _options.IdleMinutes; minute++)
+        {
+            _time.Advance(TimeSpan.FromMinutes(1));
+            _sessions.HoldsFullRemote(Caller());
+        }
+
+        Assert.False(_sessions.HoldsFullRemote(Caller()));
+        Assert.Equal(RemoteAuthority.None, _sessions.AuthorityOf(Caller()));
+    }
+
+    [Fact]
+    public void OnlyTheAuthorisedConnectionHoldsFullRemoteAndALockEndsIt()
+    {
+        Authorize("c1");
+
+        Assert.False(_sessions.HoldsFullRemote(Caller("c2")));
+        Assert.False(_sessions.HoldsFullRemote(CallerDescriptor.Internal));
+
+        _sessions.Lock(_deviceId, "test");
+        Assert.False(_sessions.HoldsFullRemote(Caller("c1")));
+    }
+
     [Fact]
     public void ALocalCallerHasNoOwnerSessionOfItsOwn()
     {

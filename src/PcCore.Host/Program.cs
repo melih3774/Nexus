@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using PcCore.Capabilities.Abstractions;
+using PcCore.Capabilities.Assistant;
 using PcCore.Capabilities.Clipboard;
 using PcCore.Capabilities.Files;
 using PcCore.Capabilities.Indicator;
@@ -22,6 +23,7 @@ using PcCore.Capabilities.System;
 using PcCore.Transport.Loopback;
 using PcCore.Transport.Remote;
 using PcCore.Windows;
+using PcCore.Windows.Assistant;
 using PcCore.Windows.Capture;
 using PcCore.Windows.Media;
 using PcCore.NativeInput.Hid;
@@ -190,6 +192,7 @@ public static class Program
         var evidenceOptions = Bind<EvidenceOptions>(builder.Configuration, EvidenceOptions.SectionName);
         var attributionOptions = Bind<AttributionOptions>(builder.Configuration, AttributionOptions.SectionName);
         var securityStorage = Bind<SecurityStorageOptions>(builder.Configuration, SecurityStorageOptions.SectionName);
+        var assistantOptions = Bind<AssistantBridgeOptions>(builder.Configuration, AssistantBridgeOptions.SectionName);
 
         var token = SessionToken.Generate();
 
@@ -207,7 +210,8 @@ public static class Program
             evidenceOptions,
             attributionOptions,
             securityStorage,
-            ownerSessionOptions);
+            ownerSessionOptions,
+            assistantOptions);
         RegisterRemoteTransport(builder.Services, remoteOptions);
 
         var app = builder.Build();
@@ -345,7 +349,8 @@ public static class Program
         EvidenceOptions evidenceOptions,
         AttributionOptions attributionOptions,
         SecurityStorageOptions securityStorage,
-        OwnerSessionOptions ownerSessionOptions)
+        OwnerSessionOptions ownerSessionOptions,
+        AssistantBridgeOptions assistantOptions)
     {
         // --- Platform implementations (the only Windows-specific registrations) ---------------
         services.AddSingleton<IRealPathResolver, Win32RealPathResolver>();
@@ -696,6 +701,26 @@ public static class Program
         services.AddSingleton<ClipboardService>();
         services.AddSingleton<ICapabilityAction, GetClipboardAction>();
         services.AddSingleton<ICapabilityAction, SetClipboardAction>();
+
+        // --- Capabilities added by v1.5: PC Assistant -----------------------------------------------
+        // A bridge to a separate program, not an AI layer in PC Core. PC Core relays an authenticated
+        // owner's requests to PC Assistant over its owner-only pipe and relays PC Assistant's events back
+        // to subscribed phones that still hold the owner's session. PC Assistant owns Claude, its tools,
+        // its policy and its approvals. Off unless PcCore:Assistant:Enabled, and never starts PC Assistant.
+        services.AddSingleton(assistantOptions);
+        services.AddSingleton<IAssistantPipeConnector, NamedPipeAssistantConnector>();
+        services.AddSingleton<AssistantBridge>();
+        services.AddSingleton<IEventAudience, AssistantEventAudience>();
+        services.AddSingleton<ICapabilityAction, GetAssistantStatusAction>();
+        services.AddSingleton<ICapabilityAction, SubscribeAssistantAction>();
+        services.AddSingleton<ICapabilityAction, UnsubscribeAssistantAction>();
+        services.AddSingleton<ICapabilityAction, ListAssistantTasksAction>();
+        services.AddSingleton<ICapabilityAction, GetAssistantTaskAction>();
+        services.AddSingleton<ICapabilityAction, CreateAssistantTaskAction>();
+        services.AddSingleton<ICapabilityAction, SendAssistantMessageAction>();
+        services.AddSingleton<ICapabilityAction, StopAssistantTaskAction>();
+        services.AddSingleton<ICapabilityAction, SetAssistantModeAction>();
+        services.AddSingleton<ICapabilityAction, ResolveAssistantApprovalAction>();
     }
 
     /// <summary>

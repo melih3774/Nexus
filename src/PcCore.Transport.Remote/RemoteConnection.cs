@@ -41,9 +41,14 @@ public static class RemoteProtocol
     /// <summary>
     /// Events a remote device may receive.
     /// <para>
-    /// An allowlist rather than a filter expression: the phone needs security state changes and
-    /// nothing else today, and anything added later should have to be named here deliberately
-    /// rather than reach the network because it happened to be published.
+    /// An allowlist rather than a filter expression: anything added later should have to be named
+    /// here deliberately rather than reach the network because it happened to be published.
+    /// </para>
+    /// <para>
+    /// Security state is deliverable by name, to a phone whose owner has not authenticated too, because
+    /// a locked Nexus must still be able to say the PC is armed. PC Assistant's events are not: they
+    /// carry the owner's conversations, so they go through <see cref="IEventAudience"/>, which asks
+    /// whether this connection subscribed and holds the owner's session at the moment of sending.
     /// </para>
     /// </summary>
     public static bool IsDeliverableToDevice(string eventName) =>
@@ -98,6 +103,9 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
     private readonly ILogger _logger;
     private readonly string _connectionId;
 
+    /// <summary>Decides events the name allowlist cannot, such as PC Assistant's. Null delivers nothing extra.</summary>
+    private readonly IEventAudience? _audience;
+
     private readonly SemaphoreSlim _sendGate = new(1, 1);
     private readonly SemaphoreSlim _concurrency = new(MaxConcurrentRequests, MaxConcurrentRequests);
 
@@ -132,9 +140,11 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
         IInputService input,
         IOwnerSessionService ownerSessions,
         RemoteTransportOptions options,
-        ILogger logger)
+        ILogger logger,
+        IEventAudience? audience = null)
     {
         _socket = socket;
+        _audience = audience;
         _connectionId = connectionId;
         _dispatcher = dispatcher;
         _authenticator = authenticator;
@@ -553,7 +563,10 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
 
     private void OnEvent(EventEnvelope envelope)
     {
-        if (!RemoteProtocol.IsDeliverableToDevice(envelope.EventName))
+        // The name allowlist first, unchanged. Anything else needs the audience to say this connection,
+        // as it stands at this moment, may have it.
+        if (!RemoteProtocol.IsDeliverableToDevice(envelope.EventName)
+            && (_audience is null || _caller is null || !_audience.MayReceive(envelope, _caller)))
         {
             return;
         }
@@ -905,6 +918,7 @@ internal sealed class RemoteConnection : IAsyncDisposable, IFrameSink
         }
 
         _eventSubscription?.Dispose();
+        _audience?.ConnectionClosed(_connectionId);
 
         if (_session is not null)
         {

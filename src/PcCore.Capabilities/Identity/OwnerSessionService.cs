@@ -100,6 +100,18 @@ public interface IOwnerSessionService : IRemoteAuthorityProvider
 
     OwnerSessionState Describe(string connectionId, string? deviceId);
 
+    /// <summary>
+    /// Whether <paramref name="caller"/> holds Full Remote authority right now, <em>without</em> counting
+    /// the question as activity.
+    /// <para>
+    /// <see cref="IRemoteAuthorityProvider.AuthorityOf"/> slides the idle window, because it is asked on
+    /// behalf of a request the owner made. Deciding whether to push an event is not the owner doing
+    /// anything, and a stream of pushed events must not keep a session alive that the owner walked away
+    /// from.
+    /// </para>
+    /// </summary>
+    bool HoldsFullRemote(CallerDescriptor caller);
+
     /// <summary>Records the phone's public key on first use. Idempotent for the same key.</summary>
     bool RegisterOwnerKey(string deviceId, string publicKeySpki);
 
@@ -180,6 +192,25 @@ public sealed class OwnerSessionService : IOwnerSessionService
             // "the phone went quiet" and "the session expired" are the same event.
             _ticket.LastUsedUtc = now;
             return RemoteAuthority.FullRemote;
+        }
+    }
+
+    public bool HoldsFullRemote(CallerDescriptor caller)
+    {
+        ArgumentNullException.ThrowIfNull(caller);
+
+        if (caller.ActorType != ActorType.Device || caller.DeviceId is null)
+        {
+            return false;
+        }
+
+        lock (_gate)
+        {
+            return _grants.TryGetValue(caller.ConnectionId, out var deviceId)
+                && string.Equals(deviceId, caller.DeviceId, StringComparison.Ordinal)
+                && _ticket is not null
+                && _ticket.IsAlive(_time.GetUtcNow(), _options)
+                && _ticket.DeviceId == deviceId;
         }
     }
 

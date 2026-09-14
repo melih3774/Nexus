@@ -129,6 +129,7 @@ public sealed class RemoteTransport : IAsyncDisposable
         var ownerSessions = _services.GetRequiredService<IOwnerSessionService>();
         var identity = _services.GetRequiredService<IPcIdentityProvider>();
         var events = _services.GetRequiredService<IEventStream>();
+        var audience = _services.GetService<IEventAudience>();
         var connectionLogger = _loggerFactory.CreateLogger("PcCore.Transport.Remote.Connection");
 
         // Either stop ends every connection: this listener's own (a rebind, or the transport stopping)
@@ -178,7 +179,8 @@ public sealed class RemoteTransport : IAsyncDisposable
                 input,
                 ownerSessions,
                 _options,
-                connectionLogger);
+                connectionLogger,
+                audience);
 
             // Not only when the phone hangs up. A graceful shutdown waits for every open request, and a
             // phone never hangs up on its own, so this used to last until the host's timeout cut it off.

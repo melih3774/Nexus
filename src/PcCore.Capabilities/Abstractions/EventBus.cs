@@ -16,6 +16,25 @@ public interface IEventStream
 }
 
 /// <summary>
+/// Decides, per event and per remote connection, whether an event outside the transport's own
+/// allowlist may be delivered.
+/// <para>
+/// The remote transport's rule is an allowlist of event names, and for <c>security.*</c> the name is
+/// enough. Some events are not: a PC Assistant transcript must reach only the connection that asked for
+/// it, and only while that connection holds the owner's session — which is a question about the
+/// connection at the moment of sending, not about the event. This is where that question is answered.
+/// Nothing registered means nothing extra is delivered.
+/// </para>
+/// </summary>
+public interface IEventAudience
+{
+    bool MayReceive(EventEnvelope envelope, CallerDescriptor caller);
+
+    /// <summary>The connection has ended; forget anything held for it.</summary>
+    void ConnectionClosed(string connectionId);
+}
+
+/// <summary>
 /// A minimal in-process fan-out. v0.1 publishes exactly one event (<c>core.connected</c>) so the
 /// channel is real and exercised rather than speculative; the <c>ai.*</c> events described in
 /// SPEC.md 11 will use this unchanged.
