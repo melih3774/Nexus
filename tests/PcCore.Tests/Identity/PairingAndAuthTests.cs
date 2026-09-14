@@ -121,13 +121,13 @@ public sealed class PrimaryPhoneTests
     {
         using var harness = new IdentityHarness("phone-persist");
 
-        var completion = harness.PairPhone("Melih's Pixel");
+        var completion = harness.PairPhone("Owner's Phone");
         harness.Restart();
 
         var phone = harness.Registry.Current;
         Assert.NotNull(phone);
         Assert.Equal(completion.DeviceId, phone!.DeviceId);
-        Assert.Equal("Melih's Pixel", phone.DisplayName);
+        Assert.Equal("Owner's Phone", phone.DisplayName);
     }
 
     [Fact]

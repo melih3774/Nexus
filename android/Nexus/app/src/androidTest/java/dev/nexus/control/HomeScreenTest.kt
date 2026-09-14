@@ -42,7 +42,7 @@ class HomeScreenTest {
     )
 
     private val info = SystemInfo(
-        machineName = "DESKTOP-33LGLD2",
+        machineName = "DESKTOP-TEST01",
         osDescription = "Microsoft Windows 10.0.26200",
         pcCoreVersion = "0.5.0",
         processorCount = 16,
@@ -58,7 +58,7 @@ class HomeScreenTest {
 
     private fun connected() = AppUiState(
         pairedPc = pc,
-        connection = ConnectionState.Connected("d", "s", pc.pcInstanceId, listOf("""C:\Users\Melih\Desktop""")),
+        connection = ConnectionState.Connected("d", "s", pc.pcInstanceId, listOf("""C:\Users\Example\Desktop""")),
         systemInfo = info,
     )
 
@@ -67,7 +67,7 @@ class HomeScreenTest {
         render(connected())
 
         compose.onNodeWithText("Connected").assertIsDisplayed()
-        compose.onNodeWithText("DESKTOP-33LGLD2").assertIsDisplayed()
+        compose.onNodeWithText("DESKTOP-TEST01").assertIsDisplayed()
         compose.onNodeWithText("v0.5.0").assertIsDisplayed()
 
         for (action in listOf("Screen", "Files", "System", "Security")) {

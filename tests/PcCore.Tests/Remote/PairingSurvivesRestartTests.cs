@@ -48,7 +48,7 @@ public sealed class PairingSurvivesRestartTests : IDisposable
 
         await using (var first = await Instance.StartAsync(_state.Directory))
         {
-            enrollment = await first.EnrollAsync("samsung SM-S948B", token);
+            enrollment = await first.EnrollAsync("Example Phone 1", token);
             pcInstanceId = first.Identity.PcInstanceId;
 
             await using var phone = new RemotePhoneClient(enrollment.DeviceId, enrollment.SharedSecret);
@@ -69,7 +69,7 @@ public sealed class PairingSurvivesRestartTests : IDisposable
         // The same phone, still the primary, with the same id it was issued.
         Assert.NotNull(second.Phones.Current);
         Assert.Equal(enrollment.DeviceId, second.Phones.Current!.DeviceId);
-        Assert.Equal("samsung SM-S948B", second.Phones.Current.DisplayName);
+        Assert.Equal("Example Phone 1", second.Phones.Current.DisplayName);
 
         // And the credential still authenticates — no re-pairing, no new QR code.
         await using var returning = new RemotePhoneClient(enrollment.DeviceId, enrollment.SharedSecret);
@@ -104,7 +104,7 @@ public sealed class PairingSurvivesRestartTests : IDisposable
 
         await using (var first = await Instance.StartAsync(_state.Directory, RealProtection))
         {
-            enrollment = await first.EnrollAsync("samsung SM-S948B", token);
+            enrollment = await first.EnrollAsync("Example Phone 1", token);
             pcInstanceId = first.Identity.PcInstanceId;
 
             await using var phone = new RemotePhoneClient(enrollment.DeviceId, enrollment.SharedSecret);
