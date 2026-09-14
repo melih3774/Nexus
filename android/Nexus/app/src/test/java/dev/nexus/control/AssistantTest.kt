@@ -233,12 +233,24 @@ class AssistantTest {
         }
     }
 
+    /** A scripted channel that can be made to refuse everything, the way an older PC Core would. */
+    private class RefusingChannel(private val replies: Map<String, String>) : NexusCommandChannel {
+        var refuseWith: String? = null
+
+        override suspend fun request(action: String, params: JsonElement?, timeoutMs: Long): JsonElement? {
+            refuseWith?.let { throw NexusRequestException(ProtocolError(it, "refused")) }
+            return replies[action]?.let(NexusJson::parseToJsonElement)
+        }
+
+        override fun notify(action: String, params: JsonElement?): Boolean = true
+    }
+
     private fun statusEvent(state: String, canWork: Boolean) = EventEnvelope(
         eventName = NexusProtocol.Events.ASSISTANT_STATUS_CHANGED,
         payload = NexusJson.parseToJsonElement("""{"state":"$state","can_work":$canWork}""").jsonObject,
     )
 
-    private fun screen(channel: ScriptedChannel, events: MutableSharedFlow<EventEnvelope>, gate: MutableStateFlow<SessionGateState>) =
+    private fun screen(channel: NexusCommandChannel, events: MutableSharedFlow<EventEnvelope>, gate: MutableStateFlow<SessionGateState>) =
         AssistantViewModel(AssistantClient(channel), events, gate, MutableStateFlow(0L))
 
     private val readyReplies = mapOf(
@@ -272,6 +284,32 @@ class AssistantTest {
             advanceUntilIdle()
             assertEquals("t1", screen.state.value.open?.task?.id)
             assertEquals("plan my week", screen.state.value.open?.messages?.single()?.text)
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `a status that could not be read is not the last one that could`() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        try {
+            val events = MutableSharedFlow<EventEnvelope>(extraBufferCapacity = 8)
+            val gate = MutableStateFlow<SessionGateState>(SessionGateState.Unlocked(remoteAuthorized = true))
+            val channel = RefusingChannel(readyReplies)
+            val screen = screen(channel, events, gate)
+
+            screen.start()
+            advanceUntilIdle()
+            assertEquals(AssistantAvailability.Ready, screen.state.value.status?.availability)
+
+            // An older PC Core: the action is gone, so what it said a minute ago says nothing now.
+            channel.refuseWith = NexusProtocol.Errors.UNKNOWN_ACTION
+            screen.refresh()
+            advanceUntilIdle()
+
+            assertEquals(null, screen.state.value.status)
+            assertTrue(screen.state.value.error!!.contains("Update Nexus"))
         } finally {
             Dispatchers.resetMain()
         }

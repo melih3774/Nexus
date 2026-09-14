@@ -100,7 +100,9 @@ class AssistantViewModel(
         refreshing = viewModelScope.launch {
             val status = runCatching { client.subscribe().status }
                 .getOrElse { cause ->
-                    _state.update { it.copy(checking = false, error = describe(cause)) }
+                    // The read failed, so the last answer is not the current one and saying "ready"
+                    // beside an error that says otherwise is worse than admitting we do not know.
+                    _state.update { it.copy(status = null, checking = false, error = describe(cause)) }
                     return@launch
                 }
 
