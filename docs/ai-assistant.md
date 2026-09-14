@@ -181,5 +181,9 @@ All of these shapes are pinned in `shared/protocol/protocol-vectors.json`.
   which window needs to be in front. A locked PC, or a UAC prompt, stops desktop actions entirely.
 - **Streaming is snapshots.** A long reply is resent in full every 250 ms while it grows. On a slow link
   that is more traffic than deltas would be.
+- **A big answer can be slow to start.** Short replies appear within a few seconds and grow a couple of
+  characters at a time. Asking for something long — a few hundred lines — was observed to show nothing
+  but *Working* for the best part of a minute before the first text arrived, because that is when Claude
+  Code emits it. Nothing is lost; there is just no progress to show in between.
 - **One PC Core at a time.** PC Assistant serves one connection, so a second PC Core (a development build
   alongside the installed one, say) is reported as *not running*.
