@@ -10,7 +10,7 @@
 
     <!-- Single source of truth for the version reported by system.get_info. The Android app and the
          release manifest read it from here too (tools/publish-release.ps1). -->
-    <VersionPrefix>1.4.0</VersionPrefix>
+    <VersionPrefix>1.5.0</VersionPrefix>
     <Product>PC Core</Product>
     <Company>PC Core</Company>
 

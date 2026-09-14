@@ -166,8 +166,10 @@ $secureVersion = ($secureProject.Project.PropertyGroup | ForEach-Object { $_.Ver
 $previous = Read-Previous
 $previousRelease = if ($previous) { [int] $previous.Manifest.release } else { 0 }
 
-# 14 is the last hand-numbered Android build; release numbers double as its versionCode and must pass it.
-$release = [Math]::Max($previousRelease, 14) + 1
+# Release numbers double as the Android versionCode, and Android will not install over a build with a
+# higher one. 23 is the highest hand-numbered build ever put on the phone — the AI Assistant branch was
+# validated there as 21, 22 and 23 — so a release has to pass that, not just the last release.
+$release = [Math]::Max($previousRelease, 23) + 1
 
 Note "Nexus $version, release $release (previous: $(if ($previous) { $previousRelease } else { 'none' }))"
 Note "SecureCapture $secureVersion; oldest Android build served: $minAndroid"

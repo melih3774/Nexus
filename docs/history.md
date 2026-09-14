@@ -5,6 +5,7 @@ was measured and what broke on real hardware. This page is the short version.
 
 | Version | Milestone |
 |---|---|
+| **1.5** | [The AI Assistant](#15--the-ai-assistant) |
 | **1.4** | [Files and clipboard](#14--files-and-clipboard) |
 | **1.3** | [Nexus updates itself](#13--nexus-updates-itself) |
 | **1.2** | [A real video pipeline](#12--a-real-video-pipeline) |
@@ -18,6 +19,16 @@ was measured and what broke on real hardware. This page is the short version.
 | **0.1–0.4** | [PC Core foundations](#0104--pc-core-foundations) |
 
 ---
+
+## 1.5 — The AI Assistant
+
+An owner who has authenticated on their phone can instruct **PC Assistant**, a separate Windows
+program that runs Claude Code, and watch it work: tasks, streamed replies, tool steps, AUTO/ASK, and
+approval cards answered from the phone. PC Core relays; it still runs nothing itself and has no shell.
+Every `assistant.*` action needs the Full Remote session, and the transcript reaches only the
+connection that asked for it while it still holds one — locking the phone withdrew that authority
+mid-task on the real device, and the phone had to authenticate again before it could read anything.
+Administrator approvals are still answered at the PC. → [ai-assistant.md](ai-assistant.md)
 
 ## 1.4 — Files and clipboard
 
