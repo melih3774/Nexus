@@ -1,0 +1,13 @@
+<Project>
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <Version>0.10.0</Version>
+    <Product>PC Assistant</Product>
+    <Authors>Melih</Authors>
+    <Company>Melih</Company>
+  </PropertyGroup>
+</Project>

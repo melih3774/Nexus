@@ -1,0 +1,41 @@
+# Build output
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+artifacts/
+publish/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# .NET
+project.lock.json
+project.fragment.lock.json
+.vs/
+*.binlog
+
+# Rider / VS Code
+.idea/
+.vscode/
+
+# Test results
+TestResults/
+*.trx
+coverage*.json
+*.coverage
+
+# PC Assistant local runtime data (never committed)
+local/
+*.db
+*.db-shm
+*.db-wal
+*.rawlog
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store

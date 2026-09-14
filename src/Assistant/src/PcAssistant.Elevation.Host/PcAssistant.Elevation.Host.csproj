@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>PcAssistant.Elevation.Host</RootNamespace>
+    <AssemblyName>PcAssistant.Elevation.Host</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- asInvoker: the service is started by the SCM as LocalSystem and the runner is started
+         by the service with the owner's elevated token. Only the install/uninstall verbs are
+         ever launched through a UAC prompt, and that is the caller's decision, not a manifest
+         that would make every mode demand elevation. -->
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The boundary tests host the real pipe server and request handler in-process, so the
+         refusals are proven against the shipped code rather than a re-implementation. -->
+    <InternalsVisibleTo Include="PcAssistant.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.0" />
+    <ProjectReference Include="..\PcAssistant.Elevation\PcAssistant.Elevation.csproj" />
+  </ItemGroup>
+</Project>

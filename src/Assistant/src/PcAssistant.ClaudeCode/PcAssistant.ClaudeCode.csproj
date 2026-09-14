@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>PcAssistant.ClaudeCode</RootNamespace>
+    <!-- Required by [LibraryImport] source generation for the job-object interop. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\PcAssistant.Core\PcAssistant.Core.csproj" />
+  </ItemGroup>
+</Project>

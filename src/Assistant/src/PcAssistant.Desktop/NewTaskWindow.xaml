@@ -1,0 +1,120 @@
+<Window x:Class="PcAssistant.Desktop.NewTaskWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="New Task" Height="700" Width="680" MinHeight="620" MinWidth="620"
+        Background="{DynamicResource Bg}"
+        WindowStartupLocation="CenterOwner" ResizeMode="CanResize">
+
+  <Grid Margin="22">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+
+    <!-- Task type -->
+    <StackPanel Grid.Row="0" Margin="0,0,0,16">
+      <TextBlock Text="TASK TYPE" Style="{StaticResource SectionLabel}" />
+      <StackPanel Orientation="Horizontal">
+        <RadioButton x:Name="GeneralRadio" Content="General" GroupName="Kind" IsChecked="True"
+                     Checked="Kind_Changed"
+                     ToolTip="Discuss ideas, plan, research. No project directory needed." />
+        <RadioButton x:Name="WorkspaceRadio" Content="Workspace" GroupName="Kind"
+                     Checked="Kind_Changed"
+                     ToolTip="Work inside a project directory: read, edit, build, test." />
+      </StackPanel>
+      <TextBlock x:Name="KindHint" FontSize="11.5" Foreground="{DynamicResource FgMuted}"
+                 Margin="0,7,0,0" TextWrapping="Wrap"
+                 Text="Runs in PC Assistant's own folder. Claude will discuss the idea and will not create a project unless you ask." />
+    </StackPanel>
+
+    <!-- Mode -->
+    <StackPanel Grid.Row="1" Margin="0,0,0,16">
+      <TextBlock Text="MODE" Style="{StaticResource SectionLabel}" />
+      <StackPanel Orientation="Horizontal">
+        <RadioButton x:Name="AutoRadio" Content="Auto" GroupName="Mode"
+                     ToolTip="Ordinary work proceeds; high-impact operations still ask." />
+        <RadioButton x:Name="AskRadio" Content="Ask" GroupName="Mode"
+                     ToolTip="Reading is free; every file change and command asks first." />
+      </StackPanel>
+    </StackPanel>
+
+    <!-- Workspace -->
+    <StackPanel Grid.Row="2" x:Name="WorkspacePanel" Margin="0,0,0,16" Visibility="Collapsed">
+      <TextBlock Text="PROJECT WORKSPACE" Style="{StaticResource SectionLabel}" />
+
+      <TextBlock FontSize="11.5" Foreground="{DynamicResource FgMuted}" Margin="0,0,0,9"
+                 TextWrapping="Wrap" Text="Choose a project inside an approved projects folder. This becomes Claude's working directory." />
+
+      <TextBlock Text="Approved projects folders" FontSize="11.5" FontWeight="SemiBold" Margin="0,0,0,5" />
+      <Border Background="{DynamicResource BgPanel}" BorderBrush="{DynamicResource Border}" BorderThickness="1"
+              CornerRadius="6" Margin="0,0,0,9" MaxHeight="82">
+        <ListBox ItemsSource="{Binding Roots}" Background="Transparent" BorderThickness="0" Padding="3"
+                 ScrollViewer.HorizontalScrollBarVisibility="Disabled" IsTabStop="False">
+          <ListBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding}" TextTrimming="CharacterEllipsis" ToolTip="{Binding}" /></DataTemplate></ListBox.ItemTemplate>
+        </ListBox>
+      </Border>
+
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+
+        <ComboBox Grid.Column="0" x:Name="WorkspaceCombo"
+                  ItemsSource="{Binding AvailableWorkspaces}"
+                  SelectedItem="{Binding WorkspacePath, Mode=TwoWay}"
+                  ToolTip="Select a discovered project workspace" />
+        <Button Grid.Column="1" Content="Select Workspace…" Margin="8,0,0,0" Click="SelectWorkspace_Click" />
+      </Grid>
+
+      <WrapPanel Margin="0,8,0,0">
+        <Button Content="Add Projects Folder…" Click="AddRoot_Click"
+                ToolTip="Approve a folder that contains project workspaces" />
+        <Button Content="Create New Project…" Margin="8,0,0,0" Click="NewProject_Click"
+                ToolTip="Create a project folder under an approved projects folder" />
+      </WrapPanel>
+
+      <TextBlock Text="{Binding WorkspaceFeedback}" FontSize="11.5" Margin="0,8,0,0" TextWrapping="Wrap">
+        <TextBlock.Style>
+          <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource Ok}" />
+            <Style.Triggers>
+              <DataTrigger Binding="{Binding WorkspaceFeedbackIsError}" Value="True">
+                <Setter Property="Foreground" Value="{DynamicResource Danger}" />
+              </DataTrigger>
+            </Style.Triggers>
+          </Style>
+        </TextBlock.Style>
+      </TextBlock>
+    </StackPanel>
+
+    <!-- First message -->
+    <StackPanel Grid.Row="3">
+      <TextBlock Text="WHAT DO YOU WANT?" Style="{StaticResource SectionLabel}" />
+      <TextBox x:Name="MessageBox" MinHeight="120"
+               Text="{Binding FirstMessage, UpdateSourceTrigger=PropertyChanged}"
+               AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" />
+    </StackPanel>
+
+    <TextBlock Grid.Row="4" Margin="0,10,0,0" FontSize="11.5" Foreground="{DynamicResource FgMuted}"
+               TextTrimming="CharacterEllipsis">
+      <Run Text="Title: " />
+      <Run Text="{Binding PreviewTitle, Mode=OneWay}" FontWeight="SemiBold" />
+    </TextBlock>
+
+    <Grid Grid.Row="5" Margin="0,18,0,0">
+      <TextBlock x:Name="ErrorText" Foreground="{DynamicResource Danger}" FontSize="12"
+                 TextWrapping="Wrap" VerticalAlignment="Center" MaxWidth="330"
+                 HorizontalAlignment="Left" />
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+        <Button Content="Cancel" MinWidth="88" Click="Cancel_Click" />
+        <Button x:Name="CreateButton" Content="Start" MinWidth="88" Margin="8,0,0,0"
+                Style="{StaticResource AccentButton}" Click="Create_Click" />
+      </StackPanel>
+    </Grid>
+  </Grid>
+</Window>

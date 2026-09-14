@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/PcAssistant.ClaudeCode/PcAssistant.ClaudeCode.csproj" />
+    <Project Path="src/PcAssistant.Core/PcAssistant.Core.csproj" />
+    <Project Path="src/PcAssistant.Desktop/PcAssistant.Desktop.csproj" />
+    <Project Path="src/PcAssistant.Elevation/PcAssistant.Elevation.csproj" />
+    <Project Path="src/PcAssistant.Elevation.Host/PcAssistant.Elevation.Host.csproj" />
+    <Project Path="src/PcAssistant.HookHost/PcAssistant.HookHost.csproj" />
+    <Project Path="src/PcAssistant.PcTools/PcAssistant.PcTools.csproj" />
+    <Project Path="src/PcAssistant.Windows/PcAssistant.Windows.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/PcAssistant.Tests/PcAssistant.Tests.csproj" />
+  </Folder>
+</Solution>

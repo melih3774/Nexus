@@ -1,0 +1,68 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>PcAssistant.Desktop</RootNamespace>
+    <AssemblyName>PcAssistant.Desktop</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\PcAssistant.Core\PcAssistant.Core.csproj" />
+    <ProjectReference Include="..\PcAssistant.ClaudeCode\PcAssistant.ClaudeCode.csproj" />
+    <ProjectReference Include="..\PcAssistant.HookHost\PcAssistant.HookHost.csproj"
+                      ReferenceOutputAssembly="false" Private="false" />
+    <!-- Payload only, never referenced as an assembly. The PC tools server targets the Windows
+         SDK projections for Windows Graphics Capture, which this project does not need, so its
+         target framework is deliberately not reconciled with this one. -->
+    <ProjectReference Include="..\PcAssistant.PcTools\PcAssistant.PcTools.csproj"
+                      ReferenceOutputAssembly="false" Private="false"
+                      SkipGetTargetFrameworkProperties="true" />
+    <ProjectReference Include="..\PcAssistant.Elevation\PcAssistant.Elevation.csproj" />
+    <!-- The privileged helper payload ships beside the app but is never started by it.
+         It becomes a service only when the owner explicitly installs it. -->
+    <ProjectReference Include="..\PcAssistant.Elevation.Host\PcAssistant.Elevation.Host.csproj"
+                      ReferenceOutputAssembly="false" Private="false" />
+  </ItemGroup>
+  <!-- Ship the PC Assistant skill next to the exe so its behaviour text is found when deployed. -->
+  <ItemGroup>
+    <None Include="..\..\.claude\skills\pc-assistant\SKILL.md"
+          Link="PcAssistantSkill.md" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- HookHost must sit next to the desktop exe so the bridge can point hooks at it. -->
+  <Target Name="CopyHookHost" AfterTargets="Build">
+    <MSBuild Projects="..\PcAssistant.HookHost\PcAssistant.HookHost.csproj"
+             Targets="Build"
+             Properties="Configuration=$(Configuration);TargetFramework=net10.0" />
+    <ItemGroup>
+      <HookHostFiles Include="..\PcAssistant.HookHost\bin\$(Configuration)\net10.0\PcAssistant.HookHost.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(HookHostFiles)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+  <Target Name="CopyPcTools" AfterTargets="Build">
+    <MSBuild Projects="..\PcAssistant.PcTools\PcAssistant.PcTools.csproj"
+             Targets="Build"
+             Properties="Configuration=$(Configuration);TargetFramework=net10.0-windows10.0.26100.0" />
+    <ItemGroup>
+      <PcToolFiles Include="..\PcAssistant.PcTools\bin\$(Configuration)\net10.0-windows10.0.26100.0\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(PcToolFiles)" DestinationFolder="$(OutDir)PcTools" SkipUnchangedFiles="true" />
+  </Target>
+
+  <!-- The install/uninstall flows run this payload elevated, and the installer copies it into
+       Program Files. It sits next to the app; nothing starts it unless the owner asks. -->
+  <Target Name="CopyElevationHost" AfterTargets="Build">
+    <MSBuild Projects="..\PcAssistant.Elevation.Host\PcAssistant.Elevation.Host.csproj"
+             Targets="Build"
+             Properties="Configuration=$(Configuration);TargetFramework=net10.0-windows" />
+    <ItemGroup>
+      <!-- Recursive: the ServiceController and EventLog assemblies ship under runtimes\win\lib,
+           and a payload missing them would install a service that cannot start. -->
+      <ElevationFiles Include="..\PcAssistant.Elevation.Host\bin\$(Configuration)\net10.0-windows\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(ElevationFiles)"
+          DestinationFiles="@(ElevationFiles->'$(OutDir)Elevation\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+</Project>
