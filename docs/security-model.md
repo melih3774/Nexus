@@ -11,6 +11,7 @@ deliberately refuses to do.
 - [Device authentication](#device-authentication)
 - [Owner authentication](#owner-authentication)
 - [What each caller may do](#what-each-caller-may-do)
+- [PC Assistant](#pc-assistant)
 - [The filesystem boundary](#the-filesystem-boundary)
 - [Privileged components](#privileged-components)
 - [Visibility](#visibility)
@@ -46,7 +47,15 @@ a fallback, so the phone's own PIN is part of the owner check. Setting a strong 
 
 Every request is a named action with typed parameters, handled by one dispatcher and checked against
 one policy. There is no shell execution, no process launch, no arbitrary Win32 call and no
-file delete. `PcCore.Capabilities` has no project reference to `PcCore.Windows`, and the loopback
+file delete.
+
+**One thing that rule does not cover, stated plainly.** An owner who has authenticated on the phone can
+instruct **PC Assistant**, a separate program on the PC that runs Claude Code, and PC Assistant can run
+commands and use tools under its own AUTO/ASK policy and approval cards. PC Core still has no shell: no
+`assistant.*` action names a command or a process, and PC Core relays requests without running
+anything. See [PC Assistant](#pc-assistant) below and [ai-assistant.md](ai-assistant.md).
+
+`PcCore.Capabilities` has no project reference to `PcCore.Windows`, and the loopback
 transport has none either. The compiler enforces this: a capability cannot tell how its caller
 arrived, and a transport cannot control Windows.
 
@@ -153,7 +162,7 @@ own, so a bug in the app's timer cannot quietly extend the window.
 | Caller | May reach |
 |---|---|
 | **Paired phone, owner not authenticated** | `system.get_info`, `security.get_state`, the `session.*` calls needed to authenticate, and `update.check` / `update.apk.get` |
-| **Paired phone with `FullRemote` authority** | screen and camera streams, input, files and clipboard, incidents and evidence, live sensors, stream quality |
+| **Paired phone with `FullRemote` authority** | screen and camera streams, input, files and clipboard, incidents and evidence, live sensors, stream quality, PC Assistant (`assistant.*`) |
 | **Local only (at the PC)** | pairing and unpairing, device management, installing updates, indicator mode, deleting evidence and weakening monitoring (behind Windows Hello) |
 
 Anything not named in the policy is denied. Denials return `not_authorized`, run no part of the
@@ -161,6 +170,34 @@ action, and do not drop the connection. **The upgrade path fails closed**: an ol
 calls `session.authorize` never gets `FullRemote` and is refused everything else. Authority is
 checked on every request. Long-running work re-checks it while it runs: Secure Desktop capture on
 every frame, live sensors on a timer. A lapsed session stops them without the phone having to ask.
+
+## PC Assistant
+
+PC Assistant is a separate program with its own security model, reached over a local named pipe. What
+Nexus holds itself responsible for:
+
+- **Who may instruct it.** Every `assistant.*` action needs Full Remote. A paired phone whose owner has
+  not authenticated is refused before PC Assistant is contacted. AI callers (`ActorType.Ai`) are still
+  granted nothing.
+- **Who may watch it.** PC Assistant's events carry the owner's conversations, so the remote transport
+  does not deliver them by name as it does `security.*`. Each one is delivered only to a connection
+  that subscribed and still holds Full Remote at the moment it is sent. That check does not slide the
+  idle window. A connection found without the session loses its subscription, so a phone that locks and
+  unlocks has to ask again. The phone also drops the transcript from memory when it locks.
+- **Which program it is talking to.** The pipe must belong to the current user, be served from this
+  session, and be served by exactly the executable configured as `PcCore:Assistant:ServerExecutable`,
+  or nothing is written to it. PC Assistant makes the matching check on PC Core from its side.
+- **What reaches the phone.** Parameters are validated before relaying. PC Assistant's replies are
+  re-serialised into named fields rather than passed through.
+
+What stays with PC Assistant: Claude Code, AUTO/ASK, which actions need an approval, and the approvals
+themselves. Administrator approvals cannot be answered from the phone at all. PC Assistant refuses
+them on its bridge, and they are answered in its own card at the PC. The bridge is off on both sides by
+default, and Nexus never starts PC Assistant.
+
+Security monitoring treats PC Assistant's clicks and typing like any other injected input: set aside,
+never counted as a person. That was measured, not assumed; see
+[ai-assistant.md](ai-assistant.md#security).
 
 ## The filesystem boundary
 

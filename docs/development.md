@@ -17,7 +17,7 @@
 src/
   PcCore.Protocol/            wire contracts; the only assembly that touches System.Text.Json
   PcCore.Capabilities/        dispatcher, policy, path security, security state, identity/pairing/auth,
-                              sessions, input routing, media planning, files, evidence
+                              sessions, input routing, media planning, files, evidence, PC Assistant bridge
   PcCore.Windows/             P/Invoke, Desktop Duplication, Media Foundation, DPAPI, registry, Raw Input
   PcCore.NativeInput/         every Windows input call and the HID client; no project references
   PcCore.InputBroker/         the optional elevated injector; ten operations

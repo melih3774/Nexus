@@ -129,6 +129,7 @@ phone:
 - Live microphone listening
 - Playback of evidence camera clips and audio on the phone
 - Background incident alerts while the app is closed
+- AI Assistant: instructing PC Assistant, a separate program that runs Claude Code, from the phone
 
 **Planned or not built yet:**
 
@@ -171,7 +172,9 @@ flowchart TB
 
 **PC Core** is one standard-user process. Every request, from the phone or from the local control
 panel, is a named capability checked against one policy. There is no shell, no process launch and no
-arbitrary Windows call to reach.
+arbitrary Windows call to reach. The owner, authenticated on the phone, can instruct PC Assistant, a
+separate program that may run commands and tools under its own policy and approvals. PC Core only
+relays those requests ([AI Assistant](docs/ai-assistant.md)).
 
 **The privilege boundary is narrow and explicit.** Only two components run with more than user
 rights, and the owner installs each one deliberately. The **HID driver** publishes three input
@@ -255,6 +258,7 @@ simulator, protocol vectors and the reasons `dotnet test` is not used are covere
 | [Remote control](docs/remote-control.md) | gestures, the video pipeline, cursors, input paths, the Secure Desktop |
 | [Security monitoring](docs/security-monitoring.md) | arming, detection, evidence, alerts, live sensors |
 | [Files and clipboard](docs/files-and-clipboard.md) | browsing, transfers, clipboard |
+| [AI Assistant](docs/ai-assistant.md) | instructing PC Assistant from the phone, and what the owner session guards |
 | [Updating](docs/updating.md) | publishing, PC and phone updates, rollback |
 | [Security model](docs/security-model.md) | network, pairing, owner sessions, policy, privileged components |
 | [Virtual HID](docs/virtual-hid.md) · [Native input](docs/native-input.md) | the research records behind the input stack |

@@ -66,6 +66,11 @@ keyboard or mouse opens exactly one incident. [virtual-hid.md §5 and §13](virt
 details. On a machine with its own touchscreen, a person's touch and Nexus's touch produce the same
 promoted mouse messages, and PC Core says so at start-up.
 
+**PC Assistant working for you does not trigger it either.** Its clicks and typing are injected input
+that is not Nexus's own, which the detector sets aside, and the windows it brings forward can extend an
+incident's timeline but never start one. [ai-assistant.md](ai-assistant.md#security) has the
+measurement.
+
 ## Evidence
 
 | | Default | |

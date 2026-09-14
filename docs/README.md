@@ -8,6 +8,7 @@
 | [Remote control](remote-control.md) | Gestures, the H.264 stream, cursors, input paths, the Secure Desktop |
 | [Security monitoring](security-monitoring.md) | Arming, detection, evidence, alerts, live camera and microphone |
 | [Files and clipboard](files-and-clipboard.md) | Browsing, ranged downloads, resumable uploads, clipboard |
+| [AI Assistant](ai-assistant.md) | Instructing PC Assistant from the phone: setup, states, approvals, what the owner session guards |
 | [Updating](updating.md) | Publishing a release, how the PC and the phone update, rollback |
 | [Security model](security-model.md) | Network exposure, pairing, owner authentication, policy, privileged components |
 | [Development](development.md) | Repository layout, building, tests, self-tests, protocol vectors |
