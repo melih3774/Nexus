@@ -47,7 +47,10 @@ $driverDir = Join-Path $repoRoot 'src\driver\NexusHid'
 $project = Join-Path $driverDir 'NexusHidDriver.vcxproj'
 
 # The package version. Kept beside the product version rather than invented here.
-$driverVersion = '0.9.2.0'
+#
+# 0.9.2.2 is the power-management fix: the INF stops loading vhf a second time and the driver gives
+# up power policy ownership to it. It must match NEXUS_HID_DRIVER_VERSION in Driver.c.
+$driverVersion = '0.9.2.2'
 
 function Find-Tool {
     param([string] $Name, [string[]] $PreferredArch = @('x64', 'x86'))

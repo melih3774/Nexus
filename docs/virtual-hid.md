@@ -344,7 +344,7 @@ answered here.
 | File | What it is |
 |---|---|
 | `src/driver/NexusHid/NexusHidProtocol.h` | The control ABI. Six operations, fixed-size structs, `C_ASSERT` on every size |
-| `src/driver/NexusHid/NexusHid.inf` | Root-enumerated UMDF2 package; VHF as lower filter; Win10 and Win11 sections |
+| `src/driver/NexusHid/NexusHid.inf` | Root-enumerated UMDF2 package; VHF as the function driver under the WUDFRd upper filter (see §13.9); Win10 and Win11 sections |
 | `src/driver/NexusHid/Driver.c` | The source driver: VHF create/start/submit/delete, IOCTL validation, neutralisation |
 | `src/PcCore.NativeInput/Hid/NexusHidProtocol.cs` | The managed mirror of the ABI |
 | `src/PcCore.NativeInput/Hid/InputSourceAttribution.cs` | Raw Input device-identity attribution |
@@ -532,3 +532,44 @@ injected as characters, and routing it through HID would silently corrupt it. Th
 is that `input.key` reaches an elevated window and `input.text` does not — Windows drops a
 medium-integrity `SendInput` at an elevated window, and there is no device to route around it.
 `input.status` reports this as `text_uses_character_injection`.
+
+## 13.9 vhf was loaded twice, and every hibernate, restart and shutdown bugchecked
+
+Package 0.9.2.0 loaded `vhf.sys` twice. `Needs = vhfservice.NT.Services` already makes vhf the
+device's function driver and sets `VhfMode=2` ("operate as a function driver instead of a filter
+driver"); the INF *also* wrote `LowerFilters=vhf`, the classic VHF layout for a UMDF function driver.
+The live stack was `WUDFRd, vhf, vhf, PnpManager`, and both vhf instances read the same `VhfMode=2`,
+so both were power policy owners.
+
+Nothing showed while the machine ran. On any system power transition the lower instance requested
+D3, the D-IRP went back up through WUDFRd, and the upper instance received a device power IRP it had
+not requested: `WDF_VIOLATION 0x10D`, Arg1 `0xD`. The WDF in-flight recorder in each minidump shows
+exactly that sequence. Modern Standby sends no system power IRP, which is why it looked intermittent —
+display off and lid close were fine; hibernate (including Windows' own "Standby Battery Budget
+Exceeded" escalation), restart and Fast Startup shutdown all crashed, nine times between install and
+diagnosis.
+
+The INF no longer writes the lower filter, and a `DelReg` removes the stale value from machines that
+installed 0.9.2.0. The stack is now `WUDFRd, vhf, PnpManager`, the three children
+still enumerate, and the note that "without LowerFilters no HID collection ever appears" turned out to
+be wrong for this layout. The cost is InfVerif: `DelReg` is not declarative, so `/w` and `/u` report
+error 1308 where 0.9.2.0 passed; `/v` passes with a warning. That does not affect a local install and
+would matter for a Partner Center submission.
+
+**It was not the only power policy owner.** With the kernel bugcheck gone, the first hibernate showed
+the next one: `NexusHidDriver.dll` never gives up power policy ownership, so the UMDF framework also
+receives vhf's D-IRP unrequested. In user mode that is a `WUDFVerifierFailure` at
+`FxPkgFdo::DispatchDeviceSetPower` rather than a bugcheck — WUDFHost is terminated, the device is
+offline after resume, and any other driver sharing that host goes down with it. The same report
+followed every one of the nine bugchecks; it had been masked by them.
+
+**0.9.2.2 carries both fixes.** The INF correction above, and `NexusHidEvtDeviceAdd` calls
+`WdfDeviceInitSetPowerPolicyOwnership(DeviceInit, FALSE)` before creating the device, leaving vhf the only
+power policy owner. It deliberately does not call `WdfFdoInitSetFilter`, which would also start
+forwarding create and close to vhf. (0.9.2.1, the INF change alone, was installed only on the
+development machine while the second owner was found; it was never released.) Verified on this
+machine: restart, a full shutdown and two hibernates - both Windows' own battery-budget escalation from
+Modern Standby - each with no bugcheck, no `WUDFVerifierFailure`, no dump, the three devices back and
+PC Core reporting Virtual HID ready; the Intel Smart Sound device that used to share the killed host
+stays healthy. A Fast Startup shutdown was not cycled separately: it hibernates the kernel session through
+the same S4 path the two hibernates covered.

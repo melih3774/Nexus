@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 
 using PcCore.NativeInput.Hid;
 
@@ -161,13 +162,40 @@ public sealed class NexusHidPackageTests
     }
 
     /// <summary>
-    /// VHF must be declared as a lower filter or the device enumerates and never produces a HID
-    /// collection. This is the single line whose absence is hardest to diagnose at install time.
+    /// vhf is loaded once, as the function driver vhfservice installs, and never also as a lower
+    /// filter.
+    /// <para>
+    /// 0.9.2.0 declared both. The stack became WUDFRd, vhf, vhf; both vhf instances read VhfMode=2 and
+    /// became power policy owners, and every hibernate, restart and shutdown bugchecked with
+    /// WDF_VIOLATION 0x10D / 0xD. This test used to require the line that caused it.
+    /// </para>
     /// </summary>
     [Fact]
-    public void TheInfDeclaresVhfAsALowerFilter()
+    public void TheInfDoesNotLoadVhfAsALowerFilterToo()
     {
-        Assert.Contains(@"HKR,,""LowerFilters"",0x00010000,""vhf""", InfText(), StringComparison.Ordinal);
+        var addsLowerFilter = InfDirectives()
+            .Split('\n')
+            .Any(line => line.Contains("LowerFilters", StringComparison.OrdinalIgnoreCase)
+                && line.Contains("vhf", StringComparison.OrdinalIgnoreCase));
+
+        Assert.False(addsLowerFilter);
+        Assert.Contains("vhfservice.NT.Services", InfDirectives(), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A machine that installed 0.9.2.0 still carries LowerFilters=vhf on the devnode, and an upgrade
+    /// that only stops writing it leaves the duplicate in place. Both decorated hardware sections have
+    /// to delete it.
+    /// </summary>
+    [Theory]
+    [InlineData("NexusHid_Win11.NT.HW")]
+    [InlineData("NexusHid_Win10.NT.HW")]
+    public void AnUpgradeRemovesTheStaleLowerFilter(string hardwareSection)
+    {
+        var inf = InfDirectives();
+
+        Assert.Matches($@"\[{Regex.Escape(hardwareSection)}\][^\[]*DelReg\s*=\s*NexusHid_DelReg", inf);
+        Assert.Matches(@"\[NexusHid_DelReg\]\s*HKR,,""LowerFilters""", inf);
     }
 
     /// <summary>
@@ -184,6 +212,50 @@ public sealed class NexusHidPackageTests
         Assert.Contains("NT$ARCH$.10.0...22000", inf, StringComparison.Ordinal);
         Assert.Contains("WUDFRD_UpperFilter", inf, StringComparison.Ordinal);
         Assert.Contains("vhfservice", inf, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// vhf is the function driver and owns power policy; the UMDF driver must give ownership up before
+    /// the device is created, and must not do it by becoming a filter.
+    /// <para>
+    /// Left at the default it received vhf's D3 request unrequested on every hibernate, restart and
+    /// shutdown: a WUDFVerifierFailure, WUDFHost terminated, and the device offline after resume.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void TheDriverLeavesPowerPolicyOwnershipToVhf()
+    {
+        var source = File.ReadAllText(Path.Combine(DriverDirectory(), "Driver.c"));
+        var release = source.IndexOf("WdfDeviceInitSetPowerPolicyOwnership(DeviceInit, FALSE);", StringComparison.Ordinal);
+        var create = source.IndexOf("WdfDeviceCreate(&DeviceInit", StringComparison.Ordinal);
+
+        Assert.True(release >= 0, "Driver.c does not give up power policy ownership.");
+        Assert.True(create > release, "Power policy ownership must be set before WdfDeviceCreate.");
+        // A call, not the name: the comment explaining why it is not used names it.
+        Assert.DoesNotContain("WdfFdoInitSetFilter(", source, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The version the driver reports over IOCTL_NEXUS_HID_GET_VERSION and the DriverVer the package
+    /// is stamped with are the same number, written twice.
+    /// </summary>
+    [Fact]
+    public void TheDriverAndPackageVersionsAgree()
+    {
+        var source = File.ReadAllText(Path.Combine(DriverDirectory(), "Driver.c"));
+        var script = File.ReadAllText(Path.Combine(RepositoryRoot(), "tools", "validate-driver-package.ps1"));
+
+        var defined = Regex.Match(source, @"#define NEXUS_HID_DRIVER_VERSION 0x([0-9A-Fa-f]{8})").Groups[1].Value;
+        var stamped = Regex.Match(script, @"\$driverVersion = '(\d+)\.(\d+)\.(\d+)\.(\d+)'");
+
+        Assert.NotEmpty(defined);
+        Assert.True(stamped.Success);
+
+        var reported = Convert.ToUInt32(defined, 16);
+        var expected = (uint.Parse(stamped.Groups[1].Value) << 24) | (uint.Parse(stamped.Groups[2].Value) << 16)
+            | (uint.Parse(stamped.Groups[3].Value) << 8) | uint.Parse(stamped.Groups[4].Value);
+
+        Assert.Equal(expected, reported);
     }
 
     /// <summary>A root-enumerated device: no bus, no hardware, no USB vendor id allocation.</summary>

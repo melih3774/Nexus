@@ -70,7 +70,7 @@ Needs     = WUDFRD_UpperFilter.NT, vhfservice.NT
 [NexusHid_Win11.NT.HW]
 Include   = wudfrd.inf, hidvhf.inf
 Needs     = WUDFRD_UpperFilter.NT.HW, vhfservice.NT.HW
-AddReg    = NexusHid_AddReg
+DelReg    = NexusHid_DelReg
 
 [NexusHid_Win11.NT.Services]
 Include   = wudfrd.inf, hidvhf.inf
@@ -94,7 +94,7 @@ Needs     = vhfservice.NT
 [NexusHid_Win10.NT.HW]
 Include   = hidvhf.inf
 Needs     = vhfservice.NT.HW
-AddReg    = NexusHid_AddReg
+DelReg    = NexusHid_DelReg
 
 [NexusHid_Win10.NT.Services]
 Include   = hidvhf.inf
@@ -115,12 +115,24 @@ UmdfExtensions     = HidVhf
 NexusHidDriver.dll
 
 ;
-; VHF has to be a lower filter beneath the source driver, per Microsoft's VHF documentation. This
-; is the AddReg the documentation specifies, and without it the device enumerates and no HID
-; collection ever appears.
+; VHF IS LOADED ONCE, AS THE FUNCTION DRIVER.
 ;
-[NexusHid_AddReg]
-HKR,,"LowerFilters",0x00010000,"vhf"
+; vhfservice (hidvhf.inf, pulled in through Needs above) already makes vhf the device's service and
+; sets VhfMode=2, which hidvhf.inf describes as "operate as a function driver instead of a filter
+; driver". Nothing else may load it.
+;
+; 0.9.2.0 also wrote LowerFilters=vhf, the classic VHF documentation's layout for a UMDF function
+; driver. Together with vhfservice that loaded vhf twice - WUDFRd, vhf, vhf - and both instances read
+; the same VhfMode=2, so both were power policy owners. Every S4 and S5 transition then bugchecked:
+; the lower instance requested D3 and the upper one received a D-IRP it had never asked for,
+; WDF_VIOLATION 0x10D / 0xD. Modern Standby sends no system power IRP, which is why it looked
+; intermittent - only hibernate, restart and shutdown crashed.
+;
+; The DelReg removes that value from machines that installed 0.9.2.0. An upgrade that merely stopped
+; writing it would leave the second vhf in place.
+;
+[NexusHid_DelReg]
+HKR,,"LowerFilters"
 
 [Strings]
 ManufacturerName = "Nexus"

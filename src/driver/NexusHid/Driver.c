@@ -46,7 +46,7 @@
 
 #include "NexusHidProtocol.h"
 
-#define NEXUS_HID_DRIVER_VERSION 0x00090200  /* 0.9.2.0, stamped to match the package */
+#define NEXUS_HID_DRIVER_VERSION 0x00090202  /* 0.9.2.2, stamped to match the package */
 
 /*
  * One published device. Three of these live in the control device's context.
@@ -157,6 +157,21 @@ NexusHidEvtDeviceAdd(
      */
     WDF_FILEOBJECT_CONFIG_INIT(&fileConfig, NULL, NULL, NexusHidEvtFileCleanup);
     WdfDeviceInitSetFileObjectConfig(DeviceInit, &fileConfig, WDF_NO_OBJECT_ATTRIBUTES);
+
+    /*
+     * vhf owns this stack's power policy, not this driver.
+     *
+     * The INF installs vhf as the function driver (VhfMode=2), and a function driver is the power
+     * policy owner. Left at the default, this driver claimed ownership too, so on every hibernate,
+     * restart and shutdown the D3 request vhf made passed through here unrequested: a
+     * WUDFVerifierFailure at FxPkgFdo::DispatchDeviceSetPower, WUDFHost terminated, the device
+     * offline after resume, and every other driver sharing that host taken down with it. While
+     * 0.9.2.0 also loaded vhf twice, the kernel bugchecked on the same violation first and hid this.
+     *
+     * Ownership only. The device is not made a filter: WdfFdoInitSetFilter would also start
+     * forwarding create and close to vhf, and the control handle PC Core opens belongs here.
+     */
+    WdfDeviceInitSetPowerPolicyOwnership(DeviceInit, FALSE);
 
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, NEXUS_CONTROL_CONTEXT);
     attributes.EvtCleanupCallback = NexusHidEvtDeviceCleanup;
