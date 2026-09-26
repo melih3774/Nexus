@@ -81,6 +81,15 @@ it. The updater then:
    half copies the files into `%ProgramFiles%\Nexus\Updates`, re-hashes them there, and runs
    `PcCore.SecureCapture.exe --install` or `pnputil /add-driver … /install`. It creates no new device
    and changes no certificate. Declining the prompt changes nothing;
+
+   a driver update also removes the older Nexus packages from the Driver Store (`pnputil
+   /delete-driver`, without `/uninstall` or `/force`) and only then checks the device: bound to the new
+   version, no problem code, stack exactly `WUDFRd -> vhf -> PnpManager`, and the UMDF registration
+   pointing at a DLL with the release manifest's hash. If cleanup damaged the registration, the active
+   package is reapplied through `UpdateDriverForPlugAndPlayDevices`; if the device is still not
+   healthy, the driver installed before is put back from the release store - the release that carries
+   it is staged and hashed with the new one - and the update fails. A driver update is skipped when no
+   stored release carries the installed driver. See docs/virtual-hid.md section 13.10 for why;
 3. stops PC Core through its stop event (Ctrl+C for builds that predate it, and a kill as a last
    resort);
 4. moves each changed file aside and copies the new one in, recording each step in a journal;

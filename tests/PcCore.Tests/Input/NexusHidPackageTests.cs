@@ -173,29 +173,53 @@ public sealed class NexusHidPackageTests
     [Fact]
     public void TheInfDoesNotLoadVhfAsALowerFilterToo()
     {
-        var addsLowerFilter = InfDirectives()
-            .Split('\n')
-            .Any(line => line.Contains("LowerFilters", StringComparison.OrdinalIgnoreCase)
-                && line.Contains("vhf", StringComparison.OrdinalIgnoreCase));
+        var inf = InfDirectives();
 
-        Assert.False(addsLowerFilter);
-        Assert.Contains("vhfservice.NT.Services", InfDirectives(), StringComparison.Ordinal);
+        // No LowerFilters directive of any kind: not the 0.9.2.0 AddReg that loaded vhf twice, and not
+        // the 0.9.2.1 DelReg that removed it and cost the package its configurability.
+        Assert.DoesNotContain("LowerFilters", inf, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("vhfservice.NT.Services", inf, StringComparison.Ordinal);
     }
 
     /// <summary>
-    /// A machine that installed 0.9.2.0 still carries LowerFilters=vhf on the devnode, and an upgrade
-    /// that only stops writing it leaves the duplicate in place. Both decorated hardware sections have
-    /// to delete it.
+    /// The package stays declarative, so the Driver Store treats it as configurable and
+    /// reference-counts its UMDF service registration per package.
+    /// <para>
+    /// 0.9.2.1 added a DelReg to remove 0.9.2.0's stale lower filter. SetupAPI then logged the package
+    /// as "NOT configurable", its WUDF\Services\NexusHidDriver values were written by WUDFCoinstaller
+    /// and counted for nothing, and when Storage Sense deleted the last older configurable package the
+    /// count reached zero and Windows deleted the registration the active driver needed. The next boot
+    /// started the device as vhf alone. See docs/virtual-hid.md section 13.10.
+    /// </para>
     /// </summary>
     [Theory]
-    [InlineData("NexusHid_Win11.NT.HW")]
-    [InlineData("NexusHid_Win10.NT.HW")]
-    public void AnUpgradeRemovesTheStaleLowerFilter(string hardwareSection)
+    [InlineData("DelReg")]
+    [InlineData("DelFiles")]
+    [InlineData("RenFiles")]
+    [InlineData("BitReg")]
+    [InlineData("RegisterDlls")]
+    [InlineData("UnregisterDlls")]
+    [InlineData("ProfileItems")]
+    [InlineData("UpdateInis")]
+    [InlineData("CoInstallers")]
+    public void TheInfUsesNoNonDeclarativeDirective(string directive)
+    {
+        Assert.DoesNotMatch($@"(?im)^\s*{Regex.Escape(directive)}\s*=", InfDirectives());
+        Assert.DoesNotMatch($@"(?i)\[[^\]]*\.{Regex.Escape(directive)}\]", InfDirectives());
+    }
+
+    /// <summary>
+    /// The UMDF service keeps its name and its Driver Store binary across versions. The Driver Store
+    /// counts references per service name, which only works if every Nexus package uses the same one.
+    /// </summary>
+    [Fact]
+    public void TheUmdfServiceKeepsItsNameAndRunsFromTheDriverStore()
     {
         var inf = InfDirectives();
 
-        Assert.Matches($@"\[{Regex.Escape(hardwareSection)}\][^\[]*DelReg\s*=\s*NexusHid_DelReg", inf);
-        Assert.Matches(@"\[NexusHid_DelReg\]\s*HKR,,""LowerFilters""", inf);
+        Assert.Matches(@"(?m)^\s*UmdfService\s*=\s*NexusHidDriver\s*,\s*NexusHid_Install\s*$", inf);
+        Assert.Matches(@"(?m)^\s*ServiceBinary\s*=\s*%13%\\NexusHidDriver\.dll\s*$", inf);
+        Assert.Matches(@"(?m)^\s*UmdfExtensions\s*=\s*HidVhf\s*$", inf);
     }
 
     /// <summary>

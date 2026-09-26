@@ -573,3 +573,57 @@ Modern Standby - each with no bugcheck, no `WUDFVerifierFailure`, no dump, the t
 PC Core reporting Virtual HID ready; the Intel Smart Sound device that used to share the killed host
 stays healthy. A Fast Startup shutdown was not cycled separately: it hibernates the kernel session through
 the same S4 path the two hibernates covered.
+
+## 13.10 The DelReg cost more than InfVerif: an old package's removal deleted the driver's registration
+
+From the 2026-09-23 cold boot the device started as `vhf, PnpManager` - no reflector, no driver, no
+problem code - and PC Core reported Virtual HID NotInstalled. Driver 0.9.2.2 and its files were intact.
+The boot-time `219 WUDFRd failed to load, 0xC0000365` events were not it: every WUDFRd device logs
+them at every cold boot, with DriverFrameworks 10118 ("could not connect to the SCM, expected during
+boot, will retry"), and recovers.
+
+What had changed: `WUDF\Services\NexusHidDriver` (ImagePath, WdfMajorVersion, WdfMinorVersion,
+WdfExtensions) was empty. Storage Sense (`cleanmgr /autocleanstoragesense`) had deleted the outranked
+0.9.2.0 package on 2026-09-19, and its unconfigure step deleted those values. The reflector, finding no
+driver to load, detached without a problem code; the running session was unaffected until the next boot.
+
+Why deleting an *old* package could take the *active* driver's registration: the Driver Store
+reference-counts a package's global registry per source, but only for packages it can configure.
+0.9.0.0 to 0.9.2.0 were "configurable" (SetupAPI: `Driver package 'NexusHid.inf' is configurable`),
+and removing two of them logged `still in use by 2 sources`, then `by 1 source`. 0.9.2.1 and 0.9.2.2
+were `NOT configurable` - the `DelReg` of 13.9 is not a declarative directive - so their registration
+was written by `WUDFCoinstaller` and counted for nothing. When the last counted package, 0.9.2.0, was
+deleted, the count reached zero and Windows deleted the values the active driver needed.
+
+**0.9.2.3 is the same driver in a declarative package again.** No `DelReg` and no lower filter;
+InfVerif `/w`, `/u` and `/v` pass (0.9.2.2 fails `/w` with 1308). The service name, `UmdfService`,
+`ServiceBinary = %13%` and the includes are unchanged - the configurable model needs none of them
+changed. `NexusHidPackageTests` hold the INF to no non-declarative directive and no `LowerFilters`.
+
+**The updater no longer leaves old packages for Storage Sense.** When the driver version changes, the
+elevated half (`HidDriverLifecycle`): installs the new package, checks the device is bound to it and
+healthy, deletes every other Nexus package matching `Root\NexusHid` (`pnputil /delete-driver`, no
+`/uninstall`, no `/force`), and checks again - bound version, no problem code, exactly
+`WUDFRd -> vhf -> PnpManager`, and the registered DLL hashing to the release manifest's. If cleanup
+damaged the registration it reapplies the active package with `UpdateDriverForPlugAndPlayDevices`
+(Windows' own install rewrites it; nothing writes the key by hand). If the device still is not healthy,
+it binds the previous driver from the release store - staged and hashed beside the new one, selected
+as the newest stored release carrying the installed driver - and cleans up after that the same way. A
+driver update is skipped when no stored release carries the installed driver.
+
+Proven in Windows Sandbox (Windows 11 26100) before touching this PC, with the real updater and the
+real packages (release 24's 0.9.2.0, release 26's 0.9.2.2, 0.9.2.3):
+
+| Path | Result |
+|---|---|
+| 0.9.2.0 -> 0.9.2.3 | Stack `WUDFRd, vhf, vhf` became `WUDFRd, vhf`; `LowerFilters=vhf` gone without `DelReg` (Kernel-PnP 410: `Lower Filters:` empty); 0.9.2.0 deleted, `still in use by 1 source`; one package left |
+| this PC's history | 0.9.2.0 + 0.9.2.2, deleting 0.9.2.0 emptied the registration exactly as Storage Sense did; `devcon updateni` restored it |
+| 0.9.2.2 (repaired) -> 0.9.2.3 | healthy; deleting the non-configurable 0.9.2.2 left the registration alone (`still in use by 1 source`); no repair needed |
+| 0.9.2.0 + 0.9.2.2 -> 0.9.2.3 | both removed, registration intact, one package left |
+| forced damage (non-configurable 0.9.2.2 over 0.9.2.0) | cleanup emptied the registration; the check caught it; reapplying repaired it |
+| rollback 0.9.2.3 -> 0.9.2.2 from release 26's payload | bound by force, healthy; deleting 0.9.2.3 emptied the registration, reapplying repaired it; one package left |
+
+The sandbox also showed something this PC hides: `NexusHidDriver.dll` imports `VCRUNTIME140.dll`. Without
+the Visual C++ redistributable the UMDF host cannot load it (`0x8007007E`) and the device comes up as
+`vhf, PnpManager`, the same silent symptom. The tests gave the sandbox the runtime this PC has; linking
+the runtime statically is a separate change.

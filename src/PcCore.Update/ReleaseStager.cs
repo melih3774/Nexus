@@ -19,6 +19,8 @@ public sealed class ReleaseStager
     public const string PcCoreFolder = "pccore";
     public const string SecureCaptureFolder = "securecapture";
     public const string HidDriverFolder = "driver";
+    public const string HidDriverRollbackFolder = "driver-rollback";
+    public const string HidDriverRollbackManifestFileName = "driver-rollback.json";
     public const string AssistantFolder = "assistant";
     public const string ManifestFileName = "manifest.json";
 
@@ -64,6 +66,19 @@ public sealed class ReleaseStager
             foreach (var file in driver.Files)
             {
                 StageFile(plan.ReleaseDirectory, driver, file, Path.Combine(staged, HidDriverFolder), cancellationToken);
+            }
+
+            // The driver installed now, from the release that shipped it: what a failed update puts
+            // back. Staged and hashed like the new one, so the rollback never depends on an old
+            // package still being in the Driver Store.
+            var rollback = plan.HidDriverRollback
+                ?? throw new UpdateIntegrityException("A HID driver update was planned without a driver to roll back to.");
+
+            UpdateJson.WriteAtomic(Path.Combine(staged, HidDriverRollbackManifestFileName), rollback.Manifest);
+
+            foreach (var file in rollback.Component.Files)
+            {
+                StageFile(rollback.ReleaseDirectory, rollback.Component, file, Path.Combine(staged, HidDriverRollbackFolder), cancellationToken);
             }
         }
 

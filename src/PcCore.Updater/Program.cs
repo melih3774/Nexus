@@ -89,6 +89,11 @@ public static class Program
                 log.Write($"  {decision.Name}: {decision.Action} ({decision.Reason}; installed {decision.InstalledVersion ?? "-"}, release {decision.AvailableVersion ?? "-"})");
             }
 
+            if (plan?.HidDriverRollback is { } rollback)
+            {
+                log.Write($"  HID driver rollback: {rollback.Component.Version} from release {rollback.Release}");
+            }
+
             return plan is null ? 3 : plan.UpToDate ? 0 : 10;
         }
 

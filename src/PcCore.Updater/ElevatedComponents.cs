@@ -125,7 +125,11 @@ internal static class ElevatedInstall
                 var component = manifest.Components.HidDriver
                     ?? throw new UpdateIntegrityException("This release has no HID driver.");
 
-                InstallDriver(component, CopyVerified(component, Path.Combine(staged, ReleaseStager.HidDriverFolder), Path.Combine(work, "driver")), probe);
+                var previous = RollbackDriver(staged, probe);
+
+                InstallDriver(
+                    HidDriverLifecycle.PayloadFrom(component, CopyVerified(component, Path.Combine(staged, ReleaseStager.HidDriverFolder), Path.Combine(work, "driver"))),
+                    HidDriverLifecycle.PayloadFrom(previous, CopyVerified(previous, Path.Combine(staged, ReleaseStager.HidDriverRollbackFolder), Path.Combine(work, "driver-rollback"))));
             }
 
             DeleteDirectory(work);
@@ -203,26 +207,51 @@ internal static class ElevatedInstall
         throw new InvalidOperationException($"SecureCapture {component.Version} could not be installed.");
     }
 
-    private static void InstallDriver(FileSetComponent component, string verified, WindowsComponentProbe probe)
+    /// <summary>
+    /// The driver installed now, from the release the updater staged it from - refused unless it really
+    /// is the installed version, because restoring anything else is not a rollback.
+    /// </summary>
+    private static FileSetComponent RollbackDriver(string staged, WindowsComponentProbe probe)
     {
-        var inf = component.Files.Select(f => f.Path).FirstOrDefault(p => p.EndsWith(".inf", StringComparison.OrdinalIgnoreCase))
-            ?? throw new UpdateIntegrityException("The driver package has no INF.");
+        var manifest = UpdateJson.Read<ReleaseManifest>(Path.Combine(staged, ReleaseStager.HidDriverRollbackManifestFileName))
+            ?? throw new UpdateIntegrityException("No HID driver to roll back to was staged.");
 
-        // Updates the existing Nexus devnode in place. It never creates a second root device, which
-        // is the one mistake the original install notes warn about most.
-        var pnputil = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "pnputil.exe");
-        var (code, output) = RunTool(pnputil, $"/add-driver \"{Path.Combine(verified, inf)}\" /install");
-        var installed = probe.HidDriver();
+        ManifestValidator.ThrowIfInvalid(manifest);
 
-        // 3010: installed, reboot required to finish. Still an install.
-        if ((code is 0 or 3010) && string.Equals(installed.Version, component.Version, StringComparison.OrdinalIgnoreCase))
+        var previous = manifest.Components.HidDriver
+            ?? throw new UpdateIntegrityException($"Release {manifest.Release} has no HID driver to roll back to.");
+
+        var installed = probe.HidDriver().Version;
+
+        if (!string.Equals(previous.Version, installed, StringComparison.OrdinalIgnoreCase))
         {
-            Log($"HID driver {component.Version} installed{(code == 3010 ? "; Windows wants a restart to finish" : string.Empty)}.");
-            return;
+            throw new UpdateIntegrityException($"The staged rollback driver is {previous.Version}, but {installed ?? "an unknown version"} is installed.");
         }
 
-        Log($"pnputil exit {code}, installed driver {installed.Version ?? "unknown"}: {output}");
-        throw new InvalidOperationException($"HID driver {component.Version} was not accepted by Windows (pnputil exit {code}).");
+        return previous;
+    }
+
+    /// <summary>
+    /// Installs the new driver, removes every other Nexus package from the Driver Store, and proves the
+    /// device healthy afterwards; puts the previous driver back from the release store if it is not.
+    /// Updates the existing Nexus devnode in place. It never creates a second root device, which is the
+    /// one mistake the original install notes warn about most.
+    /// </summary>
+    private static void InstallDriver(DriverPayload target, DriverPayload previous)
+    {
+        var outcome = new HidDriverLifecycle(new WindowsHidDriverHost(), Log).Update(target, previous);
+
+        if (outcome.StalePackagesLeft.Count > 0)
+        {
+            Log("Nexus driver packages Windows would not remove: " + string.Join(", ", outcome.StalePackagesLeft));
+        }
+
+        Log(outcome.Detail);
+
+        if (outcome.Kind != HidDriverOutcomeKind.Updated)
+        {
+            throw new InvalidOperationException(outcome.Detail);
+        }
     }
 
     private static (int Code, string Output) RunTool(string executable, string arguments)

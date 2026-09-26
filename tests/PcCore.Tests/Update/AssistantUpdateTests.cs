@@ -49,7 +49,12 @@ public sealed class AssistantUpdateTests : IDisposable
     private async Task InstallAssistantV1Async()
     {
         InstallPcCore();
-        _fixture.Publish(20, "1.6.0", ReleaseFixture.BaseFiles(), assistant: ("0.10.1", AssistantV1()));
+
+        // Carries the HID driver the probes below report as installed, as the real store does: a
+        // driver update needs a release to roll back to.
+        _fixture.Publish(20, "1.6.0", ReleaseFixture.BaseFiles(),
+            driver: ("0.9.2.2", new Dictionary<string, string> { ["NexusHid.inf"] = "inf 0.9.2.2", ["NexusHidDriver.dll"] = "dll 0.9.2.2" }),
+            assistant: ("0.10.1", AssistantV1()));
 
         Assert.Equal(UpdateOutcome.Succeeded, await Coordinator(PcCore(), new FakeAssistant()).RunAsync(20, TestContext.Current.CancellationToken));
     }

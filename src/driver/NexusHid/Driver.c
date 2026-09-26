@@ -46,7 +46,7 @@
 
 #include "NexusHidProtocol.h"
 
-#define NEXUS_HID_DRIVER_VERSION 0x00090202  /* 0.9.2.2, stamped to match the package */
+#define NEXUS_HID_DRIVER_VERSION 0x00090203  /* 0.9.2.3, stamped to match the package */
 
 /*
  * One published device. Three of these live in the control device's context.

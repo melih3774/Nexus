@@ -56,6 +56,18 @@ public sealed record ComponentDecision(string Name, ComponentAction Action, stri
     public bool Updates => Action == ComponentAction.Update;
 }
 
+/// <summary>
+/// A release in the store whose HID driver is the one installed now: what a failed driver update puts
+/// back. Rolling back from the release store, hash-verified, is what lets an update delete the old
+/// packages from the Driver Store instead of leaving them for Storage Sense.
+/// </summary>
+public sealed record HidDriverRollback(ReleaseManifest Manifest, string ReleaseDirectory)
+{
+    public int Release => Manifest.Release;
+
+    public FileSetComponent Component => Manifest.Components.HidDriver!;
+}
+
 /// <summary>Exactly what an update of this PC to one release would change, and what it would leave alone.</summary>
 public sealed record UpdatePlan(
     ReleaseManifest Manifest,
@@ -70,6 +82,9 @@ public sealed record UpdatePlan(
 
     public ComponentDecision AssistantComponent { get; init; } =
         new(AssistantInstall.ComponentName, ComponentAction.Skip, null, null, "not part of this release");
+
+    /// <summary>Where a failed HID driver update rolls back to. Set whenever the driver updates.</summary>
+    public HidDriverRollback? HidDriverRollback { get; init; }
 
     public bool PcCoreChanges => PcCore.Count > 0;
 
@@ -139,11 +154,78 @@ public static class UpdatePlanner
         var (assistantChanges, assistantDecision) = PlanAssistant(
             manifest.Components.Assistant, Path.Combine(installDirectory, AssistantInstall.Folder), installedAssistant);
 
-        return PlanPcCore(manifest, releaseDirectory, installDirectory, installed, probe) with
+        var plan = PlanPcCore(manifest, releaseDirectory, installDirectory, installed, probe) with
         {
             Assistant = assistantChanges,
             AssistantComponent = assistantDecision,
         };
+
+        if (!plan.HidDriver.Updates)
+        {
+            return plan;
+        }
+
+        // A driver update deletes the old packages from the Driver Store once the new one is healthy,
+        // so the way back has to come from the release store. Without it, no driver update.
+        var rollback = FindHidDriverRollback(Path.GetDirectoryName(releaseDirectory), manifest.Release, plan.HidDriver.InstalledVersion);
+
+        return rollback is null
+            ? plan with
+            {
+                HidDriver = plan.HidDriver with
+                {
+                    Action = ComponentAction.Skip,
+                    Reason = $"no release in the store carries the installed driver {plan.HidDriver.InstalledVersion ?? "(unknown version)"} to roll back to",
+                },
+            }
+            : plan with { HidDriverRollback = rollback };
+    }
+
+    /// <summary>
+    /// The newest release in the store, other than <paramref name="targetRelease"/>, whose HID driver is
+    /// <paramref name="installedVersion"/> and carries both its INF and its DLL. Its files are hashed when
+    /// they are staged.
+    /// </summary>
+    public static HidDriverRollback? FindHidDriverRollback(string? storeRoot, int targetRelease, string? installedVersion)
+    {
+        if (string.IsNullOrWhiteSpace(storeRoot) || string.IsNullOrWhiteSpace(installedVersion) || !Directory.Exists(storeRoot))
+        {
+            return null;
+        }
+
+        var candidates = Directory.EnumerateDirectories(storeRoot)
+            .Select(d => (Directory: d, Release: int.TryParse(Path.GetFileName(d), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var n) ? n : 0))
+            .Where(c => c.Release > 0 && c.Release != targetRelease)
+            .OrderByDescending(c => c.Release);
+
+        foreach (var (directory, release) in candidates)
+        {
+            ReleaseManifest? manifest;
+
+            try
+            {
+                manifest = UpdateJson.Read<ReleaseManifest>(Path.Combine(directory, ReleaseStager.ManifestFileName));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+            {
+                continue;
+            }
+
+            if (manifest is null || manifest.Release != release || ManifestValidator.Problems(manifest).Count > 0)
+            {
+                continue;
+            }
+
+            if (manifest.Components.HidDriver is { } driver
+                && string.Equals(driver.Version, installedVersion, StringComparison.OrdinalIgnoreCase)
+                && driver.Files.Any(f => f.Path.EndsWith(".inf", StringComparison.OrdinalIgnoreCase))
+                && driver.Files.Any(f => string.Equals(Path.GetFileName(f.Path), HidDriverLifecycle.DriverDll, StringComparison.OrdinalIgnoreCase)))
+            {
+                return new HidDriverRollback(manifest, directory);
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
