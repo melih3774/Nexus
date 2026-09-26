@@ -10,6 +10,11 @@ assemblies, does not host it, and does not start it. The two talk over the same 
 always have, and each verifies which executable is on the other end. Sharing a repository changed
 where the code is kept and nothing about how the two programs meet.
 
+A Nexus release builds it, and the Nexus updater installs it at
+`%LOCALAPPDATA%\Programs\Nexus\Assistant\PcAssistant.Desktop.exe` and keeps it current. To replace it
+the updater asks it to close, and it refuses while a task runs or an approval waits; see
+[updating.md](updating.md#pc-assistant).
+
 - [How it fits together](#how-it-fits-together)
 - [Setting it up](#setting-it-up)
 - [Using it](#using-it)
@@ -53,7 +58,7 @@ file), enable the bridge and name the PC Assistant executable to trust:
   "PcCore": {
     "Assistant": {
       "Enabled": true,
-      "ServerExecutable": "C:\\path\\to\\PcAssistant.Desktop.exe"
+      "ServerExecutable": "C:\\Users\\<you>\\AppData\\Local\\Programs\\Nexus\\Assistant\\PcAssistant.Desktop.exe"
     }
   }
 }
@@ -68,6 +73,25 @@ a few seconds after.
 
 If PC Core moves, for example to a different build folder, both paths have to be updated. That is
 deliberate: each side trusts one file.
+
+### Moving from a development build
+
+Installing PC Assistant does not change what anything trusts. A PC set up against a build folder
+keeps trusting that folder until the owner says otherwise, and each refusal says why:
+
+1. **Run one copy.** Close the development build before starting the installed one. Both use the same
+   pipe name and the same database under `%LOCALAPPDATA%\PcAssistant`, and tasks, settings and the
+   Claude Code sign-in carry over as they are.
+2. **PC Core.** Change `ServerExecutable` in `appsettings.Local.json` to the installed path and restart
+   PC Core. Until then PC Core refuses the installed copy and logs that the program serving the pipe
+   is not the one it trusts.
+3. **PC Assistant's trust in PC Core** does not change, because PC Core did not move.
+4. **The administrator helper** serves only the executable it was installed from. The installed copy
+   is told *This helper was installed for …* until the helper is reinstalled from it, in
+   **Capabilities**, with one UAC prompt at the PC. Until then administrator approvals are refused,
+   never bypassed.
+5. **Start with Windows**, if it was on for the development build, shows as a stale entry in the
+   installed copy; turn it on there.
 
 ## Using it
 

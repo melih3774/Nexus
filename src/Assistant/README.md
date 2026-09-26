@@ -9,11 +9,18 @@ written in: its own solution (`PcAssistant.slnx`), its own `Directory.Build.prop
 its own `src/` and `tests/`. Build and test it from this directory
 (`cd src/Assistant && dotnet build -c Release`, `dotnet test`). It is still a separate process from
 PC Core, reached only over the named pipe described in
-[docs/NEXUS-BRIDGE.md](docs/NEXUS-BRIDGE.md); nothing in Nexus references its assemblies or starts it.
+[docs/NEXUS-BRIDGE.md](docs/NEXUS-BRIDGE.md); PC Core does not reference its assemblies or start it.
+A Nexus release builds it, and the Nexus updater installs it at
+`%LOCALAPPDATA%\Programs\Nexus\Assistant\` and keeps it current
+([../../docs/updating.md](../../docs/updating.md#pc-assistant)).
 The `PcAssistant.*` project and namespace names are unchanged on purpose.
 
-**Version 0.10.0** · Windows only · one owner · local only · no network listener, no
+**Version 0.10.1** · Windows only · one owner · local only · no network listener, no
 telemetry, no API keys.
+
+Version 0.10.1 adds one thing: before a Nexus update replaces this copy, it asks. PC Assistant closes
+only when no task is running and no approval is waiting, and says no otherwise; the update then waits,
+and nothing is killed.
 
 Version 0.10 adds one local client: **Nexus**, the owner's own phone link to this PC. With the
 option ticked in Capabilities and one Nexus executable trusted, an owner who has authenticated on

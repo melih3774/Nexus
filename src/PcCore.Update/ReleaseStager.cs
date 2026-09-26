@@ -19,6 +19,7 @@ public sealed class ReleaseStager
     public const string PcCoreFolder = "pccore";
     public const string SecureCaptureFolder = "securecapture";
     public const string HidDriverFolder = "driver";
+    public const string AssistantFolder = "assistant";
     public const string ManifestFileName = "manifest.json";
 
     private readonly Action<string> _log;
@@ -63,6 +64,20 @@ public sealed class ReleaseStager
             foreach (var file in driver.Files)
             {
                 StageFile(plan.ReleaseDirectory, driver, file, Path.Combine(staged, HidDriverFolder), cancellationToken);
+            }
+        }
+
+        // PC Assistant, like PC Core, as a diff: only the files that will actually be copied.
+        if (plan.AssistantChanges && manifest.Components.Assistant is { } assistant)
+        {
+            var copied = plan.Assistant
+                .Where(c => c.Kind != FileChangeKind.Remove)
+                .Select(c => c.Path)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var file in assistant.Files.Where(f => copied.Contains(f.Path)))
+            {
+                StageFile(plan.ReleaseDirectory, assistant, file, Path.Combine(staged, AssistantFolder), cancellationToken);
             }
         }
 

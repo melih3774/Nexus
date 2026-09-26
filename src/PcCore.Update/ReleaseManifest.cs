@@ -15,7 +15,7 @@ public sealed record ReleaseFile
     public required long Size { get; init; }
 }
 
-/// <summary>A component that is a directory of files: PC Core, SecureCapture, the HID driver package.</summary>
+/// <summary>A component that is a directory of files: PC Core, SecureCapture, the HID driver package, PC Assistant.</summary>
 public sealed record FileSetComponent
 {
     /// <summary>
@@ -67,6 +67,13 @@ public sealed record ReleaseComponents
     public FileSetComponent? SecureCapture { get; init; }
 
     public FileSetComponent? HidDriver { get; init; }
+
+    /// <summary>
+    /// PC Assistant, installed per user beside PC Core. Compared by its own version, like SecureCapture:
+    /// replacing it means closing a window the owner may be working in, and a rebuild of unchanged
+    /// source must not cost that.
+    /// </summary>
+    public FileSetComponent? Assistant { get; init; }
 
     public AndroidComponent? Android { get; init; }
 }

@@ -208,6 +208,16 @@ public static class ManifestValidator
             CheckFileSet("hid_driver", driver, problems);
         }
 
+        if (manifest.Components.Assistant is { } assistant)
+        {
+            CheckFileSet("assistant", assistant, problems);
+
+            if (!(assistant.Files ?? []).Any(f => string.Equals(f.Path, AssistantInstall.ExecutableName, StringComparison.OrdinalIgnoreCase)))
+            {
+                problems.Add($"assistant does not contain {AssistantInstall.ExecutableName}");
+            }
+        }
+
         if (manifest.Components.Android is { } android)
         {
             if (!IsSafeRelativePath(android.File))

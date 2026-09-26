@@ -138,8 +138,32 @@ public partial class App : Application
         _mainViewModel.NexusCandidateResolved = () => _nexusBridge?.ClearCandidate();
         _ = ApplyNexusBridgeAsync();
 
+        // Nexus installs and updates this copy, and its updater asks through this event before it
+        // replaces the files. The answer is decided on the UI thread, where the tasks and the approval
+        // cards are, and it is no while either has work in flight.
+        var service = _service;
+        var approvals = _approvals;
+        var updateLog = new BridgeLog(Path.Combine(_paths.Runtime, "nexus-update.log"));
+        _updateStop = UpdateStopListener.TryStart(Environment.ProcessPath, () => Dispatcher.BeginInvoke(() =>
+        {
+            var refusal = UpdateStopListener.RefusalReason(
+                service.Tasks.Count(t => service.IsRunning(t.Id)),
+                approvals.Pending.Count);
+
+            if (refusal is not null)
+            {
+                updateLog.Write("A Nexus update asked PC Assistant to close; refused, " + refusal + ".");
+                return;
+            }
+
+            updateLog.Write("A Nexus update asked PC Assistant to close; closing.");
+            Shutdown();
+        }), updateLog.Write);
+
         new MainWindow(_mainViewModel).Show();
     }
+
+    private UpdateStopListener? _updateStop;
 
     private NexusBridgeServer? _nexusBridge;
     private CachedClaudeStatus? _claudeStatus;
@@ -196,6 +220,8 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        _updateStop?.Dispose();
+
         // The bridge first, so Nexus sees the pipe close rather than a half-shut task engine.
         try { _nexusBridge?.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(3)); }
         catch (Exception) { /* shutting down regardless */ }

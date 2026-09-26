@@ -42,6 +42,8 @@ powershell -ExecutionPolicy Bypass -File tools/publish-release.ps1 -Install
 The script:
 
 - builds PC Core, the input broker, the updater and SecureCapture
+- builds PC Assistant from a clean copy of `src/Assistant` only if its app sources changed since the
+  last release; otherwise the previous release's PC Assistant is carried forward byte for byte
 - builds the signed Android release APK only if `android/Nexus`, `shared/protocol` or
   `Directory.Build.props` changed since the last release; otherwise the previous APK is carried
   forward, so the phone is not offered an update that changes nothing
@@ -58,12 +60,13 @@ The manifest records:
 - a release number that goes up on every publish and doubles as the Android `versionCode`
 - the SecureCapture version (its own `csproj`)
 - the HID driver version (`DriverVer` of the signed package)
+- the PC Assistant version (`src/Assistant/Directory.Build.props`)
 - SHA-256 and size of every file
 - the APK's signer certificate
 - `NexusMinAndroidVersionCode`
 
-The script refuses a changed SecureCapture or driver whose version number did not change, and an APK
-signed by a different key.
+The script refuses a changed SecureCapture, driver or PC Assistant whose version number did not
+change, and an APK signed by a different key.
 
 ## How the PC updates
 
@@ -88,6 +91,26 @@ If step 5 fails, the new process is ended, the moved-aside files are put back, t
 is started again, and the tray says the update was rolled back. A journal left by an updater that
 died mid-swap is undone on its next run. The updater's own log is
 `%LOCALAPPDATA%\Nexus\update\updater.log`.
+
+### PC Assistant
+
+A release carries PC Assistant too. The updater installs it at
+`%LOCALAPPDATA%\Programs\Nexus\Assistant\` the first time a release includes it, and replaces it only
+when its version changes, so a rebuild of the same source never closes it. When it does change:
+
+1. a PC Assistant running from that folder is **asked** to close — before any UAC prompt, before
+   anything is changed. It agrees only when no task is running and no approval is waiting; otherwise
+   the update ends there with nothing changed, and it is never killed. A copy running from anywhere
+   else, such as a development build, is not the one Nexus installs and is left alone;
+2. its changed files are swapped with a journal of their own, while PC Core keeps running;
+3. if it was open, it is started again and must stay up; if it does not, the previous files are put
+   back and the previous PC Assistant is started again. A PC Core rollback afterwards does not undo it.
+
+PC Assistant's own state — tasks, `pcassistant.db`, `settings.json` and logs under
+`%LOCALAPPDATA%\PcAssistant` — and Claude Code's sign-in are never touched. Neither is trust: PC Core
+connects only to the path in `PcCore:Assistant:ServerExecutable`, and PC Assistant's administrator
+helper serves only the copy it was installed from. See
+[ai-assistant.md](ai-assistant.md#moving-from-a-development-build).
 
 **Never touched:** `%LOCALAPPDATA%\Nexus` state (pairing, owner keys, settings, logs, evidence), the
 certificate stores, and any file in the install directory that no manifest listed. An edited

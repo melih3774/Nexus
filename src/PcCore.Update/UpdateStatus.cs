@@ -69,6 +69,20 @@ public sealed record UpdatePaths(string InstallDirectory, string WorkDirectory)
 
     public string InstalledRecordPath => Path.Combine(WorkDirectory, "installed.json");
 
+    /// <summary>Where PC Assistant is installed: a folder of PC Core's install directory that PC Core's own files never use.</summary>
+    public string AssistantDirectory => Path.Combine(InstallDirectory, AssistantInstall.Folder);
+
+    public string AssistantExecutable => Path.Combine(AssistantDirectory, AssistantInstall.ExecutableName);
+
+    /// <summary>PC Assistant's file swap has its own journal and backup, so each component's undo stays its own.</summary>
+    public string AssistantJournalPath => Path.Combine(WorkDirectory, "assistant-journal.json");
+
+    public string AssistantBackupDirectory => Path.Combine(WorkDirectory, "assistant-backup");
+
+    public string AssistantRecordPath => Path.Combine(WorkDirectory, "installed-assistant.json");
+
+    public InstalledAssistantRecord? ReadAssistantRecord() => TryRead<InstalledAssistantRecord>(AssistantRecordPath);
+
     public string RunnerRoot => Path.Combine(WorkDirectory, "runner");
 
     public string LogPath => Path.Combine(WorkDirectory, "updater.log");

@@ -364,7 +364,7 @@ public sealed class NexusUpdateService : IUpdateService, IDisposable
 
         try
         {
-            plan = UpdatePlanner.Plan(manifest, load.ReleaseDirectory!, _paths.InstallDirectory, installed, _probe);
+            plan = UpdatePlanner.Plan(manifest, load.ReleaseDirectory!, _paths.InstallDirectory, installed, _probe, _paths.ReadAssistantRecord());
         }
         catch (Exception ex) when (ex is UpdateIntegrityException or IOException or UnauthorizedAccessException)
         {
@@ -379,7 +379,7 @@ public sealed class NexusUpdateService : IUpdateService, IDisposable
             LatestRelease = manifest.Release,
             InstalledRelease = installed?.Release,
             PcUpdateAvailable = plan is { UpToDate: false },
-            PcChangedFiles = plan?.PcCore.Count ?? 0,
+            PcChangedFiles = (plan?.PcCore.Count ?? 0) + (plan?.Assistant.Count ?? 0),
             NeedsAdministratorApproval = plan?.NeedsElevation ?? false,
             Components = plan is null
                 ? []
@@ -387,6 +387,7 @@ public sealed class NexusUpdateService : IUpdateService, IDisposable
                 [
                     Describe(plan.SecureCapture),
                     Describe(plan.HidDriver),
+                    Describe(plan.AssistantComponent),
                 ],
             MinimumAndroidVersionCode = ClientCompatibility.MinimumAndroidVersionCode,
             State = StateWord(),

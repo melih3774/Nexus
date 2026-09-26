@@ -65,11 +65,19 @@ public sealed record UpdatePlan(
     ComponentDecision HidDriver,
     IReadOnlyList<string> PreservedFiles)
 {
+    /// <summary>PC Assistant's files to change, relative to its install folder. Empty unless its version changes.</summary>
+    public IReadOnlyList<FileChange> Assistant { get; init; } = [];
+
+    public ComponentDecision AssistantComponent { get; init; } =
+        new(AssistantInstall.ComponentName, ComponentAction.Skip, null, null, "not part of this release");
+
     public bool PcCoreChanges => PcCore.Count > 0;
+
+    public bool AssistantChanges => Assistant.Count > 0;
 
     public bool NeedsElevation => SecureCapture.Updates || HidDriver.Updates;
 
-    public bool UpToDate => !PcCoreChanges && !NeedsElevation;
+    public bool UpToDate => !PcCoreChanges && !NeedsElevation && !AssistantChanges;
 
     public string Describe()
     {
@@ -95,6 +103,11 @@ public sealed record UpdatePlan(
             parts.Add($"HID driver {HidDriver.InstalledVersion} -> {HidDriver.AvailableVersion} (needs administrator approval)");
         }
 
+        if (AssistantChanges)
+        {
+            parts.Add($"{AssistantComponent.Name} {AssistantComponent.InstalledVersion ?? "(not installed)"} -> {AssistantComponent.AvailableVersion}: {Assistant.Count} file(s)");
+        }
+
         return $"Nexus {Manifest.Version} (release {Manifest.Release}): " + string.Join(", ", parts);
     }
 }
@@ -116,6 +129,98 @@ public static class UpdatePlanner
         new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "appsettings.json" };
 
     public static UpdatePlan Plan(
+        ReleaseManifest manifest,
+        string releaseDirectory,
+        string installDirectory,
+        InstalledRecord? installed,
+        IElevatedComponentProbe probe,
+        InstalledAssistantRecord? installedAssistant = null)
+    {
+        var (assistantChanges, assistantDecision) = PlanAssistant(
+            manifest.Components.Assistant, Path.Combine(installDirectory, AssistantInstall.Folder), installedAssistant);
+
+        return PlanPcCore(manifest, releaseDirectory, installDirectory, installed, probe) with
+        {
+            Assistant = assistantChanges,
+            AssistantComponent = assistantDecision,
+        };
+    }
+
+    /// <summary>
+    /// PC Assistant is installed the first time a release carries it and replaced only when its version
+    /// changes. When it is replaced, only files whose bytes differ are copied, and only files this
+    /// updater installed before are ever removed.
+    /// </summary>
+    private static (IReadOnlyList<FileChange> Changes, ComponentDecision Decision) PlanAssistant(
+        FileSetComponent? offered,
+        string assistantDirectory,
+        InstalledAssistantRecord? installed)
+    {
+        const string Name = AssistantInstall.ComponentName;
+
+        if (offered is null)
+        {
+            return ([], new ComponentDecision(Name, ComponentAction.Skip, installed?.Version, null, "not part of this release"));
+        }
+
+        var executable = Path.Combine(assistantDirectory, AssistantInstall.ExecutableName);
+        var installedVersion = File.Exists(executable) ? installed?.Version ?? VersionOf(executable) : null;
+
+        if (installedVersion is not null && string.Equals(installedVersion, offered.Version, StringComparison.OrdinalIgnoreCase))
+        {
+            return ([], new ComponentDecision(Name, ComponentAction.Skip, installedVersion, offered.Version, "unchanged"));
+        }
+
+        var changes = new List<FileChange>();
+        var shipped = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var file in offered.Files)
+        {
+            shipped.Add(file.Path);
+
+            var target = ReleaseStore.Contained(assistantDirectory, file.Path)
+                ?? throw new UpdateIntegrityException($"{file.Path} would resolve outside PC Assistant's install folder.");
+
+            if (!File.Exists(target))
+            {
+                changes.Add(new FileChange(file.Path, FileChangeKind.Add, file.Sha256, file.Size));
+            }
+            else if (!FileHash.Matches(target, file.Sha256, file.Size))
+            {
+                changes.Add(new FileChange(file.Path, FileChangeKind.Replace, file.Sha256, file.Size));
+            }
+        }
+
+        foreach (var old in installed?.Files ?? [])
+        {
+            if (!shipped.Contains(old.Path) && ReleaseStore.Contained(assistantDirectory, old.Path) is { } path && File.Exists(path))
+            {
+                changes.Add(new FileChange(old.Path, FileChangeKind.Remove, null, 0));
+            }
+        }
+
+        return (changes, new ComponentDecision(
+            Name,
+            ComponentAction.Update,
+            installedVersion,
+            offered.Version,
+            installedVersion is null ? "not installed on this PC" : "a new version is available"));
+    }
+
+    /// <summary>The product version of an executable, without build metadata.</summary>
+    private static string? VersionOf(string executable)
+    {
+        try
+        {
+            return System.Diagnostics.FileVersionInfo.GetVersionInfo(executable).ProductVersion?.Split('+')[0];
+        }
+        catch (Exception ex) when (ex is IOException or FileNotFoundException)
+        {
+            return null;
+        }
+    }
+
+    private static UpdatePlan PlanPcCore(
         ReleaseManifest manifest,
         string releaseDirectory,
         string installDirectory,

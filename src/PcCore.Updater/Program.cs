@@ -66,7 +66,8 @@ public static class Program
             processes,
             new LoopbackHealthProbe(processes, paths.InstallDirectory, log.Write),
             new UacElevatedInstaller(log.Write),
-            log.Write);
+            log.Write,
+            new WindowsAssistantControl(log.Write));
 
         if (args.Contains("--check"))
         {
@@ -78,7 +79,12 @@ public static class Program
                 log.Write($"  {change.Kind,-7} {change.Path}");
             }
 
-            foreach (var decision in plan is null ? [] : new[] { plan.SecureCapture, plan.HidDriver })
+            foreach (var change in plan?.Assistant ?? [])
+            {
+                log.Write($"  {change.Kind,-7} {AssistantInstall.Folder}/{change.Path}");
+            }
+
+            foreach (var decision in plan is null ? [] : new[] { plan.SecureCapture, plan.HidDriver, plan.AssistantComponent })
             {
                 log.Write($"  {decision.Name}: {decision.Action} ({decision.Reason}; installed {decision.InstalledVersion ?? "-"}, release {decision.AvailableVersion ?? "-"})");
             }
@@ -144,6 +150,7 @@ public static class Program
 
         Attempt(() => log.Write($"The updater failed unexpectedly: {ex}"));
         Attempt(() => stuck = new PcCoreFileSwap(paths.JournalPath, log.Write).RollBack());
+        Attempt(() => stuck = [.. stuck, .. new PcCoreFileSwap(paths.AssistantJournalPath, log.Write).RollBack()]);
 
         Attempt(() =>
         {

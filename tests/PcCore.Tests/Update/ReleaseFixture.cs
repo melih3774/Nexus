@@ -68,7 +68,8 @@ internal sealed class ReleaseFixture : IDisposable
         IReadOnlyDictionary<string, string> pcCore,
         (string Version, IReadOnlyDictionary<string, string> Files)? secureCapture = null,
         (string Version, IReadOnlyDictionary<string, string> Files)? driver = null,
-        (int VersionCode, byte[] Bytes)? android = null)
+        (int VersionCode, byte[] Bytes)? android = null,
+        (string Version, IReadOnlyDictionary<string, string> Files)? assistant = null)
     {
         var directory = Path.Combine(Store.Root, release.ToString(System.Globalization.CultureInfo.InvariantCulture));
 
@@ -83,6 +84,7 @@ internal sealed class ReleaseFixture : IDisposable
                 PcCore = WriteFileSet(directory, "pccore", version, pcCore),
                 SecureCapture = secureCapture is { } sc ? WriteFileSet(directory, "securecapture", sc.Version, sc.Files) : null,
                 HidDriver = driver is { } d ? WriteFileSet(directory, "driver", d.Version, d.Files) : null,
+                Assistant = assistant is { } a ? WriteFileSet(directory, "assistant", a.Version, a.Files) : null,
                 Android = android is { } apk ? WriteApk(directory, version, apk.VersionCode, apk.Bytes) : null,
             },
         };
@@ -111,6 +113,15 @@ internal sealed class ReleaseFixture : IDisposable
         foreach (var (path, content) in files)
         {
             Write(Path.Combine(Paths.InstallDirectory, path.Replace('/', '\\')), content);
+        }
+    }
+
+    /// <summary>Lays PC Assistant files into its install folder, as a previous install left them.</summary>
+    public void InstallAssistant(IReadOnlyDictionary<string, string> files)
+    {
+        foreach (var (path, content) in files)
+        {
+            Write(Path.Combine(Paths.AssistantDirectory, path.Replace('/', '\\')), content);
         }
     }
 
@@ -202,6 +213,68 @@ internal sealed class FakeProcesses(string installedExecutable) : INexusProcessC
         var id = ++_nextId;
         Events.Add($"start {File.ReadAllText(executable)}");
         Running.Add(new RunningPcCore(id, executable));
+        return id;
+    }
+
+    public bool IsRunning(int processId) => Running.Any(p => p.ProcessId == processId);
+
+    public void Kill(int processId)
+    {
+        Events.Add($"kill {processId}");
+        Running.RemoveAll(p => p.ProcessId == processId);
+    }
+}
+
+/// <summary>
+/// PC Assistant as pretend processes. Each start records the text of the executable it started, so a
+/// test can tell which version came up; whether it then stays up is the test's decision.
+/// </summary>
+internal sealed class FakeAssistant : IAssistantProcessControl
+{
+    private int _nextId = 5000;
+
+    public List<RunningPcCore> Running { get; } = [];
+
+    public List<string> Events { get; } = [];
+
+    /// <summary>What a running PC Assistant answers when asked to close: false is "a task is running".</summary>
+    public bool AgreesToClose { get; set; } = true;
+
+    /// <summary>Per start, in order, whether it stays up. Starts beyond the list stay up.</summary>
+    public Queue<bool> StartsStayUp { get; } = new();
+
+    public RunningPcCore RunFrom(string executable)
+    {
+        var process = new RunningPcCore(++_nextId, executable);
+        Running.Add(process);
+        return process;
+    }
+
+    public IReadOnlyList<RunningPcCore> FindRunning() => [.. Running];
+
+    public Task<bool> AskToCloseAsync(RunningPcCore process, string executable, TimeSpan grace, CancellationToken cancellationToken)
+    {
+        Events.Add($"ask {process.ProcessId}");
+
+        if (!AgreesToClose)
+        {
+            return Task.FromResult(false);
+        }
+
+        Running.RemoveAll(p => p.ProcessId == process.ProcessId);
+        return Task.FromResult(true);
+    }
+
+    public int Start(string executable)
+    {
+        var id = ++_nextId;
+        Events.Add($"start {File.ReadAllText(executable)}");
+
+        if (!StartsStayUp.TryDequeue(out var staysUp) || staysUp)
+        {
+            Running.Add(new RunningPcCore(id, executable));
+        }
+
         return id;
     }
 

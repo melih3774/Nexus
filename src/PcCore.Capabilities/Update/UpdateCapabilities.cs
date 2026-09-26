@@ -90,12 +90,12 @@ public sealed record UpdateCheckResult
     /// <summary>Whether installing the current release would change anything on this PC.</summary>
     public bool PcUpdateAvailable { get; init; }
 
-    /// <summary>How many PC Core files an update would add, replace or remove. Local callers only.</summary>
+    /// <summary>How many PC Core and PC Assistant files an update would add, replace or remove. Local callers only.</summary>
     public int PcChangedFiles { get; init; }
 
     public bool NeedsAdministratorApproval { get; init; }
 
-    /// <summary>SecureCapture and the HID driver. Local callers only.</summary>
+    /// <summary>SecureCapture, the HID driver and PC Assistant. Local callers only.</summary>
     public IReadOnlyList<ElevatedComponentInfo> Components { get; init; } = [];
 
     public AndroidUpdateInfo? Android { get; init; }

@@ -8,12 +8,15 @@
 
     What it does, in order:
       1. Reads the versions: product (Directory.Build.props), SecureCapture (its csproj), HID driver
-         (the signed canonical package in artifacts\NexusHidPackage).
-      2. Builds PC Core, the input broker and the updater (dotnet publish), and SecureCapture.
+         (the signed canonical package in artifacts\NexusHidPackage), PC Assistant
+         (src\Assistant\Directory.Build.props).
+      2. Builds PC Core, the input broker and the updater (dotnet publish), and SecureCapture. Builds
+         PC Assistant from a clean copy of its sources - only if they changed since the last release;
+         otherwise the previous release's PC Assistant is carried forward byte for byte.
       3. Builds the signed Android release APK - only if the Android sources changed since the last
          release; otherwise the previous APK is carried forward unchanged, so the phone is not offered
          an "update" that changes nothing.
-      4. Refuses to publish a changed SecureCapture or driver under an unchanged version, and an APK
+      4. Refuses to publish a changed SecureCapture, driver or PC Assistant under an unchanged version, and an APK
          signed by a different key than the last release's.
       5. Hashes every file, writes manifest.json, moves the release into
          %LOCALAPPDATA%\Nexus\Releases\<release>, and only then points latest.json at it.
@@ -216,6 +219,66 @@ try {
 
     Note "version $secureVersion$(if ($previousSecure -and $previousSecure.version -eq $secureVersion) { ' (unchanged)' } else { '' })"
 
+    # ------------------------------------------------------------------------------------- PC Assistant
+
+    Step 'PC Assistant'
+
+    [xml] $assistantProps = Get-Content (Join-Path $repo 'src\Assistant\Directory.Build.props')
+    $assistantVersion = ($assistantProps.Project.PropertyGroup | ForEach-Object { $_.Version } | Where-Object { $_ } | Select-Object -First 1)
+
+    # What the app is built from - not its tests or docs, which change nothing that is installed.
+    $assistantInputs = @('src/Assistant/src', 'src/Assistant/.claude', 'src/Assistant/Directory.Build.props', 'src/Assistant/global.json')
+    $assistantFingerprint = Get-SourceFingerprint $assistantInputs
+    $previousAssistant = Get-Property (Get-Property $previous.Manifest 'components') 'assistant'
+    $previousAssistantDir = if ($previousAssistant) { Join-Path $previous.Directory $previousAssistant.directory } else { $null }
+    $assistantDir = Join-Path $work 'assistant'
+
+    if ($previousAssistant -and $previousAssistant.fingerprint -eq $assistantFingerprint -and (Test-Path $previousAssistantDir)) {
+        # Unchanged source ships the previous release's bytes. A rebuild would differ in its build
+        # identity alone, and an installed PC Assistant is compared by version, so it would never be
+        # installed - but the manifest would describe files that are not on the owner's PC.
+        Copy-Item $previousAssistantDir $assistantDir -Recurse
+        Note "unchanged: carrying PC Assistant $($previousAssistant.version) forward"
+    }
+    else {
+        if ($previousAssistant -and $previousAssistant.version -eq $assistantVersion) {
+            throw "PC Assistant changed since release $previousRelease but is still version $assistantVersion. " +
+                  'Bump <Version> in src\Assistant\Directory.Build.props - an unchanged version is never installed.'
+        }
+
+        # Built from a copy of its sources rather than in place. The build copies the PC tools server,
+        # the hook host and the elevation payload into its output after compiling, so an output folder
+        # that has been built before can hold files no current build produces - and the in-place output
+        # is what a development PC Assistant runs from, and may be locked by it.
+        $assistantSource = Join-Path $work '.assistant-source'
+        foreach ($file in @(git -C $repo ls-files -co --exclude-standard -- $assistantInputs)) {
+            $from = Join-Path $repo $file
+            if (-not (Test-Path -LiteralPath $from -PathType Leaf)) { continue }
+            $to = Join-Path $assistantSource $file
+            New-Item -ItemType Directory -Force (Split-Path -Parent $to) | Out-Null
+            Copy-Item -LiteralPath $from $to
+        }
+
+        $desktop = Join-Path $assistantSource 'src\Assistant\src\PcAssistant.Desktop'
+        Note "dotnet build src\Assistant\src\PcAssistant.Desktop (version $assistantVersion)"
+        Invoke-Native 'Building PC Assistant' { dotnet build $desktop -c Release --nologo -v q }
+
+        Copy-Item (Join-Path $desktop 'bin\Release\net10.0-windows') $assistantDir -Recurse
+        Remove-Item -Recurse -Force $assistantSource
+        Note "version $assistantVersion, built"
+    }
+
+    foreach ($required in 'PcAssistant.Desktop.exe', 'PcAssistantSkill.md', 'PcAssistant.HookHost.exe', 'PcTools\PcAssistant.PcTools.exe', 'Elevation\PcAssistant.Elevation.Host.exe') {
+        if (-not (Test-Path (Join-Path $assistantDir $required))) { throw "The PC Assistant build has no $required." }
+    }
+
+    $assistantComponent = [ordered] @{
+        version     = $assistantVersion
+        fingerprint = $assistantFingerprint
+        directory   = 'assistant'
+        files       = Get-FileEntries $assistantDir
+    }
+
     # --------------------------------------------------------------------------------------- HID driver
 
     Step 'HID driver'
@@ -371,14 +434,16 @@ try {
     $secureChanged = -not $previousSecure -or $previousSecure.version -ne $secureVersion
     $driverChanged = ($null -ne $driverComponent) -and (-not (Get-Property (Get-Property $previous.Manifest 'components') 'hid_driver') -or $previous.Manifest.components.hid_driver.version -ne $driverComponent.version)
     $androidChanged = ($null -ne $androidComponent) -and (-not $previousAndroid -or [int] $previousAndroid.version_code -ne $androidComponent.version_code)
+    $assistantChanged = -not $previousAssistant -or $previousAssistant.version -ne $assistantVersion
 
     Step 'Summary'
     Note ("PC Core        {0}" -f $(if ($pcChanged) { 'changed' } else { 'unchanged' }))
     Note ("SecureCapture  {0} {1}" -f $secureVersion, $(if ($secureChanged) { 'changed' } else { 'unchanged' }))
     Note ("HID driver     {0}" -f $(if ($driverComponent) { "$($driverComponent.version) $(if ($driverChanged) { 'changed' } else { 'unchanged' })" } else { 'not included' }))
+    Note ("PC Assistant   {0} {1}" -f $assistantVersion, $(if ($assistantChanged) { 'changed' } else { 'unchanged' }))
     Note ("Android        {0}" -f $(if ($androidComponent) { "$($androidComponent.version_name) ($($androidComponent.version_code)) $(if ($androidChanged) { 'changed' } else { 'unchanged' })" } else { 'not included' }))
 
-    if ($previous -and -not $Force -and -not ($pcChanged -or $secureChanged -or $driverChanged -or $androidChanged)) {
+    if ($previous -and -not $Force -and -not ($pcChanged -or $secureChanged -or $driverChanged -or $assistantChanged -or $androidChanged)) {
         Note "Nothing changed since release $previousRelease; nothing was published. (-Force publishes anyway.)"
         Remove-Item -Recurse -Force $work
         $work = $null
@@ -394,6 +459,7 @@ try {
             secure_capture = [ordered] @{ version = $secureVersion; fingerprint = $secureFingerprint; directory = 'securecapture'; files = (Get-FileEntries $secureDir) }
         }
         if ($driverComponent) { $components.hid_driver = $driverComponent }
+        $components.assistant = $assistantComponent
         if ($androidComponent) { $components.android = $androidComponent }
 
         $manifest = [ordered] @{
