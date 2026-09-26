@@ -623,7 +623,18 @@ real packages (release 24's 0.9.2.0, release 26's 0.9.2.2, 0.9.2.3):
 | forced damage (non-configurable 0.9.2.2 over 0.9.2.0) | cleanup emptied the registration; the check caught it; reapplying repaired it |
 | rollback 0.9.2.3 -> 0.9.2.2 from release 26's payload | bound by force, healthy; deleting 0.9.2.3 emptied the registration, reapplying repaired it; one package left |
 
-The sandbox also showed something this PC hides: `NexusHidDriver.dll` imports `VCRUNTIME140.dll`. Without
-the Visual C++ redistributable the UMDF host cannot load it (`0x8007007E`) and the device comes up as
-`vhf, PnpManager`, the same silent symptom. The tests gave the sandbox the runtime this PC has; linking
-the runtime statically is a separate change.
+The sandbox also showed something this PC hides: `NexusHidDriver.dll` imported `VCRUNTIME140.dll` (for
+`memset`, `memcpy` and `__C_specific_handler`). Without the Visual C++ redistributable the UMDF host could
+not load it (`0x8007007E`, DriverFrameworks event 2007) and the device came up as `vhf, PnpManager`, the
+same silent symptom; it worked here only because the redistributable is installed. The project builds
+with plain v143, whose default is the DLL runtime (`/MD`), where the WDK's own driver build forces the
+static one for user-mode drivers (`SetHybridCrtCl` in `WindowsDriver.Common.targets`).
+
+**0.9.2.3 links it in.** Release uses the WDK's hybrid CRT: vcruntime static (`/MT`), the Universal CRT
+from Windows' own `ucrtbase.dll` through the `api-ms-win-crt-*` sets, inbox since Windows 10. Its
+imports are VhfUm, ntdll, KERNEL32 and those sets; the DLL is 166 KB. (Linking the UCRT statically as well
+made it 677 KB for nothing.) Debug keeps both static, because `ucrtbased.dll` exists only where the SDK
+does. `tools/validate-driver-package.ps1` lists the imports after the build and refuses anything else,
+and `NexusHidPackageTests` hold the project to the setting. In a sandbox with no redistributable,
+0.9.2.3 loads (events 2004, 2010) with the stack `WUDFRd, vhf, PnpManager`, and 0.9.2.0 upgrades to it
+healthy; the lifecycle paths in the table above give the same results with this build.

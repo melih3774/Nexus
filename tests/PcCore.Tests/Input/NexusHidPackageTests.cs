@@ -260,6 +260,52 @@ public sealed class NexusHidPackageTests
     }
 
     /// <summary>
+    /// The driver links the C runtime in rather than loading it, so it needs nothing Windows does not
+    /// ship.
+    /// <para>
+    /// v143 defaults to the DLL runtime (/MD), and until 0.9.2.3 NexusHidDriver.dll imported
+    /// VCRUNTIME140.dll - a Visual C++ redistributable file. On a machine without it WUDFHost failed to
+    /// load the driver (0x8007007E), the reflector detached without a problem code and the device ran
+    /// as vhf alone. It worked on the development PC only because the redistributable happened to be
+    /// installed. Release uses the hybrid CRT the WDK links user-mode drivers with: vcruntime static,
+    /// the Universal CRT from Windows' own ucrtbase.dll. Debug keeps both static, because ucrtbased.dll
+    /// exists only where the SDK does.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void TheDriverLinksTheCRuntimeInsteadOfImportingTheRedistributable()
+    {
+        var project = File.ReadAllText(Path.Combine(DriverDirectory(), "NexusHidDriver.vcxproj"));
+
+        Assert.Matches(@"<RuntimeLibrary Condition=""'\$\(Configuration\)'=='Release'"">MultiThreaded</RuntimeLibrary>", project);
+        Assert.Matches(@"<RuntimeLibrary Condition=""'\$\(Configuration\)'=='Debug'"">MultiThreadedDebug</RuntimeLibrary>", project);
+        Assert.DoesNotContain("MultiThreadedDLL", project, StringComparison.Ordinal);
+        Assert.DoesNotContain("MultiThreadedDebugDLL", project, StringComparison.Ordinal);
+
+        Assert.Matches(@"<IgnoreSpecificDefaultLibraries Condition=""'\$\(Configuration\)'=='Release'"">libucrt\.lib;", project);
+        Assert.Matches(@"<AdditionalDependencies Condition=""'\$\(Configuration\)'=='Release'"">ucrt\.lib;", project);
+        Assert.DoesNotContain("ucrtd.lib", project, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The package build checks the result, not just the setting: it lists the DLL's imports and
+    /// refuses anything but VhfUm, the core system DLLs and the inbox Universal CRT.
+    /// </summary>
+    [Fact]
+    public void ThePackageBuildRefusesADriverThatImportsANonWindowsDll()
+    {
+        var script = File.ReadAllText(Path.Combine(RepositoryRoot(), "tools", "validate-driver-package.ps1"));
+
+        Assert.Contains("/dependents", script, StringComparison.Ordinal);
+        Assert.Contains("$system = @('VhfUm.dll', 'ntdll.dll', 'KERNEL32.dll')", script, StringComparison.Ordinal);
+        Assert.Contains("-notlike 'api-ms-win-crt-*'", script, StringComparison.Ordinal);
+        Assert.Matches(@"if \(\$foreign\.Count -gt 0\) \{\s*throw", script);
+
+        // Checked before staging, so a package with a foreign import is never produced.
+        Assert.True(script.IndexOf("== Imports ==", StringComparison.Ordinal) < script.IndexOf("== Staging ==", StringComparison.Ordinal));
+    }
+
+    /// <summary>
     /// The version the driver reports over IOCTL_NEXUS_HID_GET_VERSION and the DriverVer the package
     /// is stamped with are the same number, written twice.
     /// </summary>

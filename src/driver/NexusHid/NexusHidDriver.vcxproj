@@ -24,6 +24,10 @@
   verified, just not by MSBuild. If full Visual Studio is ever installed, switching PlatformToolset
   back to WindowsApplicationForDrivers10.0 and dropping the explicit paths below restores the
   standard build with no source change.
+
+  One thing the driver toolset does that v143 does not is choose the C runtime: it links it
+  statically for user-mode drivers. v143's /MD default made this DLL import VCRUNTIME140.dll, which
+  Windows does not ship, so RuntimeLibrary and the hybrid-CRT link below are set here explicitly.
 -->
 <Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
 
@@ -81,6 +85,16 @@
         purpose. Suppressed rather than lowering the warning level, so our own code keeps /W4.
       -->
       <DisableSpecificWarnings>4324</DisableSpecificWarnings>
+      <!--
+        The C runtime is linked in, not loaded. v143's default is the DLL runtime (/MD), which makes
+        NexusHidDriver.dll import VCRUNTIME140.dll - a Visual C++ redistributable file Windows does not
+        ship. Without it WUDFHost cannot load the driver (0x8007007E), the reflector detaches without a
+        problem code, and the device runs as vhf alone. The WDK's own driver build forces this for user-
+        mode drivers (SetHybridCrtCl in WindowsDriver.Common.targets), so this is the standard build,
+        not a workaround. tools/validate-driver-package.ps1 refuses any non-system import.
+      -->
+      <RuntimeLibrary Condition="'$(Configuration)'=='Release'">MultiThreaded</RuntimeLibrary>
+      <RuntimeLibrary Condition="'$(Configuration)'=='Debug'">MultiThreadedDebug</RuntimeLibrary>
       <PreprocessorDefinitions>UMDF_USING_NTSTATUS;UMDF_VERSION_MAJOR=2;UMDF_VERSION_MINOR=33;_UNICODE;UNICODE;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>$(ProjectDir);$(WdkRoot)\Include\wdf\umdf\$(UmdfVersion);$(WdkRoot)\Include\$(WdkVersion)\shared;$(WdkRoot)\Include\$(WdkVersion)\um;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <CompileAs>CompileAsC</CompileAs>
@@ -96,6 +110,15 @@
         worker. The WDK driver toolset links it implicitly; building with v143 means naming it.
       -->
       <AdditionalDependencies>WdfDriverStubUm.lib;VhfUm.lib;ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <!--
+        The hybrid CRT, as the WDK links user-mode drivers (SetHybridCrtLink): the compiler runtime
+        (vcruntime) static, per RuntimeLibrary above, and the Universal CRT from Windows' own
+        ucrtbase.dll, which every Windows 10 and 11 machine has. Linking the UCRT statically as well
+        grew the DLL from 48 KB to 677 KB for no benefit. Debug keeps the UCRT static too: its DLL
+        form, ucrtbased.dll, exists only where the SDK is installed.
+      -->
+      <IgnoreSpecificDefaultLibraries Condition="'$(Configuration)'=='Release'">libucrt.lib;%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <AdditionalDependencies Condition="'$(Configuration)'=='Release'">ucrt.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <SubSystem>Windows</SubSystem>
     </Link>
   </ItemDefinitionGroup>

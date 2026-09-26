@@ -50,8 +50,9 @@ $project = Join-Path $driverDir 'NexusHidDriver.vcxproj'
 #
 # 0.9.2.2 is the power-management fix: the INF stops loading vhf a second time and the driver gives
 # up power policy ownership to it. 0.9.2.3 is the same driver in a declarative package again (no
-# DelReg), so the Driver Store reference-counts its UMDF registration. It must match
-# NEXUS_HID_DRIVER_VERSION in Driver.c.
+# DelReg), so the Driver Store reference-counts its UMDF registration, and with the C runtime linked in
+# rather than imported from the Visual C++ redistributable. It must match NEXUS_HID_DRIVER_VERSION in
+# Driver.c.
 $driverVersion = '0.9.2.3'
 
 function Find-Tool {
@@ -80,6 +81,17 @@ function Find-MSBuild {
     throw 'MSBuild not found.'
 }
 
+function Find-Dumpbin {
+    # Beside the compiler that just built the driver: <VS>\VC\Tools\MSVC\<version>\bin\Hostx64\x64.
+    $vs = Split-Path (Split-Path (Split-Path (Split-Path (Split-Path (Find-MSBuild)))))
+    $hit = Get-ChildItem -Path (Join-Path $vs 'VC\Tools\MSVC') -Recurse -Filter 'dumpbin.exe' -ErrorAction SilentlyContinue |
+           Where-Object { $_.FullName -like '*\Hostx64\x64\*' } |
+           Sort-Object FullName -Descending |
+           Select-Object -First 1
+    if ($null -eq $hit) { throw "dumpbin.exe not found under $vs\VC\Tools\MSVC." }
+    return $hit.FullName
+}
+
 Write-Output '== Building the driver =='
 $msbuild = Find-MSBuild
 & $msbuild $project "-p:Configuration=$Configuration" -p:Platform=x64 -v:minimal -nologo
@@ -87,6 +99,24 @@ if ($LASTEXITCODE -ne 0) { throw "driver build failed ($LASTEXITCODE)" }
 
 $dll = Join-Path $driverDir "x64\$Configuration\NexusHidDriver.dll"
 if (-not (Test-Path $dll)) { throw "expected output missing: $dll" }
+
+Write-Output '== Imports =='
+# WUDFHost loads the driver on machines that have nothing but Windows. Every DLL it imports must be one
+# Windows ships: VhfUm and the core system DLLs, and the Universal CRT's api-ms-win-crt-* sets (inbox
+# since Windows 10). VCRUNTIME140.dll is the one this refuses in practice - a /MD build imports it, and
+# without the Visual C++ redistributable the driver never loads and the device silently runs as vhf.
+$dumpbin = Find-Dumpbin
+$imports = & $dumpbin /nologo /dependents $dll |
+           Where-Object { $_ -match '^\s+(\S+\.dll)\s*$' } |
+           ForEach-Object { $Matches[1] }
+if ($LASTEXITCODE -ne 0 -or $imports.Count -eq 0) { throw "dumpbin could not list the imports of $dll" }
+
+$system = @('VhfUm.dll', 'ntdll.dll', 'KERNEL32.dll')
+$foreign = @($imports | Where-Object { $system -notcontains $_ -and $_ -notlike 'api-ms-win-crt-*' })
+$imports | ForEach-Object { Write-Output "   $_" }
+if ($foreign.Count -gt 0) {
+    throw "NexusHidDriver.dll imports DLLs Windows does not ship: $($foreign -join ', '). Link the C runtime statically (RuntimeLibrary MultiThreaded in NexusHidDriver.vcxproj)."
+}
 
 Write-Output '== Staging =='
 # The canonical package directory. Git-ignored, so a stamped INF and a signed catalog never reach a
