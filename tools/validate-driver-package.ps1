@@ -51,9 +51,10 @@ $project = Join-Path $driverDir 'NexusHidDriver.vcxproj'
 # 0.9.2.2 is the power-management fix: the INF stops loading vhf a second time and the driver gives
 # up power policy ownership to it. 0.9.2.3 is the same driver in a declarative package again (no
 # DelReg), so the Driver Store reference-counts its UMDF registration, and with the C runtime linked in
-# rather than imported from the Visual C++ redistributable. It must match NEXUS_HID_DRIVER_VERSION in
+# rather than imported from the Visual C++ redistributable. 0.9.2.4 changes nothing but the number: it
+# exists to prove on a real PC that a driver update loads at once. It must match NEXUS_HID_DRIVER_VERSION in
 # Driver.c.
-$driverVersion = '0.9.2.3'
+$driverVersion = '0.9.2.4'
 
 function Find-Tool {
     param([string] $Name, [string[]] $PreferredArch = @('x64', 'x86'))
