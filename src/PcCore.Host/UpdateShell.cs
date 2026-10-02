@@ -43,6 +43,7 @@ internal static class UpdateShell
     {
         UpdateState.Succeeded when status.Message?.StartsWith("Updated", StringComparison.Ordinal) == true
             => ("Nexus updated", status.Message),
+        UpdateState.RestartRequired => ("Restart Windows to finish the Nexus update", status.Message ?? "The new HID driver runs after a restart."),
         UpdateState.RolledBack => ("Nexus update rolled back", status.Message ?? "The previous version was restored."),
         UpdateState.Failed => ("Nexus update failed", status.Message ?? "The update did not complete."),
         _ => null,

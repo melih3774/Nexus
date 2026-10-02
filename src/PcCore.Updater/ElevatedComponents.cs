@@ -19,8 +19,15 @@ internal sealed class UacElevatedInstaller(Action<string> log) : IElevatedInstal
 {
     private const int ErrorCancelled = 1223;
 
-    public async Task<ElevatedResult> InstallAsync(UpdatePlan plan, string stagedReleaseDirectory, CancellationToken cancellationToken)
+    public async Task<ElevatedResult> InstallAsync(
+        UpdatePlan plan,
+        string stagedReleaseDirectory,
+        Func<CancellationToken, Task> releaseHidDevice,
+        CancellationToken cancellationToken)
     {
+        // Only a driver update needs the device let go of; nothing else stops PC Core before the swap.
+        using var handoff = plan.HidDriver.Updates ? HidDeviceHandoff.Create() : null;
+
         var arguments = string.Join(' ', new[]
         {
             "--elevated",
@@ -28,6 +35,7 @@ internal sealed class UacElevatedInstaller(Action<string> log) : IElevatedInstal
             "--release", plan.Manifest.Release.ToString(CultureInfo.InvariantCulture),
             plan.SecureCapture.Updates ? "--secure-capture" : null,
             plan.HidDriver.Updates ? "--hid-driver" : null,
+            handoff is null ? null : $"--hid-handoff {handoff.Id}",
         }.Where(a => a is not null));
 
         log("Requesting administrator approval (UAC).");
@@ -42,11 +50,42 @@ internal sealed class UacElevatedInstaller(Action<string> log) : IElevatedInstal
                 WindowStyle = ProcessWindowStyle.Hidden,
             }) ?? throw new InvalidOperationException("Windows did not start the elevated updater.");
 
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            var exited = process.WaitForExitAsync(cancellationToken);
 
-            return process.ExitCode == 0
-                ? new ElevatedResult(ElevatedOutcome.Succeeded, "done")
-                : new ElevatedResult(ElevatedOutcome.Failed, ElevatedInstall.LastLogLine() ?? $"exit code {process.ExitCode}");
+            if (handoff is not null)
+            {
+                using var stopWaiting = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                var requested = handoff.WhenRequestedAsync(stopWaiting.Token);
+
+                if (await Task.WhenAny(exited, requested).ConfigureAwait(false) == requested && requested.IsCompletedSuccessfully)
+                {
+                    try
+                    {
+                        await releaseHidDevice(cancellationToken).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        // Answered even if stopping PC Core went wrong: the elevated half then finds the
+                        // device still held, and says a restart is needed, instead of waiting it out.
+                        handoff.Release();
+                    }
+                }
+
+                await stopWaiting.CancelAsync().ConfigureAwait(false);
+            }
+
+            await exited.ConfigureAwait(false);
+
+            return process.ExitCode switch
+            {
+                0 => new ElevatedResult(ElevatedOutcome.Succeeded, "done"),
+                ElevatedInstall.RestartRequiredExitCode => new ElevatedResult(
+                    ElevatedOutcome.Succeeded, ElevatedInstall.LastLogLine() ?? "Windows needs a restart to load the new HID driver.")
+                {
+                    RestartRequired = true,
+                },
+                _ => new ElevatedResult(ElevatedOutcome.Failed, ElevatedInstall.LastLogLine() ?? $"exit code {process.ExitCode}"),
+            };
         }
         catch (Win32Exception ex) when (ex.NativeErrorCode == ErrorCancelled)
         {
@@ -75,6 +114,18 @@ internal sealed class UacElevatedInstaller(Action<string> log) : IElevatedInstal
 /// </summary>
 internal static class ElevatedInstall
 {
+    /// <summary>
+    /// ERROR_SUCCESS_REBOOT_REQUIRED, as pnputil and msiexec use it: everything was installed, and the
+    /// new HID driver runs only after Windows restarts. The last log line says what runs until then.
+    /// </summary>
+    public const int RestartRequiredExitCode = 3010;
+
+    /// <summary>
+    /// How long to wait for the unelevated half to stop PC Core. Its own limit is the stop grace period
+    /// and a kill; past this, the driver is installed anyway and Windows says whether it needs a restart.
+    /// </summary>
+    private static readonly TimeSpan HandoffTimeout = TimeSpan.FromMinutes(2);
+
     private static string UpdatesRoot => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Nexus", "Updates");
 
@@ -83,7 +134,11 @@ internal static class ElevatedInstall
     private static string SecureCaptureInstallDirectory => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Nexus", "SecureCapture");
 
-    public static int Run(string staged, int release, bool secureCapture, bool hidDriver)
+    /// <param name="hidHandoff">
+    /// Where to ask the unelevated half to stop PC Core before the driver is replaced; null when it was
+    /// not offered, such as when this half is run on its own.
+    /// </param>
+    public static int Run(string staged, int release, bool secureCapture, bool hidDriver, string? hidHandoff)
     {
         using var identity = WindowsIdentity.GetCurrent();
 
@@ -120,19 +175,35 @@ internal static class ElevatedInstall
                 InstallSecureCapture(component, CopyVerified(component, Path.Combine(staged, ReleaseStager.SecureCaptureFolder), Path.Combine(work, "securecapture")), probe);
             }
 
+            string? waitingForRestart = null;
+
             if (hidDriver)
             {
                 var component = manifest.Components.HidDriver
                     ?? throw new UpdateIntegrityException("This release has no HID driver.");
 
                 var previous = RollbackDriver(staged, probe);
+                var target = HidDriverLifecycle.PayloadFrom(component, CopyVerified(component, Path.Combine(staged, ReleaseStager.HidDriverFolder), Path.Combine(work, "driver")));
+                var rollback = HidDriverLifecycle.PayloadFrom(previous, CopyVerified(previous, Path.Combine(staged, ReleaseStager.HidDriverRollbackFolder), Path.Combine(work, "driver-rollback")));
 
-                InstallDriver(
-                    HidDriverLifecycle.PayloadFrom(component, CopyVerified(component, Path.Combine(staged, ReleaseStager.HidDriverFolder), Path.Combine(work, "driver"))),
-                    HidDriverLifecycle.PayloadFrom(previous, CopyVerified(previous, Path.Combine(staged, ReleaseStager.HidDriverRollbackFolder), Path.Combine(work, "driver-rollback"))));
+                // Everything that could fail without consequence is done; now Nexus lets go of the device.
+                ReleaseDevice(hidHandoff);
+
+                var outcome = InstallDriver(target, rollback);
+                waitingForRestart = outcome.RestartRequired ? outcome.Detail : null;
             }
 
             DeleteDirectory(work);
+
+            if (waitingForRestart is not null)
+            {
+                Log("Elevated update finished; the new HID driver waits for Windows to restart.");
+
+                // Last, because the unelevated half reports the last line.
+                Log(waitingForRestart);
+                return RestartRequiredExitCode;
+            }
+
             Log("Elevated update finished.");
             return 0;
         }
@@ -237,7 +308,7 @@ internal static class ElevatedInstall
     /// Updates the existing Nexus devnode in place. It never creates a second root device, which is the
     /// one mistake the original install notes warn about most.
     /// </summary>
-    private static void InstallDriver(DriverPayload target, DriverPayload previous)
+    private static HidDriverOutcome InstallDriver(DriverPayload target, DriverPayload previous)
     {
         var outcome = new HidDriverLifecycle(new WindowsHidDriverHost(), Log).Update(target, previous);
 
@@ -246,12 +317,46 @@ internal static class ElevatedInstall
             Log("Nexus driver packages Windows would not remove: " + string.Join(", ", outcome.StalePackagesLeft));
         }
 
-        Log(outcome.Detail);
+        // A driver waiting for a restart is said last, by Run, because the unelevated half reports the last line.
+        if (!outcome.RestartRequired)
+        {
+            Log(outcome.Detail);
+        }
 
         if (outcome.Kind != HidDriverOutcomeKind.Updated)
         {
             throw new InvalidOperationException(outcome.Detail);
         }
+
+        return outcome;
+    }
+
+    /// <summary>
+    /// Asks the unelevated half to stop PC Core, which holds the Nexus HID device open, and waits until
+    /// it has. Without an answer the driver is installed anyway: the lifecycle then sees whether Windows
+    /// could load it, and the outcome says if it could not.
+    /// </summary>
+    private static void ReleaseDevice(string? id)
+    {
+        if (id is null)
+        {
+            Log("No handoff was offered, so nothing was asked to let go of the HID device before the driver update.");
+            return;
+        }
+
+        using var handoff = HidDeviceHandoff.Open(id);
+
+        if (handoff is null)
+        {
+            Log("The HID device handoff could not be opened; updating the driver without it.");
+            return;
+        }
+
+        Log("Asking the updater to stop PC Core, which holds the Nexus HID device open.");
+
+        Log(handoff.Request(HandoffTimeout)
+            ? "PC Core has let go of the HID device."
+            : $"No answer within {HandoffTimeout.TotalMinutes:0} minutes; updating the driver anyway.");
     }
 
     private static (int Code, string Output) RunTool(string executable, string arguments)

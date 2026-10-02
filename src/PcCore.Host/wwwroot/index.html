@@ -267,7 +267,7 @@ async function checkUpdates() {
   else text += ' · up to date';
 
   if (r.android) text += ` · phone app ${r.android.version_name} (${r.android.version_code})`;
-  if (!busy && r.message && (r.state === 'failed' || r.state === 'rolled_back')) text += ` · last update: ${r.message}`;
+  if (!busy && r.message && (r.state === 'failed' || r.state === 'rolled_back' || r.state === 'restart_required')) text += ` · last update: ${r.message}`;
 
   box.textContent = text;
   install.disabled = busy || !r.pc_update_available;

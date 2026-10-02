@@ -638,3 +638,71 @@ does. `tools/validate-driver-package.ps1` lists the imports after the build and 
 and `NexusHidPackageTests` hold the project to the setting. In a sandbox with no redistributable,
 0.9.2.3 loads (events 2004, 2010) with the stack `WUDFRd, vhf, PnpManager`, and 0.9.2.0 upgrades to it
 healthy; the lifecycle paths in the table above give the same results with this build.
+
+## 13.11 Bound is not running: release 27 left 0.9.2.2 loaded until the next restart
+
+Release 27 updated this PC from 0.9.2.2 to 0.9.2.3 and reported "Updated to Nexus 1.5.0". The new driver
+did not run until Windows restarted: PC Core logged `Nexus HID 9.2.2` after the update and `9.2.3` only
+after the reboot that evening.
+
+Why: the elevated driver step ran while the old PC Core still had the control device open. SetupAPI logged
+`Query-removal during install of 'ROOT\DEVGEN\NEXUSHID' was vetoed ... (veto type 5:
+PNP_VetoOutstandingOpen)` and `Device required reboot`, Kernel-PnP 225 named `PcCore.Host.exe`, and
+pnputil exited 3010. Windows had already bound the new package, so every check the lifecycle made -
+bound version, stack, UMDF registration and its hash - described 0.9.2.3. Even Kernel-PnP 410 said the
+device "was started" with `oem118.inf`. The 3010 was logged and otherwise ignored.
+
+Reproduced in Windows Sandbox (Windows 11 26100) with the release 26 and 27 packages and a process that
+opens the control device and creates the three devices, as PC Core does:
+
+| Step | Windows binds | Driver answers (`GET_VERSION`) | Loaded DLL | `DN_NEED_RESTART` / `IsRebootRequired` |
+|---|---|---|---|---|
+| install 0.9.2.3 while held: pnputil exit 3010 | 0.9.2.3 | 0.9.2.2 | 0.9.2.2's package | set / true |
+| delete the 0.9.2.2 package while it runs (as release 27 did) | 0.9.2.3 | 0.9.2.2 | 0.9.2.2's package | set |
+| `pnputil /restart-device`, held or not | unchanged: exit 50, "pending system reboot" | 0.9.2.2 | | set |
+| holder exits | unchanged: a pending restart stays pending | 0.9.2.2 | | set |
+| reapply 0.9.2.3 (`UpdateDriverForPlugAndPlayDevices`, forced) while held | reboot flag true | 0.9.2.2 | | set |
+| reapply 0.9.2.3 once nothing holds the device | 0.9.2.3 | 0.9.2.3 | 0.9.2.3's package | cleared; registration intact, one package |
+| install 0.9.2.3 with nothing holding the device | 0.9.2.3, pnputil exit 0 | 0.9.2.3 | 0.9.2.3's package | clear |
+
+**The update now stops PC Core before the driver step.** Not before the UAC prompt: approval, copying
+and hashing still happen while PC Core serves the phone. The elevated half asks over a pair of named
+events (`HidDeviceHandoff`) once its payloads are verified, the unelevated half stops PC Core and
+answers, and only then is the driver installed. The swap later does not stop PC Core a second time; a
+release that changes only the driver starts the same PC Core again afterwards. A development PC Core
+running from elsewhere blocks a driver update, as it already blocked a PC Core update.
+
+**The lifecycle asks what is running.** `HidDeviceState` carries the running version - the driver's
+own answer to `IOCTL_NEXUS_HID_GET_VERSION`, read by opening the Nexus devnode's control interface,
+asking once and closing it - and whether Windows waits for a restart (`DN_NEED_RESTART` or problem code
+14). A healthy device must also run the version the release ships, so a driver that is bound but not
+loaded, or that loads and answers as another version, fails like any other check and is rolled back.
+If Windows waits for a restart after the install, the lifecycle reapplies the package once, which loads
+it if the holder has let go since; `pnputil /restart-device` cannot, as the table shows. If it still
+waits, the running stack and version belong to the previous driver, so only the configuration is
+judged (bound version, registration, hash); cleanup runs as before; and the outcome is
+`RestartRequired` rather than "installed, healthy and running".
+
+End to end in the same sandbox, with the real PC Core and updater: release 26's PC Core installed and
+running on 0.9.2.2, updated to 0.9.2.3. (Raw Input in the sandbox session lists no Nexus devices, so PC
+Core's own backend refuses and lets go between attempts; a helper held the control device with the three
+devices created for exactly as long as that PC Core process ran - the handle PC Core holds on this PC.)
+
+| Updater | Exit, status | What Windows did | Running afterwards |
+|---|---|---|---|
+| release 27's | 0, "Updated to Nexus 1.5.0" | pnputil 3010, vetoed by PC Core's handle (Kernel-PnP 225), `DN_NEED_RESTART` | 0.9.2.2 - release 27 on this PC, reproduced |
+| this one | 0, "Updated" | PC Core stopped after approval, then pnputil exit 0; no veto | 0.9.2.3 |
+| this one, a non-Nexus process also holding the device | 3010, `restart_required`, "0.9.2.2 keeps running until the PC restarts" | pnputil 3010, the reapply vetoed too | 0.9.2.2, `DN_NEED_RESTART` |
+
+Rollback still works with the running check: a 0.9.2.3 whose manifest hash did not match failed after
+install, 0.9.2.2 was bound from its payload and ran, the rollback's own cleanup emptied the registration
+(non-configurable 0.9.2.2, as in 13.10) and reapplying repaired it; one package left. The genuine 0.9.2.3
+then installed healthy and running.
+
+**Restart required is a result of its own.** The elevated half exits 3010 with what keeps running as
+its last log line; the update ends `UpdateOutcome.RestartRequired`, `status.json` records
+`restart_required`, the updater exits 3010, and the tray says to restart Windows. PC Core reads
+`DN_NEED_RESTART` to tell whether that restart is still outstanding, so the same status reads as
+succeeded once Windows has restarted. A driver that only loads at the next boot has not been checked
+running by the update: if it fails to load then, it is not rolled back automatically, and PC Core's
+`Virtual HID` line is where it shows.

@@ -59,12 +59,28 @@ public enum ElevatedOutcome
     Failed,
 }
 
-public sealed record ElevatedResult(ElevatedOutcome Outcome, string Detail);
+public sealed record ElevatedResult(ElevatedOutcome Outcome, string Detail)
+{
+    /// <summary>
+    /// Installed, but Windows loads the new HID driver only when the PC restarts; until then the previous
+    /// one keeps running. <see cref="Detail"/> says what is running.
+    /// </summary>
+    public bool RestartRequired { get; init; }
+}
 
 /// <summary>Installs SecureCapture and/or the HID driver, behind one UAC prompt.</summary>
 public interface IElevatedInstaller
 {
-    Task<ElevatedResult> InstallAsync(UpdatePlan plan, string stagedReleaseDirectory, CancellationToken cancellationToken);
+    /// <param name="releaseHidDevice">
+    /// Called at most once, after approval and just before the HID driver is changed: everything of
+    /// Nexus's that holds the device open must have let go of it when this returns, so Windows can
+    /// restart the device and load the new driver at once.
+    /// </param>
+    Task<ElevatedResult> InstallAsync(
+        UpdatePlan plan,
+        string stagedReleaseDirectory,
+        Func<CancellationToken, Task> releaseHidDevice,
+        CancellationToken cancellationToken);
 }
 
 public enum UpdateOutcome
@@ -72,6 +88,12 @@ public enum UpdateOutcome
     NoRelease,
     UpToDate,
     Succeeded,
+
+    /// <summary>
+    /// Everything was installed and PC Core is running the new version, but Windows loads the new HID
+    /// driver only when the PC restarts; the previous driver runs until then.
+    /// </summary>
+    RestartRequired,
 
     /// <summary>Nothing on this PC was changed.</summary>
     Failed,
@@ -95,6 +117,14 @@ public enum UpdateOutcome
 /// administrator approval. Only once all of that has succeeded is PC Core stopped. A missing file, a
 /// bad hash or a declined UAC prompt therefore ends the update with the owner's PC exactly as it was,
 /// still serving the phone.
+/// </para>
+/// <para>
+/// <b>A HID driver update stops PC Core earlier, but still after approval.</b> PC Core holds the Nexus
+/// HID device open, and an open handle vetoes the device restart that loads a new driver: Windows then
+/// binds the new package but runs the old driver until the PC restarts. So the elevated half, once
+/// approved and with its payloads verified, asks for the device just before it replaces the driver, and
+/// PC Core is stopped then rather than at the file swap. If a restart is still needed - something else
+/// held the device - the update ends <see cref="UpdateOutcome.RestartRequired"/>, not succeeded.
 /// </para>
 /// <para>
 /// <b>What it never touches.</b> Pairing, owner keys, settings, logs and evidence live under
@@ -215,15 +245,39 @@ public sealed class UpdateCoordinator
         var foreign = running.FirstOrDefault(p =>
             p.ExecutablePath is not null && !string.Equals(Path.GetFullPath(p.ExecutablePath), installed, StringComparison.OrdinalIgnoreCase));
 
-        if (foreign is not null && plan.PcCoreChanges)
+        if (foreign is not null && (plan.PcCoreChanges || plan.HidDriver.Updates))
         {
             // A development copy would hold the port the updated one needs, and the health check
-            // would then roll back a perfectly good update. It only matters when PC Core restarts.
+            // would then roll back a perfectly good update. It would also hold the Nexus HID device
+            // open, and Windows would keep the old driver running until a restart. It only matters
+            // when PC Core restarts or the driver changes.
             return Report(UpdateOutcome.Failed, manifest,
                 $"Another PC Core is running from {foreign.ExecutablePath}. Close it, then update again.");
         }
 
         var previousVersion = CurrentVersion();
+
+        // PC Core is stopped once: for the driver, if one is replaced, or else for the file swap.
+        // Whether one was running decides whether a step that changed nothing of its own starts it again.
+        var stopRequested = false;
+        var pcCoreStopped = false;
+
+        async Task StopPcCoreAsync(CancellationToken token)
+        {
+            if (stopRequested)
+            {
+                return;
+            }
+
+            stopRequested = true;
+
+            foreach (var process in running)
+            {
+                _log($"Stopping PC Core (process {process.ProcessId}).");
+                await _processes.StopAsync(process, StopGrace, token).ConfigureAwait(false);
+                pcCoreStopped = true;
+            }
+        }
 
         // --- Stage and verify, while the old PC Core keeps serving -----------------------------
         _paths.WriteStatus(Status(UpdateState.Staging, manifest, "Preparing the update.", previousVersion));
@@ -257,12 +311,24 @@ public sealed class UpdateCoordinator
         }
 
         // --- Administrator approval, only for what needs it --------------------------------------
+        ElevatedResult? elevated = null;
+
         if (plan.NeedsElevation)
         {
             _paths.WriteStatus(Status(UpdateState.WaitingForApproval, manifest,
                 "Waiting for administrator approval to update " + ElevatedNames(plan) + ".", previousVersion));
 
-            var elevated = await _elevated.InstallAsync(plan, staged, cancellationToken).ConfigureAwait(false);
+            // Asked for by the elevated half after approval, just before it replaces the driver. PC Core
+            // holds the Nexus HID device open, and while it does Windows cannot restart the device to
+            // load the new driver: it binds the package and keeps the old driver until a restart.
+            async Task ReleaseHidDeviceAsync(CancellationToken token)
+            {
+                _paths.WriteStatus(Status(UpdateState.Installing, manifest, "Updating the HID driver.", previousVersion));
+                _log("The HID driver is about to be replaced; stopping PC Core so that it lets go of the Nexus HID device.");
+                await StopPcCoreAsync(token).ConfigureAwait(false);
+            }
+
+            elevated = await _elevated.InstallAsync(plan, staged, ReleaseHidDeviceAsync, cancellationToken).ConfigureAwait(false);
 
             if (elevated.Outcome != ElevatedOutcome.Succeeded)
             {
@@ -270,17 +336,26 @@ public sealed class UpdateCoordinator
                     ? "Administrator approval was declined"
                     : $"{ElevatedNames(plan)} could not be updated ({elevated.Detail})";
 
+                // Stopped only to free the device; its files were not touched, so the same version comes back.
+                if (pcCoreStopped)
+                {
+                    await RestartPreviousAsync(previousVersion, cancellationToken).ConfigureAwait(false);
+                }
+
                 // It was closed for this update and nothing was changed, so it comes back as it was.
                 await ReopenAssistantAsync(assistantWasRunning, cancellationToken).ConfigureAwait(false);
-                return Report(UpdateOutcome.Failed, manifest, $"{why}. Nothing was changed.", previousVersion);
+                return Report(UpdateOutcome.Failed, manifest,
+                    pcCoreStopped ? $"{why}. PC Core and PC Assistant were not changed." : $"{why}. Nothing was changed.", previousVersion);
             }
 
-            _log($"{ElevatedNames(plan)} updated.");
+            _log(elevated.RestartRequired
+                ? $"{ElevatedNames(plan)} installed, but Windows needs a restart to load the new HID driver: {elevated.Detail}"
+                : $"{ElevatedNames(plan)} updated.");
         }
 
         // --- PC Assistant: replace, reopen, and back again if it does not start -------------------
-        // PC Core keeps running throughout: the two only meet over the pipe, and PC Core already
-        // reports a PC Assistant that is closed for a moment as not running.
+        // Independent of PC Core: the two only meet over the pipe, and PC Core already reports a PC
+        // Assistant that is closed for a moment as not running.
         if (plan.AssistantChanges)
         {
             var assistantOutcome = await ReplaceAssistantAsync(plan, staged, assistantSwap, assistantWasRunning, previousVersion, cancellationToken)
@@ -288,23 +363,37 @@ public sealed class UpdateCoordinator
 
             if (assistantOutcome is { } stop)
             {
+                if (pcCoreStopped)
+                {
+                    await RestartPreviousAsync(previousVersion, cancellationToken).ConfigureAwait(false);
+                }
+
                 return stop;
             }
         }
 
         if (!plan.PcCoreChanges)
         {
-            return Finish(plan, previousVersion);
+            if (pcCoreStopped)
+            {
+                // Stopped only so the driver could be replaced. Its files are the same, and so is its version.
+                _paths.WriteStatus(Status(UpdateState.Restarting, manifest, "Starting PC Core again.", previousVersion));
+                var back = await StartAndCheckAsync(previousVersion, cancellationToken).ConfigureAwait(false);
+
+                if (!back.Healthy)
+                {
+                    return Report(UpdateOutcome.Failed, manifest,
+                        $"{ElevatedNames(plan)} updated, but PC Core did not start again afterwards ({back.Detail}).{StillWaiting(elevated)}", previousVersion);
+                }
+            }
+
+            return Finish(plan, previousVersion, elevated);
         }
 
         // --- Stop, replace, restart ------------------------------------------------------------
         _paths.WriteStatus(Status(UpdateState.Installing, manifest, "Installing.", previousVersion));
 
-        foreach (var process in running)
-        {
-            _log($"Stopping PC Core (process {process.ProcessId}).");
-            await _processes.StopAsync(process, StopGrace, cancellationToken).ConfigureAwait(false);
-        }
+        await StopPcCoreAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
@@ -317,7 +406,8 @@ public sealed class UpdateCoordinator
             _log($"Replacing files failed: {ex.Message}");
             await RestartPreviousAsync(previousVersion, cancellationToken).ConfigureAwait(false);
             TryDeleteDirectory(_paths.StagingRoot);
-            return Report(UpdateOutcome.RolledBack, manifest, $"The files could not be replaced ({ex.Message}). The previous version is back.", previousVersion);
+            return Report(UpdateOutcome.RolledBack, manifest,
+                $"The files could not be replaced ({ex.Message}). The previous version is back.{StillWaiting(elevated)}", previousVersion);
         }
 
         _paths.WriteStatus(Status(UpdateState.Restarting, manifest, "Starting the new version.", previousVersion));
@@ -327,7 +417,7 @@ public sealed class UpdateCoordinator
         if (healthy.Healthy)
         {
             swap.Commit();
-            return Finish(plan, previousVersion);
+            return Finish(plan, previousVersion, elevated);
         }
 
         // --- Roll back ---------------------------------------------------------------------------
@@ -343,7 +433,7 @@ public sealed class UpdateCoordinator
         if (failed.Count > 0)
         {
             return Report(UpdateOutcome.RollbackIncomplete, manifest,
-                $"The update failed ({healthy.Detail}) and these files could not be restored: {string.Join(", ", failed)}.", previousVersion);
+                $"The update failed ({healthy.Detail}) and these files could not be restored: {string.Join(", ", failed)}.{StillWaiting(elevated)}", previousVersion);
         }
 
         await RestartPreviousAsync(previousVersion, cancellationToken).ConfigureAwait(false);
@@ -353,8 +443,16 @@ public sealed class UpdateCoordinator
         TryDeleteDirectory(_paths.StagingRoot);
 
         return Report(UpdateOutcome.RolledBack, manifest,
-            $"Nexus {manifest.Version} did not start correctly ({healthy.Detail}). The previous version was restored.", previousVersion);
+            $"Nexus {manifest.Version} did not start correctly ({healthy.Detail}). The previous version was restored.{StillWaiting(elevated)}", previousVersion);
     }
+
+    /// <summary>
+    /// For an outcome reported after the elevated step succeeded: a driver it left waiting for a restart
+    /// is still waiting, whatever happened to PC Core afterwards.
+    /// </summary>
+    private static string StillWaiting(ElevatedResult? elevated) => elevated is { RestartRequired: true }
+        ? $" The new HID driver stays installed, and Windows loads it when the PC restarts: {elevated.Detail}"
+        : string.Empty;
 
     /// <summary>
     /// Asks every PC Assistant running from the installed copy to close. Copies running from anywhere
@@ -544,7 +642,7 @@ public sealed class UpdateCoordinator
         _log(result.Healthy ? "The previous PC Core is running again." : $"The previous PC Core did not come back cleanly: {result.Detail}");
     }
 
-    private UpdateOutcome Finish(UpdatePlan plan, string? previousVersion)
+    private UpdateOutcome Finish(UpdatePlan plan, string? previousVersion, ElevatedResult? elevated)
     {
         var manifest = plan.Manifest;
 
@@ -566,7 +664,11 @@ public sealed class UpdateCoordinator
 
         TryDeleteDirectory(_paths.StagingRoot);
 
-        return Report(UpdateOutcome.Succeeded, manifest, $"Updated to Nexus {manifest.Version} (release {manifest.Release}).", previousVersion);
+        // Not "updated" while the driver this release brought is not the one running.
+        return elevated is { RestartRequired: true }
+            ? Report(UpdateOutcome.RestartRequired, manifest,
+                $"Installed Nexus {manifest.Version} (release {manifest.Release}). Restart Windows to finish: {elevated.Detail}", previousVersion)
+            : Report(UpdateOutcome.Succeeded, manifest, $"Updated to Nexus {manifest.Version} (release {manifest.Release}).", previousVersion);
     }
 
     private string? CurrentVersion()
@@ -590,6 +692,7 @@ public sealed class UpdateCoordinator
         var state = outcome switch
         {
             UpdateOutcome.Succeeded or UpdateOutcome.UpToDate => UpdateState.Succeeded,
+            UpdateOutcome.RestartRequired => UpdateState.RestartRequired,
             UpdateOutcome.RolledBack => UpdateState.RolledBack,
             UpdateOutcome.NoRelease => UpdateState.Idle,
             _ => UpdateState.Failed,

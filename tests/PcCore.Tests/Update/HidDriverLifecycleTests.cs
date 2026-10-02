@@ -183,12 +183,168 @@ public sealed class HidDriverLifecycleTests
         Assert.Equal(["oem119.inf"], outcome.StalePackagesLeft);
     }
 
+    // ---------------------------------------------------------------- bound is not running
+
+    /// <summary>
+    /// Release 27 on this PC: PC Core held the device, pnputil returned 3010, and the update said
+    /// "installed and healthy" because everything it checked was configuration. The driver that ran
+    /// was 0.9.2.2 until the next restart. Now the outcome says a restart is required, and says what runs.
+    /// </summary>
+    [Fact]
+    public void ADriverWindowsCouldNotLoadIsReportedAsWaitingForARestartNotAsRunning()
+    {
+        var windows = new FakeWindows { Held = true };
+        windows.Bind(windows.Stage("oem119.inf", V0922));
+
+        var outcome = Lifecycle(windows).Update(V0923, V0922);
+
+        Assert.Equal(HidDriverOutcomeKind.Updated, outcome.Kind);
+        Assert.True(outcome.RestartRequired);
+        Assert.Contains("0.9.2.2 keeps running until the PC restarts", outcome.Detail, StringComparison.Ordinal);
+        Assert.DoesNotContain("healthy and running", outcome.Detail, StringComparison.Ordinal);
+
+        // Configured and cleaned up as before; asked once more to load it, which the holder vetoed too.
+        Assert.Equal(["install 0.9.2.3", "reapply 0.9.2.3", "delete oem119.inf"], windows.Events);
+        Assert.Equal("0.9.2.3", Assert.Single(windows.Packages).Payload.Version);
+        Assert.DoesNotContain(windows.Timeline, e => e.StartsWith("log: Check", StringComparison.Ordinal) && e.EndsWith("healthy.", StringComparison.Ordinal));
+        Assert.Contains(windows.Timeline, e => e.StartsWith("log: Check after cleanup", StringComparison.Ordinal) && e.EndsWith("configured correctly; not running yet.", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Something that held the device during the install has let go by the time the lifecycle asks
+    /// again - a PC Core that was still closing. Reapplying the package is what loads it then:
+    /// pnputil /restart-device refuses a device that is waiting for a restart (exit 50 in Windows Sandbox).
+    /// </summary>
+    [Fact]
+    public void ADeviceLetGoOfAfterTheInstallIsLoadedByReapplyingThePackage()
+    {
+        var windows = new FakeWindows { Held = true, LetGoAfter = "install 0.9.2.3" };
+        windows.Bind(windows.Stage("oem119.inf", V0922));
+
+        var outcome = Lifecycle(windows).Update(V0923, V0922);
+
+        Assert.Equal(HidDriverOutcomeKind.Updated, outcome.Kind);
+        Assert.False(outcome.RestartRequired);
+        Assert.Equal("HID driver 0.9.2.3 is installed, healthy and running.", outcome.Detail);
+        Assert.Equal(["install 0.9.2.3", "reapply 0.9.2.3", "delete oem119.inf"], windows.Events);
+        Assert.Empty(windows.Health(V0923));
+    }
+
+    /// <summary>With nothing holding the device - the update stops PC Core first - the install loads it, and nothing else is needed.</summary>
+    [Fact]
+    public void AnInstallNothingVetoesLoadsTheDriverWithoutAnotherStep()
+    {
+        var windows = new FakeWindows();
+        windows.Bind(windows.Stage("oem119.inf", V0922));
+
+        var outcome = Lifecycle(windows).Update(V0923, V0922);
+
+        Assert.False(outcome.RestartRequired);
+        Assert.Equal(["install 0.9.2.3", "delete oem119.inf"], windows.Events);
+        Assert.Contains(windows.Timeline, e => e.StartsWith("log: Check after install: bound oem200.inf 0.9.2.3, running 0.9.2.3,", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Bound, restarted, no restart pending, and still not running the expected driver: a DLL that answers
+    /// with another version is not the driver the release shipped, and is rolled back like any other failure.
+    /// </summary>
+    [Fact]
+    public void ADriverThatRunsButAnswersAsAnotherVersionIsRolledBack()
+    {
+        var windows = new FakeWindows();
+        windows.Bind(windows.Stage("oem119.inf", V0922));
+        windows.Reports["0.9.2.3"] = "0.9.2.2";
+
+        var outcome = Lifecycle(windows).Update(V0923, V0922);
+
+        Assert.Equal(HidDriverOutcomeKind.RolledBack, outcome.Kind);
+        Assert.Contains("the device is running driver 0.9.2.2, not 0.9.2.3", outcome.Detail, StringComparison.Ordinal);
+        Assert.Equal("0.9.2.2", Assert.Single(windows.Packages).Payload.Version);
+    }
+
+    /// <summary>A driver that never loads leaves no Nexus driver answering - the vhf-only stack this PC booted into on 2026-09-23.</summary>
+    [Fact]
+    public void ADriverThatDoesNotLoadIsRolledBackEvenWhenWindowsCallsTheDeviceStarted()
+    {
+        var windows = new FakeWindows();
+        windows.Bind(windows.Stage("oem119.inf", V0922));
+        windows.StackFor["0.9.2.3"] = ["vhf", "PnpManager"];
+
+        var outcome = Lifecycle(windows).Update(V0923, V0922);
+
+        Assert.Equal(HidDriverOutcomeKind.RolledBack, outcome.Kind);
+        Assert.Contains("no Nexus HID driver answers on the device", outcome.Detail, StringComparison.Ordinal);
+        Assert.Empty(windows.Health(V0922));
+    }
+
+    /// <summary>
+    /// A registration damaged by cleanup is still repaired while the restart is pending: the install
+    /// writes the registration before it tries to restart the device, so reapplying fixes it even
+    /// though the restart is vetoed again.
+    /// </summary>
+    [Fact]
+    public void ARegistrationDamagedWhileARestartIsPendingIsStillRepaired()
+    {
+        var windows = new FakeWindows { Held = true };
+        windows.Configurable["0.9.2.3"] = false;
+        windows.Bind(windows.Stage("oem120.inf", V0920));
+
+        var outcome = Lifecycle(windows).Update(V0923, V0920);
+
+        Assert.Equal(HidDriverOutcomeKind.Updated, outcome.Kind);
+        Assert.True(outcome.RestartRequired);
+        Assert.Equal(["install 0.9.2.3", "reapply 0.9.2.3", "delete oem120.inf", "registration wiped", "reapply 0.9.2.3"], windows.Events);
+    }
+
     // ---------------------------------------------------------------- health
 
     [Fact]
     public void AHealthyDeviceHasNoProblems()
     {
         Assert.Empty(HidDriverLifecycle.Problems(Healthy(), Registration(), V0923.DriverDllSha256, V0923));
+    }
+
+    /// <summary>
+    /// While Windows waits for a restart, the stack and the answer belong to the driver being replaced -
+    /// 0.9.2.0's stack had vhf twice, and judging the new package by it would roll back a good update.
+    /// Only configuration is judged; the restart is the caller's to report.
+    /// </summary>
+    [Fact]
+    public void WhileARestartIsPendingOnlyTheConfigurationIsJudged()
+    {
+        var pending = BoundButNotRunning() with { Stack = ["WUDFRd", "vhf", "vhf", "PnpManager"], ProblemCode = HidDriverLifecycle.ProblemNeedRestart };
+
+        Assert.Empty(HidDriverLifecycle.Problems(pending, Registration(), V0923.DriverDllSha256, V0923));
+
+        // The configuration still has to be right.
+        Assert.NotEmpty(HidDriverLifecycle.Problems(pending with { DriverVersion = "0.9.2.2" }, Registration(), V0923.DriverDllSha256, V0923));
+        Assert.NotEmpty(HidDriverLifecycle.Problems(pending, Registration(), V0922.DriverDllSha256, V0923));
+        Assert.NotEmpty(HidDriverLifecycle.Problems(pending with { ProblemCode = 10 }, Registration(), V0923.DriverDllSha256, V0923));
+    }
+
+    /// <summary>
+    /// Everything Windows reports can be right while the previous driver runs: the release 27 state,
+    /// with nothing saying a restart is pending, is not healthy.
+    /// </summary>
+    [Fact]
+    public void BoundToTheRightPackageButRunningAnotherIsAProblem()
+    {
+        var problems = HidDriverLifecycle.Problems(BoundButNotRunning() with { RestartPending = false }, Registration(), V0923.DriverDllSha256, V0923);
+
+        Assert.Equal(["the device is running driver 0.9.2.2, not 0.9.2.3"], problems);
+        Assert.Contains("no Nexus HID driver answers on the device",
+            HidDriverLifecycle.Problems(Healthy() with { RunningVersion = null }, Registration(), V0923.DriverDllSha256, V0923));
+    }
+
+    [Theory]
+    [InlineData("0.9.2.3", "0.9.2.3", true)]
+    [InlineData("0.9.2.3", "0.9.02.3", true)]
+    [InlineData("0.9.2.3", "0.9.2.2", false)]
+    [InlineData(null, "0.9.2.3", false)]
+    [InlineData(null, null, false)]
+    public void VersionsAreComparedAsVersions(string? a, string? b, bool same)
+    {
+        Assert.Equal(same, HidDriverLifecycle.SameVersion(a, b));
     }
 
     [Theory]
@@ -328,6 +484,28 @@ public sealed class HidDriverLifecycleTests
         Assert.Equal("vhf", WindowsHidDriverHost.ServiceName("vhf"));
     }
 
+    /// <summary>
+    /// The updater asks the running driver its version with its own copy of the protocol, because
+    /// PcCore.Update references nothing. These are the numbers it must share with PC Core's client.
+    /// </summary>
+    [Fact]
+    public void TheUpdaterAsksTheDriverExactlyAsPcCoreDoes()
+    {
+        Assert.Equal(PcCore.NativeInput.Hid.NexusHidProtocol.ControlInterface, WindowsHidDriverHost.ControlInterface);
+        Assert.Equal(WindowsHidDriverHost.IoctlGetVersion, PcCore.NativeInput.Hid.NexusHidProtocol.IoctlGetVersion);
+        Assert.Equal(8, PcCore.NativeInput.Hid.NexusHidProtocol.Sizes.VersionReply);
+    }
+
+    /// <summary>NEXUS_HID_DRIVER_VERSION is stamped one byte per part of DriverVer; read back, it is the package version.</summary>
+    [Theory]
+    [InlineData(0x00090203u, "0.9.2.3")]
+    [InlineData(0x00090202u, "0.9.2.2")]
+    [InlineData(0x01020304u, "1.2.3.4")]
+    public void TheRunningVersionReadsAsThePackageVersion(uint packed, string version)
+    {
+        Assert.Equal(version, WindowsHidDriverHost.FormatVersion(packed));
+    }
+
     // ---------------------------------------------------------------- payloads
 
     [Fact]
@@ -364,12 +542,24 @@ public sealed class HidDriverLifecycleTests
         new(windows, line => windows.Timeline.Add("log: " + line));
 
     private static HidDeviceState Healthy() =>
-        new(true, 0, "oem120.inf", "0.9.2.3", ["WUDFRd", "vhf", "PnpManager"]);
+        new(true, 0, "oem120.inf", "0.9.2.3", ["WUDFRd", "vhf", "PnpManager"], RestartPending: false, RunningVersion: "0.9.2.3");
+
+    /// <summary>Release 27 on this PC: 0.9.2.3 bound, 0.9.2.2 still running, Windows waiting for a restart.</summary>
+    private static HidDeviceState BoundButNotRunning() =>
+        Healthy() with { RestartPending = true, RunningVersion = "0.9.2.2" };
 
     private static UmdfRegistration Registration() =>
         new(@"C:\Windows\System32\DriverStore\FileRepository\nexushid.inf_amd64_x\NexusHidDriver.dll", 2, 33, ["HidVhf"]);
 
-    /// <summary>The Driver Store, the devnode and the UMDF registration, as far as the update can see them.</summary>
+    /// <summary>
+    /// The Driver Store, the devnode and the UMDF registration, as far as the update can see them.
+    /// <para>
+    /// Binding and running are separate, as Windows Sandbox showed them to be (2026-10-02): an install
+    /// binds the package and then restarts the device to load it, and an open handle vetoes that
+    /// restart. The device then keeps running the previous driver with a restart pending - which leaving
+    /// it does not end - until a forced reinstall finds nothing holding the device.
+    /// </para>
+    /// </summary>
     private sealed class FakeWindows : IHidDriverHost
     {
         private static readonly DriverPayload[] Known = [V0920, V0922, V0923];
@@ -377,7 +567,18 @@ public sealed class HidDriverLifecycleTests
         private readonly HashSet<StoredPackage> _counted = [];
         private int _nextOem = 200;
         private StoredPackage? _bound;
+        private StoredPackage? _running;
+        private bool _restartPending;
         private StoredPackage? _registered;
+
+        /// <summary>Something has the control device open - PC Core, before this fix - and vetoes every device restart.</summary>
+        public bool Held { get; set; }
+
+        /// <summary>The holder lets go right after this event, as a PC Core that was still closing would.</summary>
+        public string? LetGoAfter { get; set; }
+
+        /// <summary>What a version's DLL answers over GET_VERSION, where that is not its package's version.</summary>
+        public Dictionary<string, string> Reports { get; } = [];
 
         public List<StoredPackage> Packages { get; } = [];
 
@@ -410,11 +611,19 @@ public sealed class HidDriverLifecycleTests
             return package;
         }
 
+        /// <summary>Setup: a package Windows installed and started before the update.</summary>
+        public void Bind(StoredPackage package)
+        {
+            Configure(package);
+            _running = package;
+            _restartPending = false;
+        }
+
         /// <summary>
         /// Windows' own install of a package: the only thing that writes the registration. A
         /// configurable package's configuration counts as a reference; a co-installer write does not.
         /// </summary>
-        public void Bind(StoredPackage package)
+        private void Configure(StoredPackage package)
         {
             _bound = package;
             _registered = package;
@@ -425,41 +634,77 @@ public sealed class HidDriverLifecycleTests
             }
         }
 
+        /// <summary>The device restart an install ends with. False when an open handle vetoed it.</summary>
+        private bool RestartDevice()
+        {
+            if (Held)
+            {
+                _restartPending = true;
+                return false;
+            }
+
+            _running = _bound;
+            _restartPending = false;
+            return true;
+        }
+
         public (int Code, string Output) AddAndInstall(string infPath)
         {
             var package = StageFor(infPath);
-            Record($"install {package.Payload.Version}");
+            var step = $"install {package.Payload.Version}";
+            Record(step);
+
+            var code = 0;
 
             if (!InstallDoesNotBind && (_bound is null || Version.Parse(package.Payload.Version) > Version.Parse(_bound.Payload.Version)))
             {
-                Bind(package);
+                Configure(package);
+                code = RestartDevice() ? 0 : HidDriverLifecycle.ErrorSuccessRebootRequired;
             }
 
-            return (0, string.Empty);
+            Finished(step);
+            return (code, code == 0 ? string.Empty : "System reboot is needed to complete install operations!");
         }
 
         public (bool Succeeded, string Detail) Reapply(string infPath)
         {
             var package = StageFor(infPath);
-            Record($"reapply {package.Payload.Version}");
+            var step = $"reapply {package.Payload.Version}";
+            Record(step);
 
             if (ReapplyFailsFor.Contains(package.Payload.Version))
             {
                 return (false, "failed");
             }
 
-            Bind(package);
-            return (true, string.Empty);
+            Configure(package);
+            var restarted = RestartDevice();
+            Finished(step);
+            return (true, restarted ? string.Empty : "Windows wants a restart to finish.");
         }
 
-        public HidDeviceState ReadDevice() => _bound is null
-            ? new HidDeviceState(true, 28, null, null, [])
-            : new HidDeviceState(
-                true,
-                0,
-                _bound.Name,
-                _bound.Payload.Version,
-                StackFor.TryGetValue(_bound.Payload.Version, out var stack) ? stack : ["WUDFRd", "vhf", "PnpManager"]);
+        public HidDeviceState ReadDevice()
+        {
+            if (_bound is null)
+            {
+                return new HidDeviceState(true, 28, null, null, []);
+            }
+
+            // The stack and the answer are the running driver's; the bound package is only configuration.
+            var running = _running?.Payload.Version;
+            string[] stack = running is not null && StackFor.TryGetValue(running, out var configured) ? configured : ["WUDFRd", "vhf", "PnpManager"];
+            var answers = running is not null && stack.Contains("WUDFRd") ? Reports.GetValueOrDefault(running, running) : null;
+
+            return new HidDeviceState(true, 0, _bound.Name, _bound.Payload.Version, stack, _restartPending, answers);
+        }
+
+        private void Finished(string step)
+        {
+            if (step == LetGoAfter)
+            {
+                Held = false;
+            }
+        }
 
         public UmdfRegistration? ReadUmdfRegistration() => _registered is null
             ? new UmdfRegistration(null, null, null, [])

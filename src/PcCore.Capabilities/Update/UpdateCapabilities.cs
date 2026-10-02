@@ -104,7 +104,8 @@ public sealed record UpdateCheckResult
 
     /// <summary>
     /// The last or current PC update: <c>idle</c>, <c>staging</c>, <c>waiting_for_approval</c>,
-    /// <c>installing</c>, <c>restarting</c>, <c>succeeded</c>, <c>failed</c> or <c>rolled_back</c>.
+    /// <c>installing</c>, <c>restarting</c>, <c>succeeded</c>, <c>failed</c>, <c>rolled_back</c>, or
+    /// <c>restart_required</c> while Windows still has to restart to load a new HID driver.
     /// </summary>
     public required string State { get; init; }
 

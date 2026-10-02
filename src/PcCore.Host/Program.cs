@@ -1102,6 +1102,7 @@ public static class Program
                     + (result.NeedsAdministratorApproval ? " - needs admin approval" : string.Empty),
                 true),
             "failed" or "rolled_back" => ($"Last update failed - Nexus {result.RunningVersion} is running", false),
+            "restart_required" => ("Restart Windows to finish the Nexus update (the new HID driver loads then)", false),
             _ => ($"Up to date: Nexus {result.RunningVersion}" + (result.InstalledRelease is { } r ? $" (release {r})" : string.Empty), false),
         };
     }

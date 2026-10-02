@@ -542,6 +542,10 @@ if ($Install) {
     if ($process.ExitCode -eq 0) {
         Write-Host "   $($status.message)" -ForegroundColor Green
     }
+    elseif ($process.ExitCode -eq 3010) {
+        # Installed; the new HID driver runs only after Windows restarts. Not a failure, not finished either.
+        Write-Host "   $($status.message)" -ForegroundColor Yellow
+    }
     else {
         Write-Host "   Update did not complete (exit $($process.ExitCode)): $($status.message)" -ForegroundColor Yellow
         exit $process.ExitCode

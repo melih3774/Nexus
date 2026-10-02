@@ -6,6 +6,12 @@ namespace PcCore.Update;
 public sealed record InstalledComponent(bool Installed, string? Version)
 {
     public static readonly InstalledComponent Absent = new(false, null);
+
+    /// <summary>
+    /// Windows has <see cref="Version"/> configured but waits for the PC to restart before it runs it;
+    /// until then the previous version does. Only the HID driver can be in this state.
+    /// </summary>
+    public bool RestartPending { get; init; }
 }
 
 /// <summary>Reads the installed versions of the elevated components. Never changes anything.</summary>
@@ -389,7 +395,8 @@ public static class UpdatePlanner
 
         if (string.Equals(installed.Version, offered.Version, StringComparison.OrdinalIgnoreCase))
         {
-            return new ComponentDecision(name, ComponentAction.Skip, installed.Version, offered.Version, "unchanged");
+            return new ComponentDecision(name, ComponentAction.Skip, installed.Version, offered.Version,
+                installed.RestartPending ? "unchanged; Windows loads it when the PC restarts" : "unchanged");
         }
 
         return new ComponentDecision(name, ComponentAction.Update, installed.Version, offered.Version, "a new version is available");

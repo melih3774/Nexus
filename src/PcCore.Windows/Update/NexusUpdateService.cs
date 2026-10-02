@@ -433,10 +433,14 @@ public sealed class NexusUpdateService : IUpdateService, IDisposable
 
     private string? StatusMessage() => _paths.ReadStatus()?.Message;
 
-    private static string StateWord(UpdateStatus? status) => (status?.State ?? UpdateState.Idle) switch
+    private string StateWord(UpdateStatus? status) => (status?.State ?? UpdateState.Idle) switch
     {
         UpdateState.WaitingForApproval => "waiting_for_approval",
         UpdateState.RolledBack => "rolled_back",
+
+        // Recorded once by the updater; whether the restart is still outstanding is Windows' to say. A
+        // restart clears it, and the update then simply succeeded.
+        UpdateState.RestartRequired => _probe.HidDriver().RestartPending ? "restart_required" : "succeeded",
         var state => state.ToString().ToLowerInvariant(),
     };
 

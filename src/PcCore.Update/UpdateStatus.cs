@@ -11,6 +11,12 @@ public enum UpdateState
     Succeeded,
     Failed,
     RolledBack,
+
+    /// <summary>
+    /// Installed, with the new HID driver waiting for Windows to restart before it runs. Recorded once;
+    /// whether the restart is still outstanding is read from Windows, not from here.
+    /// </summary>
+    RestartRequired,
 }
 
 /// <summary>

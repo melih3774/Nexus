@@ -1,13 +1,26 @@
 namespace PcCore.Update;
 
-/// <summary>What Windows reports about the Nexus devnode right now.</summary>
+/// <summary>What Windows reports about the Nexus devnode right now, and what the driver running in it says it is.</summary>
+/// <param name="DriverInf">The package Windows has bound to the device. Configuration: not necessarily what is running.</param>
+/// <param name="DriverVersion">That package's version. Configuration too.</param>
 /// <param name="Stack">Driver services from the top of the stack down, without the <c>\Driver\</c> prefix.</param>
+/// <param name="RestartPending">
+/// Windows configured a driver it could not start yet (<c>DN_NEED_RESTART</c>, or problem code 14): the
+/// device goes on running what it ran before until the PC restarts. While this is set, the stack and the
+/// running version describe that previous driver, not the bound one.
+/// </param>
+/// <param name="RunningVersion">
+/// What the Nexus driver loaded in the device reports over its control interface
+/// (<c>IOCTL_NEXUS_HID_GET_VERSION</c>), as <c>a.b.c.d</c>; null when no Nexus driver answers.
+/// </param>
 public sealed record HidDeviceState(
     bool Present,
     uint ProblemCode,
     string? DriverInf,
     string? DriverVersion,
-    IReadOnlyList<string> Stack)
+    IReadOnlyList<string> Stack,
+    bool RestartPending = false,
+    string? RunningVersion = null)
 {
     public static HidDeviceState Absent { get; } = new(false, 0, null, null, []);
 }
@@ -43,7 +56,8 @@ public interface IHidDriverHost
     /// <summary>
     /// <c>UpdateDriverForPlugAndPlayDevices(INSTALLFLAG_FORCE)</c> for the Nexus hardware id: binds exactly
     /// this package, even when it is the one already bound or an older one, and makes Windows run its
-    /// install again - which is what writes the UMDF registration.
+    /// install again - which is what writes the UMDF registration, and restarts the device when nothing
+    /// holds it open.
     /// </summary>
     (bool Succeeded, string Detail) Reapply(string infPath);
 
@@ -64,7 +78,10 @@ public interface IHidDriverHost
 
 public enum HidDriverOutcomeKind
 {
-    /// <summary>The new driver is bound, healthy, and the only Nexus package left.</summary>
+    /// <summary>
+    /// The new driver is bound, healthy, and the only Nexus package left - and running, unless
+    /// <see cref="HidDriverOutcome.RestartRequired"/> says Windows will only load it after a restart.
+    /// </summary>
     Updated,
 
     /// <summary>The new driver failed its checks; the previous one is bound and healthy again.</summary>
@@ -74,7 +91,24 @@ public enum HidDriverOutcomeKind
     Failed,
 }
 
-public sealed record HidDriverOutcome(HidDriverOutcomeKind Kind, string Detail, IReadOnlyList<string> StalePackagesLeft);
+public sealed record HidDriverOutcome(HidDriverOutcomeKind Kind, string Detail, IReadOnlyList<string> StalePackagesLeft)
+{
+    /// <summary>
+    /// Windows has the driver configured but could not restart the device to load it, so the previous
+    /// driver keeps running until the PC restarts. What was checked is the configuration; the driver
+    /// itself has not run yet.
+    /// </summary>
+    public bool RestartRequired { get; init; }
+}
+
+/// <summary>Where <see cref="HidDriverLifecycle.Establish"/> left the device.</summary>
+/// <param name="Failure">Why the payload could not be made healthy; null when it was.</param>
+/// <param name="RestartPending">The payload is configured and checked, but Windows will only load it after a restart.</param>
+/// <param name="RunningVersion">What the driver running in the device reports, at the end.</param>
+public sealed record HidDriverEstablished(string? Failure, bool RestartPending, string? RunningVersion)
+{
+    public bool Succeeded => Failure is null;
+}
 
 /// <summary>
 /// Replaces the Nexus HID driver package and leaves exactly one, healthy, behind.
@@ -88,9 +122,9 @@ public sealed record HidDriverOutcome(HidDriverOutcomeKind Kind, string Detail, 
 /// <para>
 /// <b>Why the checks come after the cleanup.</b> Deleting a package is where Windows can remove the
 /// shared registration, so "the new driver installed" proves nothing until the old ones are gone. The
-/// device is healthy when it is bound to the expected version, has no problem code, has exactly the
-/// stack <c>WUDFRd -> vhf -> PnpManager</c>, and its UMDF registration points at a DLL whose hash is the
-/// release manifest's.
+/// device is healthy when it is bound to the expected version, the driver running in it reports that
+/// version, it has no problem code, it has exactly the stack <c>WUDFRd -> vhf -> PnpManager</c>, and
+/// its UMDF registration points at a DLL whose hash is the release manifest's.
 /// </para>
 /// <para>
 /// <b>The only repair is reapplying the package.</b> If cleanup damaged the registration, Windows is
@@ -99,9 +133,26 @@ public sealed record HidDriverOutcome(HidDriverOutcomeKind Kind, string Detail, 
 /// release store, hash-verified - is bound the same way. Rollback never relies on an old package still
 /// being in the Driver Store.
 /// </para>
+/// <para>
+/// <b>Bound is not running.</b> Windows binds a new package to the device before it restarts the device
+/// to load it, and if anything holds the device open the restart is vetoed: the bound version, the UMDF
+/// registration and even Kernel-PnP's "started" event then name the new package while the previous
+/// driver keeps running until the PC restarts. Release 27 reported 0.9.2.3 "installed and healthy" that
+/// way while PC Core still had 0.9.2.2 open. So the device is also asked what it is running - the
+/// driver's own answer over its control interface - and whether Windows is waiting for a restart. A
+/// restart Windows is waiting for is tried once more by reapplying the package, which loads it if the
+/// device has been let go since; <c>pnputil /restart-device</c> refuses a device in that state. If it is
+/// still waiting, only the configuration can be checked, and the outcome says a restart is required.
+/// </para>
 /// </summary>
 public sealed class HidDriverLifecycle(IHidDriverHost host, Action<string> log)
 {
+    /// <summary>pnputil's exit code when the package was installed and Windows wants a restart to finish.</summary>
+    public const int ErrorSuccessRebootRequired = 3010;
+
+    /// <summary>CM_PROB_NEED_RESTART: what a waiting restart can look like as a problem code.</summary>
+    public const uint ProblemNeedRestart = 14;
+
     /// <summary>The instance id the Nexus install created (devgen, instance id NexusHid).</summary>
     public const string DeviceInstance = @"ROOT\DEVGEN\NEXUSHID";
 
@@ -119,13 +170,17 @@ public sealed class HidDriverLifecycle(IHidDriverHost host, Action<string> log)
     /// <summary>Installs <paramref name="target"/>; on failure puts <paramref name="rollback"/> back.</summary>
     public HidDriverOutcome Update(DriverPayload target, DriverPayload? rollback)
     {
-        var failure = Establish(target, install: true);
+        var established = Establish(target, install: true);
 
-        if (failure is null)
+        if (established.Succeeded)
         {
-            return new HidDriverOutcome(HidDriverOutcomeKind.Updated, $"HID driver {target.Version} is installed and healthy.", StaleLeft());
+            return new HidDriverOutcome(HidDriverOutcomeKind.Updated, Describe(target, established), StaleLeft())
+            {
+                RestartRequired = established.RestartPending,
+            };
         }
 
+        var failure = established.Failure;
         log($"HID driver {target.Version} failed: {failure}");
 
         if (rollback is null)
@@ -134,31 +189,39 @@ public sealed class HidDriverLifecycle(IHidDriverHost host, Action<string> log)
         }
 
         log($"Rolling back to HID driver {rollback.Version} from the release store.");
-        var rollbackFailure = Establish(rollback, install: false);
+        var restored = Establish(rollback, install: false);
 
-        return rollbackFailure is null
-            ? new HidDriverOutcome(HidDriverOutcomeKind.RolledBack, $"HID driver {target.Version} {failure}; {rollback.Version} was restored.", StaleLeft())
-            : new HidDriverOutcome(HidDriverOutcomeKind.Failed, $"HID driver {target.Version} {failure}; restoring {rollback.Version} also failed: {rollbackFailure}", StaleLeft());
+        return restored.Succeeded
+            ? new HidDriverOutcome(
+                HidDriverOutcomeKind.RolledBack,
+                $"HID driver {target.Version} {failure}; {rollback.Version} was restored" +
+                    (restored.RestartPending ? $", and Windows loads it when the PC restarts ({Running(restored)} runs until then)." : "."),
+                StaleLeft())
+            {
+                RestartRequired = restored.RestartPending,
+            }
+            : new HidDriverOutcome(HidDriverOutcomeKind.Failed, $"HID driver {target.Version} {failure}; restoring {rollback.Version} also failed: {restored.Failure}", StaleLeft());
     }
 
     /// <summary>
     /// Makes <paramref name="payload"/> the bound driver, removes every other Nexus package, and proves
-    /// the device healthy afterwards. Null on success, otherwise why not.
+    /// the device healthy afterwards - running it, unless Windows will only load it after a restart.
     /// </summary>
     /// <param name="install">
     /// True for an ordinary upgrade (<c>pnputil /add-driver /install</c>, which only binds a better
     /// driver); false to force this exact package, as a rollback to an older version must.
     /// </param>
-    public string? Establish(DriverPayload payload, bool install)
+    public HidDriverEstablished Establish(DriverPayload payload, bool install)
     {
         if (install)
         {
             var (code, output) = host.AddAndInstall(payload.InfPath);
-            log($"pnputil /add-driver /install {payload.Version}: exit {code}. {output}");
+            log($"pnputil /add-driver /install {payload.Version}: exit {code}" +
+                (code == ErrorSuccessRebootRequired ? " (Windows could not restart the device to load it)" : string.Empty) + $". {output}");
         }
         else if (!TryReapply(payload, "bind"))
         {
-            return $"Windows did not install {payload.Version}";
+            return Failed($"Windows did not install {payload.Version}");
         }
 
         if (!BoundTo(payload))
@@ -166,15 +229,17 @@ public sealed class HidDriverLifecycle(IHidDriverHost host, Action<string> log)
             // pnputil only binds a better-ranked driver. The forced path binds exactly this one.
             if (!install || !TryReapply(payload, "bind") || !BoundTo(payload))
             {
-                return $"the device is not using {payload.Version} (it reports {host.ReadDevice().DriverVersion ?? "no driver"})";
+                return Failed($"the device is not using {payload.Version} (it reports {host.ReadDevice().DriverVersion ?? "no driver"})");
             }
         }
+
+        Activate(payload);
 
         // Healthy before anything is deleted: a package that never worked is rolled back, not cleaned up after.
         if (Check(payload, "after install").Count > 0
             && Repair(payload, "after install") is { Count: > 0 } afterInstall)
         {
-            return "did not become healthy after install: " + string.Join("; ", afterInstall);
+            return Failed("did not become healthy after install: " + string.Join("; ", afterInstall));
         }
 
         RemoveStalePackages(payload);
@@ -185,11 +250,31 @@ public sealed class HidDriverLifecycle(IHidDriverHost host, Action<string> log)
 
             if (Repair(payload, "after cleanup") is { Count: > 0 } afterCleanup)
             {
-                return "did not stay healthy after stale packages were removed: " + string.Join("; ", afterCleanup);
+                return Failed("did not stay healthy after stale packages were removed: " + string.Join("; ", afterCleanup));
             }
         }
 
-        return null;
+        var device = host.ReadDevice();
+        return new HidDriverEstablished(null, device.RestartPending, device.RunningVersion);
+    }
+
+    /// <summary>
+    /// When Windows bound <paramref name="payload"/> but could not restart the device to load it, asks
+    /// once more through Windows' own forced install. That restarts the device if whatever vetoed the
+    /// first attempt has let go since - such as a PC Core that was still closing - and is refused again,
+    /// changing nothing, if it has not.
+    /// </summary>
+    private void Activate(DriverPayload payload)
+    {
+        var device = host.ReadDevice();
+
+        if (!device.RestartPending)
+        {
+            return;
+        }
+
+        log($"Windows bound {payload.Version} but kept {device.RunningVersion ?? "the previous driver"} running: something held the device open. Asking it once more to load {payload.Version}.");
+        TryReapply(payload, "load");
     }
 
     /// <summary>
@@ -220,7 +305,14 @@ public sealed class HidDriverLifecycle(IHidDriverHost host, Action<string> log)
             .OrderBy(p => p.PublishedName, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-    /// <summary>Everything wrong with the device for <paramref name="expected"/>; empty when it is healthy.</summary>
+    /// <summary>
+    /// Everything wrong with the device for <paramref name="expected"/>; empty when it is healthy.
+    /// <para>
+    /// While Windows waits for a restart to load <paramref name="expected"/>, the problem code, the stack
+    /// and the running version all describe the driver it replaces, so only what Windows has configured
+    /// is checked: the bound version and the UMDF registration. The caller reports the restart.
+    /// </para>
+    /// </summary>
     public static IReadOnlyList<string> Problems(
         HidDeviceState device,
         UmdfRegistration? registration,
@@ -235,19 +327,31 @@ public sealed class HidDriverLifecycle(IHidDriverHost host, Action<string> log)
             return problems;
         }
 
-        if (device.ProblemCode != 0)
+        if (device.ProblemCode != 0 && !(device.RestartPending && device.ProblemCode == ProblemNeedRestart))
         {
             problems.Add($"the device has problem code {device.ProblemCode}");
         }
 
-        if (!string.Equals(device.DriverVersion, expected.Version, StringComparison.OrdinalIgnoreCase))
+        if (!SameVersion(device.DriverVersion, expected.Version))
         {
             problems.Add($"the device uses driver {device.DriverVersion ?? "none"}, not {expected.Version}");
         }
 
-        if (!device.Stack.SequenceEqual(ExpectedStack, StringComparer.OrdinalIgnoreCase))
+        if (!device.RestartPending)
         {
-            problems.Add($"the device stack is {Describe(device.Stack)}, not {Describe(ExpectedStack)}");
+            if (!device.Stack.SequenceEqual(ExpectedStack, StringComparer.OrdinalIgnoreCase))
+            {
+                problems.Add($"the device stack is {Describe(device.Stack)}, not {Describe(ExpectedStack)}");
+            }
+
+            if (device.RunningVersion is null)
+            {
+                problems.Add("no Nexus HID driver answers on the device");
+            }
+            else if (!SameVersion(device.RunningVersion, expected.Version))
+            {
+                problems.Add($"the device is running driver {device.RunningVersion}, not {expected.Version}");
+            }
         }
 
         if (registration?.ImagePath is not { Length: > 0 } imagePath)
@@ -286,8 +390,22 @@ public sealed class HidDriverLifecycle(IHidDriverHost host, Action<string> log)
     public static string Describe(IEnumerable<string> stack) =>
         stack.Any() ? string.Join(" -> ", stack) : "empty";
 
-    private bool BoundTo(DriverPayload payload) =>
-        string.Equals(host.ReadDevice().DriverVersion, payload.Version, StringComparison.OrdinalIgnoreCase);
+    /// <summary><c>0.9.2.3</c> and <c>0.9.2.3</c>, however each was written down.</summary>
+    public static bool SameVersion(string? a, string? b) =>
+        Version.TryParse(a, out var left) && Version.TryParse(b, out var right)
+            ? left == right
+            : a is not null && string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+
+    private static HidDriverEstablished Failed(string why) => new(why, false, null);
+
+    private static string Running(HidDriverEstablished established) => established.RunningVersion ?? "the previous driver";
+
+    private static string Describe(DriverPayload target, HidDriverEstablished established) => established.RestartPending
+        ? $"HID driver {target.Version} is installed and configured, but Windows could not restart the device to load it: " +
+          $"{Running(established)} keeps running until the PC restarts. {target.Version} has not run yet."
+        : $"HID driver {target.Version} is installed, healthy and running.";
+
+    private bool BoundTo(DriverPayload payload) => SameVersion(host.ReadDevice().DriverVersion, payload.Version);
 
     private IReadOnlyList<string> Check(DriverPayload payload, string when)
     {
@@ -296,9 +414,11 @@ public sealed class HidDriverLifecycle(IHidDriverHost host, Action<string> log)
         var sha = registration?.ImagePath is { Length: > 0 } path ? host.Sha256OfFile(path) : null;
         var problems = Problems(device, registration, sha, payload);
 
-        log($"Check {when}: {device.DriverInf ?? "no inf"} {device.DriverVersion ?? "no driver"}, problem {device.ProblemCode}, " +
-            $"stack {Describe(device.Stack)}, UMDF ImagePath {registration?.ImagePath ?? "missing"}" +
-            (problems.Count == 0 ? " - healthy." : " - " + string.Join("; ", problems) + "."));
+        log($"Check {when}: bound {device.DriverInf ?? "no inf"} {device.DriverVersion ?? "no driver"}, running {device.RunningVersion ?? "nothing"}" +
+            (device.RestartPending ? " (Windows is waiting for a restart to load the bound driver)" : string.Empty) +
+            $", problem {device.ProblemCode}, stack {Describe(device.Stack)}, UMDF ImagePath {registration?.ImagePath ?? "missing"}" +
+            (problems.Count > 0 ? " - " + string.Join("; ", problems) + "."
+                : device.RestartPending ? " - configured correctly; not running yet." : " - healthy."));
 
         return problems;
     }

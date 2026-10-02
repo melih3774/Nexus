@@ -82,19 +82,35 @@ it. The updater then:
    `PcCore.SecureCapture.exe --install` or `pnputil /add-driver … /install`. It creates no new device
    and changes no certificate. Declining the prompt changes nothing;
 
-   a driver update also removes the older Nexus packages from the Driver Store (`pnputil
-   /delete-driver`, without `/uninstall` or `/force`) and only then checks the device: bound to the new
-   version, no problem code, stack exactly `WUDFRd -> vhf -> PnpManager`, and the UMDF registration
-   pointing at a DLL with the release manifest's hash. If cleanup damaged the registration, the active
-   package is reapplied through `UpdateDriverForPlugAndPlayDevices`; if the device is still not
-   healthy, the driver installed before is put back from the release store - the release that carries
-   it is staged and hashed with the new one - and the update fails. A driver update is skipped when no
-   stored release carries the installed driver. See docs/virtual-hid.md section 13.10 for why;
+   a driver update stops PC Core first - after approval, once the elevated half has verified its
+   payloads and asks for the device - because PC Core holds the Nexus HID device open, and an open
+   handle vetoes the device restart that loads the new driver. It then removes the older Nexus packages
+   from the Driver Store (`pnputil /delete-driver`, without `/uninstall` or `/force`) and only then
+   checks the device: bound to the new version, **running** it (the driver's own answer to
+   `IOCTL_NEXUS_HID_GET_VERSION`), no problem code, stack exactly `WUDFRd -> vhf -> PnpManager`, and
+   the UMDF registration pointing at a DLL with the release manifest's hash. If cleanup damaged the
+   registration, the active package is reapplied through `UpdateDriverForPlugAndPlayDevices`; if the
+   device is still not healthy, the driver installed before is put back from the release store - the
+   release that carries it is staged and hashed with the new one - and the update fails. A driver
+   update is skipped when no stored release carries the installed driver. If something other than
+   Nexus held the device, Windows can only load the new driver after a restart: the update then ends
+   **restart required** (below), not succeeded. See docs/virtual-hid.md sections 13.10 and 13.11;
 3. stops PC Core through its stop event (Ctrl+C for builds that predate it, and a kill as a last
-   resort);
+   resort), unless the driver step already did;
 4. moves each changed file aside and copies the new one in, recording each step in a journal;
 5. starts PC Core and waits for `system.get_info` over loopback to report the new version and keep
    running.
+
+A release whose PC Core files did not change but whose driver did still stops PC Core for the driver,
+and starts the same PC Core again afterwards.
+
+**Restart required.** When Windows bound the new driver but kept the previous one running - something
+held the device open - the update records `restart_required` instead of `succeeded`: the updater exits
+3010, `status.json` says what keeps running until the restart, the tray shows *Restart Windows to
+finish the Nexus update*, and `-Install` prints it in yellow. Whether the restart is still outstanding
+is read from Windows (`DN_NEED_RESTART` on the Nexus device), so after a restart the same update shows
+as succeeded. The driver itself has then not been checked running; PC Core's log shows which version
+it connects to (`Virtual HID: Ready — Nexus HID 9.2.x`).
 
 If step 5 fails, the new process is ended, the moved-aside files are put back, the previous PC Core
 is started again, and the tray says the update was rolled back. A journal left by an updater that

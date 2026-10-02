@@ -303,13 +303,48 @@ internal sealed class FakeHealth(params bool[] answers) : INexusHealthProbe
     }
 }
 
-internal sealed class FakeElevated(ElevatedOutcome outcome = ElevatedOutcome.Succeeded) : IElevatedInstaller
+/// <summary>
+/// The elevated half as the coordinator sees it. Once approved, and only for a driver update, it asks for
+/// the HID device the way the real one does, then notes which PC Core processes were still running when
+/// it replaced the driver - each of those would have held the device open and vetoed loading it.
+/// </summary>
+internal sealed class FakeElevated(ElevatedOutcome outcome = ElevatedOutcome.Succeeded, FakeProcesses? processes = null) : IElevatedInstaller
 {
     public int Calls { get; private set; }
 
-    public Task<ElevatedResult> InstallAsync(UpdatePlan plan, string stagedReleaseDirectory, CancellationToken cancellationToken)
+    /// <summary>What the driver step reports: installed, but loaded only after a restart.</summary>
+    public bool RestartRequired { get; init; }
+
+    /// <summary>Whether the elevated half asks for the device at all, as one predating the handoff would not.</summary>
+    public bool AsksForDevice { get; init; } = true;
+
+    /// <summary>PC Core processes running when the driver was replaced; null when no driver was.</summary>
+    public IReadOnlyList<RunningPcCore>? RunningDuringDriverStep { get; private set; }
+
+    public async Task<ElevatedResult> InstallAsync(
+        UpdatePlan plan,
+        string stagedReleaseDirectory,
+        Func<CancellationToken, Task> releaseHidDevice,
+        CancellationToken cancellationToken)
     {
         Calls++;
-        return Task.FromResult(new ElevatedResult(outcome, outcome.ToString()));
+
+        // A declined prompt means the elevated half never ran.
+        if (outcome != ElevatedOutcome.Declined && plan.HidDriver.Updates)
+        {
+            if (AsksForDevice)
+            {
+                await releaseHidDevice(cancellationToken);
+            }
+
+            RunningDuringDriverStep = processes?.FindRunning() ?? [];
+        }
+
+        return outcome == ElevatedOutcome.Succeeded && RestartRequired
+            ? new ElevatedResult(outcome, "HID driver 0.9.2.3 is installed and configured, but Windows could not restart the device to load it: 0.9.2.2 keeps running until the PC restarts.")
+            {
+                RestartRequired = true,
+            }
+            : new ElevatedResult(outcome, outcome.ToString());
     }
 }

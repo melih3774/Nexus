@@ -17,10 +17,30 @@ namespace PcCore.Update.Windows;
 /// package onto the device, and a read of the UMDF service key. Nothing here writes that key - only
 /// Windows' own install of the package does.
 /// </para>
+/// <para>
+/// <b>What is running is asked of the driver.</b> Windows' properties for the device describe the bound
+/// package even when a vetoed restart left the previous driver loaded, so the running version comes
+/// from <c>IOCTL_NEXUS_HID_GET_VERSION</c> on the device's own control interface: the number compiled
+/// into the DLL that answers. The handle is opened, asked once and closed at once - an open handle is
+/// exactly what vetoes a restart - and the request is one the driver answers for any handle without
+/// creating or touching a device.
+/// </para>
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed partial class WindowsHidDriverHost : IHidDriverHost
 {
+    /// <summary>The Nexus HID control interface. Mirrors <c>NexusHidProtocol.ControlInterface</c>; a test holds the two together.</summary>
+    internal static readonly Guid ControlInterface = new("6d1f4a2e-9c3b-4e7a-b5d8-1a2c3e4f5b60");
+
+    /// <summary>
+    /// <c>IOCTL_NEXUS_HID_GET_VERSION</c>: <c>CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED,
+    /// FILE_WRITE_ACCESS)</c>. Mirrors <c>NexusHidProtocol.IoctlGetVersion</c>; a test holds the two together.
+    /// </summary>
+    internal const uint IoctlGetVersion = 0x0022A000;
+
+    /// <summary>How long a device that has just started may take to offer its control interface.</summary>
+    private static readonly TimeSpan InterfaceWait = TimeSpan.FromSeconds(5);
+
     private const string UmdfServiceKey = @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\WUDF\Services\NexusHidDriver";
 
     private static string Pnputil => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "pnputil.exe");
@@ -46,12 +66,86 @@ public sealed partial class WindowsHidDriverHost : IHidDriverHost
             return HidDeviceState.Absent;
         }
 
+        var problem = ReadUInt32(devInst, ProblemCodeKey) ?? 0;
+        var status = CM_Get_DevNode_Status(out var flags, out _, devInst, 0) == CrSuccess ? flags : 0;
+        var restartPending = (status & DnNeedRestart) != 0 || problem == HidDriverLifecycle.ProblemNeedRestart;
+        var stack = (ReadStrings(devInst, StackKey) ?? []).Select(ServiceName).ToList();
+
         return new HidDeviceState(
             Present: true,
-            ProblemCode: ReadUInt32(devInst, ProblemCodeKey) ?? 0,
+            ProblemCode: problem,
             DriverInf: ReadStrings(devInst, DriverInfPathKey)?.FirstOrDefault(),
             DriverVersion: ReadStrings(devInst, DriverVersionKey)?.FirstOrDefault(),
-            Stack: (ReadStrings(devInst, StackKey) ?? []).Select(ServiceName).ToList());
+            Stack: stack,
+            RestartPending: restartPending,
+            RunningVersion: RunningVersion(
+                waitForInterface: (status & DnStarted) != 0 && !restartPending && stack.Contains("WUDFRd", StringComparer.OrdinalIgnoreCase)));
+    }
+
+    /// <summary>What the Nexus driver loaded in the device says it is; null when none answers.</summary>
+    /// <param name="waitForInterface">
+    /// The device is started under the reflector, so a driver should answer: give one that has only just
+    /// started a moment to offer its interface.
+    /// </param>
+    internal static string? RunningVersion(bool waitForInterface)
+    {
+        var deadline = DateTime.UtcNow + (waitForInterface ? InterfaceWait : TimeSpan.Zero);
+
+        while (true)
+        {
+            if (ControlInterfacePath() is { } path && AskVersion(path) is { } packed)
+            {
+                return FormatVersion(packed);
+            }
+
+            if (DateTime.UtcNow >= deadline)
+            {
+                return null;
+            }
+
+            Thread.Sleep(250);
+        }
+    }
+
+    /// <summary><c>0x00090203</c> to <c>0.9.2.3</c>: one byte per part, as <c>NEXUS_HID_DRIVER_VERSION</c> is stamped.</summary>
+    internal static string FormatVersion(uint packed) =>
+        $"{packed >> 24}.{(packed >> 16) & 0xFF}.{(packed >> 8) & 0xFF}.{packed & 0xFF}";
+
+    /// <summary>The control interface of the Nexus devnode itself, never of some other device offering the same class.</summary>
+    private static string? ControlInterfacePath()
+    {
+        var guid = ControlInterface;
+
+        if (CM_Get_Device_Interface_List_SizeW(out var length, ref guid, HidDriverLifecycle.DeviceInstance, CmGetDeviceInterfaceListPresent) != CrSuccess || length <= 1)
+        {
+            return null;
+        }
+
+        var buffer = new char[length];
+
+        if (CM_Get_Device_Interface_ListW(ref guid, HidDriverLifecycle.DeviceInstance, buffer, length, CmGetDeviceInterfaceListPresent) != CrSuccess)
+        {
+            return null;
+        }
+
+        return new string(buffer).Split('\0', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+    }
+
+    private static uint? AskVersion(string path)
+    {
+        using var handle = CreateFileW(path, GenericRead | GenericWrite, FileShareReadWrite, IntPtr.Zero, OpenExisting, 0, IntPtr.Zero);
+
+        if (handle.IsInvalid)
+        {
+            return null;
+        }
+
+        // { UINT32 ProtocolVersion; UINT32 DriverVersion; } - the one reply every protocol version keeps.
+        var reply = new byte[8];
+
+        return DeviceIoControl(handle, IoctlGetVersion, IntPtr.Zero, 0, reply, reply.Length, out var returned, IntPtr.Zero) && returned == reply.Length
+            ? BitConverter.ToUInt32(reply, 4)
+            : null;
     }
 
     public UmdfRegistration? ReadUmdfRegistration()
@@ -209,6 +303,13 @@ public sealed partial class WindowsHidDriverHost : IHidDriverHost
     private const uint InstallFlagForce = 0x00000001;
     private const uint InstallFlagNonInteractive = 0x00000004;
     private const uint CmLocateDevnodeNormal = 0x00000000;
+    private const uint CmGetDeviceInterfaceListPresent = 0x00000000;
+    private const uint DnStarted = 0x00000008;
+    private const uint DnNeedRestart = 0x00000100;
+    private const uint GenericRead = 0x80000000;
+    private const uint GenericWrite = 0x40000000;
+    private const uint FileShareReadWrite = 0x00000003;
+    private const uint OpenExisting = 3;
     private const uint CrSuccess = 0x00000000;
     private const uint CrBufferSmall = 0x0000001A;
     private const uint DevPropTypeUInt32 = 0x00000007;
@@ -238,6 +339,28 @@ public sealed partial class WindowsHidDriverHost : IHidDriverHost
 
     [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
     private static extern uint CM_Locate_DevNodeW(out uint devInst, string deviceId, uint flags);
+
+    [DllImport("cfgmgr32.dll")]
+    private static extern uint CM_Get_DevNode_Status(out uint status, out uint problemNumber, uint devInst, uint flags);
+
+    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint CM_Get_Device_Interface_List_SizeW(out uint length, ref Guid interfaceClass, string deviceId, uint flags);
+
+    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint CM_Get_Device_Interface_ListW(ref Guid interfaceClass, string deviceId, char[] buffer, uint length, uint flags);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileW(
+        string fileName, uint desiredAccess, uint shareMode, IntPtr securityAttributes,
+        uint creationDisposition, uint flagsAndAttributes, IntPtr templateFile);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DeviceIoControl(
+        Microsoft.Win32.SafeHandles.SafeFileHandle device, uint controlCode,
+        IntPtr inBuffer, int inBufferSize,
+        [Out] byte[] outBuffer, int outBufferSize,
+        out int bytesReturned, IntPtr overlapped);
 
     [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
     private static extern uint CM_Get_DevNode_PropertyW(

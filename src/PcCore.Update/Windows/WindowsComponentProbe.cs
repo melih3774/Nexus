@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using Microsoft.Win32;
 
@@ -63,13 +64,41 @@ public sealed class WindowsComponentProbe : IElevatedComponentProbe
 
             using var driver = Registry.LocalMachine.OpenSubKey($@"SYSTEM\CurrentControlSet\Control\Class\{driverKey}");
 
-            return new InstalledComponent(true, driver?.GetValue("DriverVersion") as string);
+            return new InstalledComponent(true, driver?.GetValue("DriverVersion") as string)
+            {
+                RestartPending = HidDriverRestartPending(),
+            };
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
         {
             return new InstalledComponent(true, null);
         }
     }
+
+    /// <summary>
+    /// Whether Windows is waiting for a restart to load the driver it has configured for the Nexus
+    /// device: <c>DN_NEED_RESTART</c>, or problem code 14. The class key above is configuration and
+    /// already names the new version. Runtime state, so a restart clears it - which is how a recorded
+    /// "restart required" is known to be over. Readable without elevation.
+    /// </summary>
+    public static bool HidDriverRestartPending()
+    {
+        if (CM_Locate_DevNodeW(out var devInst, HidDeviceInstance, 0) != 0
+            || CM_Get_DevNode_Status(out var status, out var problem, devInst, 0) != 0)
+        {
+            return false;
+        }
+
+        return (status & DnNeedRestart) != 0 || problem == HidDriverLifecycle.ProblemNeedRestart;
+    }
+
+    private const uint DnNeedRestart = 0x00000100;
+
+    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint CM_Locate_DevNodeW(out uint devInst, string deviceId, uint flags);
+
+    [DllImport("cfgmgr32.dll")]
+    private static extern uint CM_Get_DevNode_Status(out uint status, out uint problemNumber, uint devInst, uint flags);
 
     /// <summary>The product version of an assembly, without build metadata.</summary>
     public static string? VersionOf(string path)

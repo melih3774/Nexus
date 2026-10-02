@@ -25,6 +25,9 @@ public static class Program
     /// <summary>Nothing was done: this process would only have reached a packaged app's private copy of Nexus's folders.</summary>
     private const int RedirectedExitCode = 5;
 
+    /// <summary>Installed, and finished only once Windows restarts: ERROR_SUCCESS_REBOOT_REQUIRED, as msiexec and pnputil use it.</summary>
+    private const int RestartRequiredExitCode = 3010;
+
     public static async Task<int> Main(string[] args)
     {
         if (args.Contains("--elevated"))
@@ -33,7 +36,8 @@ public static class Program
                 Value(args, "--staged") ?? string.Empty,
                 int.TryParse(Value(args, "--release"), NumberStyles.None, CultureInfo.InvariantCulture, out var release) ? release : 0,
                 args.Contains("--secure-capture"),
-                args.Contains("--hid-driver"));
+                args.Contains("--hid-driver"),
+                Value(args, "--hid-handoff"));
         }
 
         var defaults = UpdatePaths.ForCurrentUser();
@@ -127,6 +131,7 @@ public static class Program
             return outcome switch
             {
                 UpdateOutcome.Succeeded or UpdateOutcome.UpToDate => 0,
+                UpdateOutcome.RestartRequired => RestartRequiredExitCode,
                 UpdateOutcome.NoRelease => 3,
                 UpdateOutcome.RolledBack => 2,
                 _ => 1,
