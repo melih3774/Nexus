@@ -13,7 +13,7 @@ The installed official Chrome integration **works in non-interactive print mode*
 The initial project documentation mentioned 2.1.247, but the installed executable now reports **2.1.260 (Claude Code)**:
 
 ```text
-C:\Users\Melih\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude-code\2.1.260\claude.exe
+%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude-code\2.1.260\claude.exe
 ```
 
 `claude` is not on the shell PATH. The old `%APPDATA%\Claude\claude-code` path does not exist outside the packaged-app redirection. The repository's existing locator correctly accounts for the MSIX bundle location and should continue selecting the newest installed bundle.

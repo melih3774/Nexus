@@ -1,7 +1,12 @@
 # Third-party notices
 
-Nexus ships no third-party binaries. This file records source that was adapted, and the licence it
-came under.
+Nexus itself is licensed under the [Apache License 2.0](../LICENSE). This file records third-party
+source that was adapted into it, and the licence it came under.
+
+The repository contains no third-party binaries except the Gradle wrapper, which carries its own
+Apache 2.0 headers. Builds download their dependencies from NuGet and Maven (for example QRCoder,
+SQLite, OkHttp, ZXing, AndroidX and kotlinx); each comes under its own licence, which its package
+carries, and none of their source is copied here.
 
 ---
 

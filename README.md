@@ -268,5 +268,5 @@ simulator, protocol vectors and the reasons `dotnet test` is not used are covere
 
 ## License
 
-No license has been chosen yet. Until one is added, all rights are reserved. Adapted third-party
-source is recorded in [docs/third-party-notices.md](docs/third-party-notices.md).
+Copyright 2026 melih3774. Licensed under the [Apache License, Version 2.0](LICENSE). Adapted
+third-party source is recorded in [docs/third-party-notices.md](docs/third-party-notices.md).
