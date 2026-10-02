@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Windows 10 | 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?logo=windows&logoColor=white">
+  <img alt="Windows 11" src="https://img.shields.io/badge/Windows-11-0078D4?logo=windows&logoColor=white">
   <img alt="Android 12+" src="https://img.shields.io/badge/Android-12%2B-3DDC84?logo=android&logoColor=white">
   <img alt=".NET 10" src="https://img.shields.io/badge/.NET-10-512BD4?logo=dotnet&logoColor=white">
   <img alt="Kotlin + Compose" src="https://img.shields.io/badge/Kotlin-Compose-7F52FF?logo=kotlin&logoColor=white">
@@ -53,8 +53,8 @@ shapes every trade-off. They need accounts, relay servers, device lists and a se
 assumes nothing about who is on either end.
 
 Nexus is built for **one person controlling their own Windows PC from their own Android phone**, and
-that assumption changes the design. There are no accounts and no relay, because both devices already
-share a private Tailscale network. Pairing happens once, by scanning a QR code at the PC. Remote
+that assumption changes the design. There is no Nexus account and no Nexus server, because both
+devices already share your private Tailscale network. Pairing happens once, by scanning a QR code at the PC. Remote
 control is unlocked through the phone's own biometric prompt rather than yet another password. And the integration can go
 further than a general-purpose tool would: a signed input driver and a SYSTEM capture service only
 make sense on a machine whose owner deliberately installed them.
@@ -176,13 +176,16 @@ arbitrary Windows call to reach. The owner, authenticated on the phone, can inst
 separate program that may run commands and tools under its own policy and approvals. PC Core only
 relays those requests ([AI Assistant](docs/ai-assistant.md)).
 
-**The privilege boundary is narrow and explicit.** Only two components run with more than user
-rights, and the owner installs each one deliberately. The **HID driver** publishes three input
-devices for the handle that created them and understands six fixed control operations. The
+**The privilege boundary is narrow and explicit.** Everything that runs with more than user rights
+is optional, separate, and installed deliberately by the owner. The **HID driver** publishes three
+input devices for the handle that created them and understands six fixed control operations. The
 **SecureCapture** service accepts exactly one request, "start a capture worker in the console
 session". Its worker connects back to a pipe PC Core named, proves a nonce, and returns pixels.
 PC Core checks that the peer really is SYSTEM before asking for a frame. Neither component can run
-commands or read files.
+commands or read files. The other three are the **input broker**, an elevated fallback for input
+that does ten fixed operations; one elevated step of the **updater**, behind its own UAC prompt; and
+PC Assistant's **privileged helper**, which carries out administrator operations PC Assistant asks
+for, each one approved at the PC, without a further UAC prompt.
 
 More: [security model](docs/security-model.md#privileged-components) ·
 [remote control](docs/remote-control.md) · [development](docs/development.md#repository-layout)
@@ -192,9 +195,15 @@ More: [security model](docs/security-model.md#privileged-components) ·
 Nexus can control a computer, so its security model is part of the product, not a footnote.
 
 - **Your PC, your phone.** Exactly one paired phone, paired at the PC. The phone controls the PC, but
-  it cannot pair another device, delete evidence or turn monitoring off.
+  it cannot pair another device, delete evidence or change how monitoring works. Disarming from the
+  phone needs the owner's biometric or screen-lock unlock, and leaves recorded evidence alone.
 - **Private network only.** The remote listener binds only to the PC's Tailscale address. Nothing
-  listens on the LAN or the internet, and there is no relay, cloud service or account.
+  listens on the LAN or the internet. Nexus runs no relay, cloud service or account of its own;
+  Tailscale carries the connection, end-to-end encrypted, and may route it through Tailscale's own
+  relays when the two devices cannot reach each other directly.
+- **The AI Assistant is the one part that uses a cloud service.** PC Assistant runs Claude Code
+  under your own Claude account, so the prompts you give it, and the screenshots and files it works
+  with, go to Anthropic. It is optional, and nothing reaches it until you set it up.
 - **Two proofs, not one.** A 256-bit pairing credential proves *which phone* (HMAC
   challenge/response, never re-sent). A Keystore signature that Android releases only after its
   biometric or screen-lock prompt proves *who is holding it*, and that is required for full remote
@@ -210,18 +219,21 @@ Details: [docs/security-model.md](docs/security-model.md) · Reporting: [SECURIT
 
 ## Getting started
 
-You need Windows 10/11 with the .NET 10 SDK, an Android 12+ phone, and Tailscale signed in on both.
+You need a Windows 11 PC with the .NET SDK 10.0.400 or later, an Android 12+ phone, and Tailscale
+signed in on both. Nexus publishes no binaries: you build it from this repository on your own PC.
 
 ```bash
 dotnet build PcCore.slnx -c Release
 ```
 
-```bash
-cd android/Nexus && ./gradlew :app:assembleDebug
+```powershell
+cd android/Nexus
+.\gradlew.bat :app:assembleDebug   # needs JAVA_HOME (JDK 21) and ANDROID_HOME
 ```
 
 Then install PC Core (`--install-app`), install the APK, and pair by scanning the QR code in the
-local control panel. The optional driver and SecureCapture installs are described step by step in
+local control panel. The optional HID driver needs Visual Studio 2022 and the WDK 10.0.26100 to build
+and install. That, SecureCapture, and removing everything again are described step by step in
 **[docs/getting-started.md](docs/getting-started.md)**.
 
 ## Repository layout

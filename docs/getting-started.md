@@ -14,6 +14,7 @@ phone.
 - [Where things live](#where-things-live)
 - [Configuration](#configuration)
 - [When the phone cannot connect](#when-the-phone-cannot-connect)
+- [Uninstalling](#uninstalling)
 
 ---
 
@@ -21,12 +22,13 @@ phone.
 
 | | |
 |---|---|
-| **PC** | Windows 10 1809 or later (developed on Windows 11), .NET SDK 10 |
+| **PC** | Windows 11, x64, and the .NET SDK 10.0.400 or later. The HID driver needs Windows 11: it is built on UMDF 2.33, which Windows 10 does not have. PC Core without the driver targets Windows 10 1809 and later but is not tested there |
 | **Phone** | Android 12 or later, with a biometric or screen lock |
-| **Network** | [Tailscale](https://tailscale.com) signed in on both devices, same tailnet |
-| **Android builds** | JDK 21 and the Android SDK (Gradle wrapper included) |
-| **Driver builds** | Visual Studio Build Tools and the WDK (only if you build the HID driver yourself) |
+| **Network** | [Tailscale](https://tailscale.com) signed in on both devices, same tailnet. That needs a Tailscale account; Nexus has no account of its own |
+| **Android builds** | JDK 21 and the Android SDK (Gradle wrapper included), found through `JAVA_HOME` and `ANDROID_HOME` ([details](#3-install-the-phone-app)) |
+| **Driver builds and installs** | Visual Studio 2022 (Build Tools or any edition) with the *Desktop development with C++* workload (MSVC v143), and the Windows SDK and WDK **10.0.26100**. The project pins both; a newer Visual Studio alone does not build it. Installing needs the WDK too, for `devgen` and `signtool` |
 
+Nexus publishes no prebuilt binaries: everything here is built on your own PC from this repository.
 PC Core itself needs **no administrator rights** and logs a warning if it is started elevated.
 
 ## 1. Build and install PC Core
@@ -65,14 +67,25 @@ with no restart needed, and stops if the interface goes away.
 
 ## 3. Install the phone app
 
-For a first install, build a debug APK and install it over USB:
+For a first install, build a debug APK and install it over USB. Gradle needs to find a JDK 21 and
+the Android SDK. With Android Studio installed, its bundled JDK and SDK work (adjust the paths if you
+installed them elsewhere), in PowerShell:
 
-```bash
-cd android/Nexus && ./gradlew :app:assembleDebug
+```powershell
+$env:JAVA_HOME = "$env:ProgramFiles\Android\Android Studio\jbr"
+$env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
 ```
 
-```bash
-adb install -r android/Nexus/app/build/outputs/apk/debug/app-debug.apk
+Instead of `ANDROID_HOME`, an `android/Nexus/local.properties` with `sdk.dir=` and the SDK path also
+works; it is machine-specific and never committed. Then:
+
+```powershell
+cd android/Nexus
+.\gradlew.bat :app:assembleDebug
+```
+
+```powershell
+adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
 For updates that keep pairing intact, set up the stable release signing key once and let the phone
@@ -108,16 +121,35 @@ powershell -ExecutionPolicy Bypass -File tools/validate-driver-package.ps1
 powershell -ExecutionPolicy Bypass -File tools/nexus-hid-install.ps1 -Action Install
 ```
 
-The first script builds and stages the package without installing anything. The second is a dry run
-that prints the exact plan. Add `-Apply` to perform it. It names the signing certificate and asks
-before trusting it, captures the machine's security posture before and after, and refuses to run
-under test signing. [virtual-hid.md](virtual-hid.md) records the whole process, including the
-creation of the self-signed certificate.
+The first script builds and stages the package in `artifacts\NexusHidPackage` without installing
+anything. The second changes nothing either: it reads this PC (security posture, the package, the WDK
+tools, what is installed) and prints the exact install plan for it, every command with its full tool
+path. Run those commands in one elevated PowerShell, in order, checking each result:
 
-**SecureCapture** (lets the phone see UAC prompts and the lock screen):
+1. create the signing key, or reuse the one this PC already has;
+2. sign the package's catalog with it;
+3. trust that one certificate in `LocalMachine\Root` and `LocalMachine\TrustedPublisher`;
+4. check the signature is `Valid`;
+5. create the root device with `devgen`;
+6. install the package with `pnputil`;
+7. if 6 fails, remove the device before retrying;
+8. compare the security posture with the baseline;
+9. check the driver is running.
 
-```bash
-PcCore.SecureCapture.exe --install
+**The signing key is yours.** Nexus publishes no signed driver. Each PC creates its own key
+(`CN=Nexus Driver Signing`, code signing only, private key not exportable, in your personal
+certificate store) and trusts it on that PC only. From then on this PC accepts code and driver
+packages signed by that key, which is why the key never leaves it. Releases you publish later on the
+same PC are signed with the same key ([updating.md](updating.md)), and the uninstall plan below
+removes the trust. The script refuses to plan an install under test signing or over an existing
+Nexus device, and nothing in it changes Secure Boot, Memory Integrity, test signing or UAC.
+
+**SecureCapture** (lets the phone see UAC prompts and the lock screen), from an elevated terminal.
+It copies itself to `%ProgramFiles%\Nexus\SecureCapture` and registers the `NexusSecureCapture`
+service:
+
+```powershell
+src\PcCore.SecureCapture\bin\Release\net10.0-windows10.0.17763.0\PcCore.SecureCapture.exe --install
 ```
 
 A machine with neither still gets remote control, through injection, of everything except elevated
@@ -148,10 +180,21 @@ Everything that survives a restart is under `%LOCALAPPDATA%\Nexus`, never in the
 | `primary-phone.json` | device id, display name, pairing time, and the shared secret as a DPAPI blob |
 | `Security\` | incidents and evidence |
 | `Releases\` | published releases, for updates |
+| `update\` | the updater's status, log and records of what is installed |
 | `pccore.log` | PC Core's log (one previous generation kept; **Open log** in the tray) |
 
 Writes are atomic (temporary file, flush, atomic replace). A corrupt file is renamed aside, never
 deleted.
+
+Elsewhere on the PC:
+
+| Path | Contents |
+|---|---|
+| `%LOCALAPPDATA%\Programs\Nexus` | the installed PC Core, and PC Assistant under `Assistant\` once a release installed it |
+| `%LOCALAPPDATA%\PcCore` | the local control panel's session token |
+| `%LOCALAPPDATA%\PcAssistant` | PC Assistant's own tasks, settings and logs, if you use it |
+| `%ProgramFiles%\Nexus` | SecureCapture, and the elevated updater's log under `Updates\` |
+| Driver Store, `LocalMachine\Root` and `TrustedPublisher`, `CurrentUser\My` | the HID driver package, the trusted signing certificate and its key |
 
 ## Configuration
 
@@ -183,3 +226,55 @@ The phone says which of these it is:
   can compare them before re-pairing.
 
 PC Core's log names the reason for a refused phone, using identifiers only.
+
+## Uninstalling
+
+Nexus has no single uninstaller, because each part was installed deliberately and is removed the same
+way. Go in this order, so each command still finds the program it runs. Skip any part you never
+installed.
+
+1. **Exit Nexus** from its tray icon. If you use PC Assistant: remove its privileged helper if you
+   installed it (**Capabilities → Uninstall Privileged Helper**), turn off its *Start with Windows*
+   setting if you turned it on, then close PC Assistant.
+2. **The HID driver.** Print the plan, then run its commands from an elevated PowerShell. It removes
+   the device, every Nexus driver package and the trust in the signing certificate; with
+   `-RemoveSigningKey` it deletes the key as well.
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File tools/nexus-hid-install.ps1 -Action Uninstall -RemoveSigningKey
+   ```
+
+3. **SecureCapture**, from an elevated terminal. It stops and deletes the service, and the folder can
+   go afterwards:
+
+   ```powershell
+   & "$env:ProgramFiles\Nexus\SecureCapture\PcCore.SecureCapture.exe" --uninstall
+   Remove-Item -Recurse "$env:ProgramFiles\Nexus"
+   ```
+
+4. **The input broker**, if you installed it, from an elevated terminal:
+
+   ```powershell
+   & "$env:LOCALAPPDATA\Programs\Nexus\PcCore.Host.exe" --uninstall-native-input
+   ```
+
+5. **PC Core.** `--uninstall-app` removes the Start Menu entry and the start at sign-in; the folder
+   (with PC Assistant inside it, if a release installed it) is deleted by hand:
+
+   ```powershell
+   & "$env:LOCALAPPDATA\Programs\Nexus\PcCore.Host.exe" --uninstall-app
+   Remove-Item -Recurse "$env:LOCALAPPDATA\Programs\Nexus"
+   ```
+
+6. **Your data**, last, and only if you mean it: this deletes the pairing, the security history and
+   all evidence, and cannot be undone.
+
+   ```powershell
+   Remove-Item -Recurse "$env:LOCALAPPDATA\Nexus", "$env:LOCALAPPDATA\PcCore"
+   Remove-Item -Recurse "$env:LOCALAPPDATA\PcAssistant"   # only if you used PC Assistant
+   ```
+
+7. **The phone:** uninstall the Nexus app. Tailscale is yours, and Nexus never changed it.
+
+Nothing else is left: apart from what these steps remove, Nexus adds no service, scheduled task,
+firewall rule or registry value.

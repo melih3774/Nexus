@@ -82,7 +82,7 @@ cd src/Assistant && dotnet build -c Release
 ```
 
 `TreatWarningsAsErrors` is on for every .NET project **except** the Assistant's, which has its own
-`Directory.Build.props` (and its own `<Version>`, currently 0.10.0, separate from the product
+`Directory.Build.props` (and its own `<Version>`, currently 0.10.1, separate from the product
 version). The product version has a single source: `VersionPrefix` in the root
 `Directory.Build.props`. The Android app and the release manifest read it from there.
 

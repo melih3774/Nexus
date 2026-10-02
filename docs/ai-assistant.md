@@ -6,7 +6,8 @@ repository, at [`src/Assistant/`](../src/Assistant/), under its original `PcAssi
 namespace names; the executable is still `PcAssistant.Desktop.exe`.
 
 **It is part of Nexus, and it is still a separate process.** PC Core does not reference its
-assemblies, does not host it, and does not start it. The two talk over the same local named pipe they
+assemblies, does not host it, and does not start it (an update that replaces it reopens it only if it
+was already running). The two talk over the same local named pipe they
 always have, and each verifies which executable is on the other end. Sharing a repository changed
 where the code is kept and nothing about how the two programs meet.
 
@@ -16,6 +17,7 @@ the updater asks it to close, and it refuses while a task runs or an approval wa
 [updating.md](updating.md#pc-assistant).
 
 - [How it fits together](#how-it-fits-together)
+- [What leaves the PC](#what-leaves-the-pc)
 - [Setting it up](#setting-it-up)
 - [Using it](#using-it)
 - [What the phone shows](#what-the-phone-shows)
@@ -42,6 +44,18 @@ Nexus for Android ── Tailscale ──> PC Core ── owner-only named pipe 
 The phone never talks to PC Assistant. PC Core never talks to Claude. A task started from the phone is an
 ordinary PC Assistant task: it appears in PC Assistant's window, lives in its database, and can be
 continued from either place.
+
+## What leaves the PC
+
+**This is the one part of Nexus that uses a cloud service.** The rest of Nexus stays between your
+phone and your PC. PC Assistant runs Claude Code, signed in with your own Claude account, and
+Claude Code sends Anthropic what the model needs to work: your instructions, the conversation, and
+whatever its tools read for it, including screenshots of windows and the screen, text from
+applications and the contents of files it opens. Anthropic's terms for your Claude account apply to
+that data; Nexus adds no other recipient and no telemetry.
+
+Nothing is sent until you set PC Assistant up and give it a task. Without it, Nexus has no
+connection to anything but your phone.
 
 ## Setting it up
 

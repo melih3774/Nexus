@@ -5,18 +5,19 @@ seriously even though it is a personal project.
 
 ## Reporting a vulnerability
 
-Please **do not open a public issue**. Contact the repository owner privately through GitHub. If the
-repository is public and private vulnerability reporting is enabled, use **Security → Report a
-vulnerability**.
+Please **do not open a public issue**. Report it privately through GitHub's private vulnerability
+reporting: on the repository's **Security** tab choose **Report a vulnerability**, or go straight to
+<https://github.com/melih3774/Nexus/security/advisories/new>. Only the maintainer sees the report
+until a fix is published.
 
 A useful report says which component is affected (PC Core, the Android app, the HID driver,
-SecureCapture, the updater), what an attacker needs beforehand (network position, a paired phone,
+SecureCapture, the input broker, the updater, PC Assistant or its elevation helper), what an attacker needs beforehand (network position, a paired phone,
 local access), and what they gain.
 
 ## Supported versions
 
-Only the latest release on the default branch. Nexus has one deployment and there are no maintained
-older branches.
+Only the latest release on the default branch. Nexus is maintained by one person, and there are no
+maintained older branches.
 
 ## Scope
 
@@ -28,7 +29,7 @@ In scope, especially:
   signature)
 - escaping the filesystem boundary, or reaching Nexus's own state and install folders through Files
 - abusing the HID driver control interface, the SecureCapture service or pipes, the input broker pipe,
-  or the updater's elevated step
+  the updater's elevated step, or PC Assistant's `PcAssistantElevation` service and its pipe
 - capturing the camera or microphone without the on-screen indicator
 - anything that makes Nexus weaken Windows security (UAC, Secure Desktop, Memory Integrity, driver
   signing)

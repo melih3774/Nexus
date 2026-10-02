@@ -193,7 +193,8 @@ Nexus holds itself responsible for:
 What stays with PC Assistant: Claude Code, AUTO/ASK, which actions need an approval, and the approvals
 themselves. Administrator approvals cannot be answered from the phone at all. PC Assistant refuses
 them on its bridge, and they are answered in its own card at the PC. The bridge is off on both sides by
-default, and Nexus never starts PC Assistant.
+default. Nexus never starts PC Assistant on its own: an update that replaces it reopens it only if it
+was already running.
 
 Security monitoring treats PC Assistant's clicks and typing like any other injected input: set aside,
 never counted as a person. That was measured, not assumed; see
@@ -223,14 +224,15 @@ need more are small, separate and installed deliberately by the owner:
 
 | Component | Runs as | What it can do | Installed by |
 |---|---|---|---|
-| **Nexus HID driver** | UMDF2 user-mode driver, on Windows' inbox VHF | Publish a mouse, keyboard and touch screen for the handle that created them; six fixed control operations | `tools/nexus-hid-install.ps1` (dry run by default) |
+| **Nexus HID driver** | UMDF2 user-mode driver, on Windows' inbox VHF | Publish a mouse, keyboard and touch screen for the handle that created them; six fixed control operations | The owner, following the plan `tools/nexus-hid-install.ps1` prints |
 | **SecureCapture** | LocalSystem service | Start a capture worker in the console session; return frames to a verified PC Core pipe | `PcCore.SecureCapture.exe --install`, from `%ProgramFiles%` |
 | **Input broker** (optional fallback) | Elevated, in the owner's session | Ten input operations over an owner-only pipe with executable checks on both ends | `PcCore.Host.exe --install-native-input` |
 | **Updater** | Standard user; elevates only one step | Swap PC Core files; elevate only to reinstall the driver or SecureCapture | Started by PC Core |
+| **PC Assistant's privileged helper** (`PcAssistantElevation`) | LocalSystem service that acts with the owner's own elevated token, in the owner's session, never as SYSTEM | Carry out the administrator operations PC Assistant asks for, each one approved in PC Assistant at the PC, with no further UAC prompt | The owner, in PC Assistant (**Capabilities → Install Privileged Helper**, one UAC prompt) |
 
 The driver package contains no kernel-mode code of its own. It is signed with a certificate the owner
-created and chose to trust on this machine. The install script names the certificate, shows its
-thumbprint and asks before trusting it. It captures Secure Boot, Memory Integrity (HVCI) and test
+created and chose to trust on this machine; its private key cannot be exported. The install plan
+shows the certificate and its thumbprint before the step that trusts it. It captures Secure Boot, Memory Integrity (HVCI) and test
 signing before installing and compares them afterwards: installing Nexus must change none of them.
 It installs with Memory Integrity on and test signing off. The uninstall steps include removing the
 certificate from both stores, so the machine does not keep trusting a key after the driver is gone.
@@ -259,7 +261,8 @@ Nexus has no stealth mode.
 | Phone, Keystore | the owner-session EC key | hardware-backed, requires user authentication, invalidated by new biometric enrolment |
 
 Logs contain identifiers, never credentials. There is no analytics SDK, no crash reporter and no
-cloud component. Evidence never leaves the PC except when the owner fetches it over the
+cloud component of Nexus's own; the optional PC Assistant uses Claude Code, which does
+([ai-assistant.md](ai-assistant.md#what-leaves-the-pc)). Evidence never leaves the PC except when the owner fetches it over the
 authenticated session.
 
 ## What Nexus will not do
@@ -268,11 +271,20 @@ authenticated session.
 - Approve a UAC prompt, capture a credential, or automate consent
 - Run hidden, or record camera or microphone without an indicator
 - Log keystrokes (security detection never reads key codes)
-- Listen on the LAN or the internet, or route anything through a relay or cloud service
-- Let the phone pair devices, delete evidence, or turn monitoring off
+- Listen on the LAN or the internet, or run a relay or cloud service of its own. Tailscale may carry
+  the encrypted connection through its relays, and PC Assistant's Claude Code talks to Anthropic
+  ([ai-assistant.md](ai-assistant.md#what-leaves-the-pc))
+- Let the phone pair devices, delete evidence, or change monitoring settings. Disarming from the
+  phone needs the owner session and leaves recorded evidence alone
 - Take a destructive action on its own (no remote wipe, lock or shutdown in response to an incident)
 
 ## Known limits
+
+- **Whoever passes the phone's unlock is the owner.** The owner session accepts the phone's screen
+  lock as well as its biometric. Someone who has the phone and knows its PIN gets full remote
+  authority, desktop included, and through the desktop can do anything the owner's account can,
+  such as deleting files. Deleting evidence through Nexus still needs Windows Hello at the PC, but
+  evidence files are ordinary files of the owner's account.
 
 - **Elevated reach is real power.** Anything that lets a standard-user process produce input in an
   elevated window is, by construction, a way for user-level code to drive administrator UI. Nexus
