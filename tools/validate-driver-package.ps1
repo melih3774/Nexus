@@ -79,7 +79,11 @@ function Find-MSBuild {
     )
 
     foreach ($c in $candidates) { if (Test-Path $c) { return $c } }
-    throw 'MSBuild not found.'
+
+    # The project pins its toolset (v143, Visual Studio 2022) and the Windows Kit (10.0.26100.0), so a
+    # newer Visual Studio alone does not build it. Say what is needed rather than only what is missing.
+    throw 'MSBuild from Visual Studio 2022 not found. The driver needs Visual Studio 2022 (Build Tools or any edition) ' +
+          'with the "Desktop development with C++" workload (MSVC v143), plus the Windows SDK and WDK 10.0.26100.'
 }
 
 function Find-Dumpbin {

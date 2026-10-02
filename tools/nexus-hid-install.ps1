@@ -1,11 +1,11 @@
 <#
 .SYNOPSIS
-    Inspects, plans and (on explicit request) performs the Nexus HID driver install. Dry-run by
-    default; nothing is changed unless -Apply is passed AND the owner confirms.
+    Inspects the machine and prints the exact Nexus HID driver install or uninstall plan, with the
+    real tool paths and commands. It changes nothing: you run the plan, from an elevated PowerShell.
 
 .DESCRIPTION
     This is the whole of install day in one script, so the deliberate pass is a matter of reading
-    output and answering one prompt rather than remembering nine commands.
+    output and running the printed commands rather than remembering nine of them.
 
     WHAT IT WILL NEVER DO
       - change Secure Boot, HVCI / Memory Integrity, TESTSIGNING or UAC
@@ -20,20 +20,35 @@
     THE SECURITY BASELINE IS CAPTURED, NOT ASSUMED
 
     An earlier version of this plan asserted "Secure Boot still ON" after install. That is wrong on
-    this machine, where Secure Boot is off and always has been. Nexus does not require Secure Boot
-    and does not change it; what matters is that installing changes nothing, so the posture is
-    captured before and compared after rather than measured against a hardcoded expectation.
+    the machine Nexus was developed on, where Secure Boot is off and always has been. Nexus does not
+    require Secure Boot and does not change it; what matters is that installing changes nothing, so
+    the posture is captured before and compared after rather than measured against a hardcoded
+    expectation.
+
+    THE SIGNING KEY IS YOURS
+
+    Nexus publishes no signed driver. Each PC signs the package it built with a key of its own,
+    created here on first install (CN=Nexus Driver Signing, RSA 3072, code signing only, the private
+    key not exportable) in the installing account's personal store, and trusts that one certificate
+    in two Local Machine stores. Releases built on this PC are signed with the same key afterwards
+    (tools\publish-release.ps1 requires a valid signature).
 
 .PARAMETER Action
     Inspect (default), Install, Repair, Uninstall.
 
 .PARAMETER Apply
-    Actually perform the action. Without it every action is a dry run that reports what it would do.
+    Reserved. Performing the plan is not automated yet; -Apply refuses and changes nothing. Repair
+    stays a plan in any case: a newer driver reaches an installed PC through the Nexus updater
+    (docs\updating.md), which updates the existing device in place.
+
+.PARAMETER RemoveSigningKey
+    With -Action Uninstall: the plan also deletes the signing key from the personal store. Without
+    it the key stays, untrusted, so a later install signs with the same key again.
 
 .EXAMPLE
     .\nexus-hid-install.ps1
-    .\nexus-hid-install.ps1 -Action Install            # dry run: prints the exact plan
-    .\nexus-hid-install.ps1 -Action Install -Apply     # the real thing, with confirmation
+    .\nexus-hid-install.ps1 -Action Install            # the exact install plan for this PC
+    .\nexus-hid-install.ps1 -Action Uninstall          # the plan to remove the device, packages and trust
 #>
 [CmdletBinding()]
 param(
@@ -41,6 +56,8 @@ param(
     [string] $Action = 'Inspect',
 
     [switch] $Apply,
+
+    [switch] $RemoveSigningKey,
 
     [string] $PackageDir
 )
@@ -59,8 +76,12 @@ $InfName = 'NexusHid.inf'
 $DriverDll = 'NexusHidDriver.dll'
 $CatalogName = 'nexushid.cat'
 $CertSubject = 'CN=Nexus Driver Signing'
-$ExpectedVersion = '0.9.0.0'
 $InstanceId = 'NexusHid'
+
+# What devgen creates for /bus ROOT /instanceid NexusHid, and what the updater and PC Core look for.
+$DeviceInstance = 'ROOT\DEVGEN\NEXUSHID'
+
+$UmdfServiceKey = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\WUDF\Services\NexusHidDriver'
 
 function Section([string] $title) {
     Write-Output ''
@@ -71,9 +92,11 @@ function Field([string] $name, $value) {
     Write-Output ("   {0,-28} {1}" -f $name, $value)
 }
 
-# --------------------------------------------------------------- WDK device tooling
+# --------------------------------------------------------------- WDK tooling
 
-function Find-DeviceTool([string] $name) {
+function Find-WdkTool([string] $name) {
+    # Building the driver needs the WDK, so installing it can too: devgen creates the root device and
+    # signtool signs the catalog. The newest kit version wins.
     $roots = @(
         'C:\Program Files (x86)\Windows Kits\10\Tools',
         'C:\Program Files (x86)\Windows Kits\10\bin'
@@ -82,6 +105,7 @@ function Find-DeviceTool([string] $name) {
     foreach ($root in $roots) {
         $hit = Get-ChildItem -Path $root -Recurse -Filter $name -ErrorAction SilentlyContinue |
                Where-Object { $_.FullName -like '*\x64\*' } |
+               Sort-Object FullName -Descending |
                Select-Object -First 1
         if ($null -ne $hit) { return $hit.FullName }
     }
@@ -207,6 +231,11 @@ function Format-Posture($p) {
     "SecureBoot=$sb HVCI=$(if ($p.Hvci) { 'ON' } else { 'off' }) TESTSIGNING=$(if ($p.TestSigning) { 'ON' } else { 'off' })"
 }
 
+function Test-Elevated {
+    $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
 # --------------------------------------------------------------- package inspection
 
 function Get-PackageState {
@@ -231,6 +260,7 @@ function Get-PackageState {
         InfHash    = if (Test-Path $inf) { (Get-FileHash $inf -Algorithm SHA256).Hash } else { $null }
         Stamped    = ($null -ne $driverVer -and $driverVer -ne '')
         DriverVer  = $driverVer
+        Version    = if ($driverVer) { ($driverVer -split ',')[-1].Trim() } else { $null }
         HardwareId = Get-HardwareIdFromInf $inf
         Dll        = $dll
         DllPresent = Test-Path $dll
@@ -239,15 +269,26 @@ function Get-PackageState {
         CatPresent = Test-Path $cat
         CatStatus  = if ($null -ne $signature) { $signature.Status.ToString() } else { 'NotPresent' }
         CatSigner  = if ($null -ne $signature -and $null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { $null }
+        CatThumb   = if ($null -ne $signature -and $null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Thumbprint } else { $null }
     }
 }
 
-function Get-InstalledState([string] $hardwareId) {
-    $inStore = @()
-    try {
-        $inStore = & pnputil /enum-drivers 2>$null | Select-String -Pattern 'NexusHid'
-    } catch { }
+function Get-NexusPackages {
+    # Every Nexus package in the Driver Store, by published name. pnputil's text is localised, so the
+    # blocks are recognised by their values (nexushid.inf, the Nexus provider), not by their labels.
+    $text = (& pnputil /enum-drivers 2>$null | Out-String)
+    $packages = @()
 
+    foreach ($block in ($text -split '(?:\r?\n){2,}')) {
+        if ($block -notmatch '(?im)^\s*[^:\r\n]+:\s*nexushid\.inf\s*$') { continue }
+        $oem = [regex]::Match($block, '(?i)\boem\d+\.inf\b').Value
+        if ($oem) { $packages += $oem.ToLowerInvariant() }
+    }
+
+    return @($packages | Sort-Object -Unique)
+}
+
+function Get-InstalledState {
     $devices = @()
     try {
         $devices = @(Get-PnpDevice -ErrorAction SilentlyContinue |
@@ -263,22 +304,76 @@ function Get-InstalledState([string] $hardwareId) {
         } catch { }
     }
 
+    $keys = @(Get-ChildItem Cert:\CurrentUser\My -ErrorAction SilentlyContinue |
+              Where-Object { $_.Subject -eq $CertSubject -and $_.HasPrivateKey })
+
+    $packages = Get-NexusPackages
+
     [pscustomobject]@{
-        InDriverStore = ($inStore.Count -gt 0)
+        Packages      = $packages
+        InDriverStore = ($packages.Count -gt 0)
         Devices       = $devices
         DeviceCount   = $devices.Count
         TrustedCerts  = $certs
+        SigningKeys   = $keys
     }
+}
+
+# --------------------------------------------------------------- what the running driver says
+
+# The version the loaded driver reports over IOCTL_NEXUS_HID_GET_VERSION, as the updater asks it
+# (src\PcCore.Update\Windows\WindowsHidDriverHost.cs): a bound package is not proof that it runs.
+$probeSource = @'
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+public static class NexusHidRunningVersion {
+    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)] static extern uint CM_Get_Device_Interface_List_SizeW(out uint length, ref Guid cls, string id, uint flags);
+    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)] static extern uint CM_Get_Device_Interface_ListW(ref Guid cls, string id, char[] buffer, uint length, uint flags);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern SafeFileHandle CreateFileW(string path, uint access, uint share, IntPtr sa, uint disposition, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool DeviceIoControl(SafeFileHandle handle, uint code, IntPtr input, int inputLength, byte[] output, int outputLength, out int returned, IntPtr overlapped);
+    public static string Ask(string deviceInstance) {
+        Guid control = new Guid("6d1f4a2e-9c3b-4e7a-b5d8-1a2c3e4f5b60");
+        uint length;
+        if (CM_Get_Device_Interface_List_SizeW(out length, ref control, deviceInstance, 0) != 0 || length <= 1) return null;
+        char[] buffer = new char[length];
+        if (CM_Get_Device_Interface_ListW(ref control, deviceInstance, buffer, length, 0) != 0) return null;
+        string path = new string(buffer).Split('\0')[0];
+        using (SafeFileHandle handle = CreateFileW(path, 0xC0000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero)) {
+            if (handle.IsInvalid) return null;
+            byte[] reply = new byte[8];
+            int returned;
+            if (!DeviceIoControl(handle, 0x0022A000, IntPtr.Zero, 0, reply, 8, out returned, IntPtr.Zero) || returned != 8) return null;
+            uint v = BitConverter.ToUInt32(reply, 4);
+            return string.Format("{0}.{1}.{2}.{3}", v >> 24, (v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF);
+        }
+    }
+}
+'@
+
+function Get-RunningVersion([int] $waitSeconds = 0) {
+    if (-not ('NexusHidRunningVersion' -as [type])) { Add-Type -TypeDefinition $probeSource }
+
+    $deadline = (Get-Date).AddSeconds($waitSeconds)
+    do {
+        $version = [NexusHidRunningVersion]::Ask($DeviceInstance)
+        if ($version) { return $version }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+
+    return $null
 }
 
 # --------------------------------------------------------------- report
 
 $posture = Get-SecurityPosture
 $package = Get-PackageState
-$installed = Get-InstalledState $package.HardwareId
+$installed = Get-InstalledState
+$elevated = Test-Elevated
 
-$devgen = Find-DeviceTool 'devgen.exe'
-$devcon = Find-DeviceTool 'devcon.exe'
+$devgen = Find-WdkTool 'devgen.exe'
+$signtool = Find-WdkTool 'signtool.exe'
+$pcCore = @(Get-Process -Name 'PcCore.Host' -ErrorAction SilentlyContinue)
 
 Section 'Machine security posture (captured, and must not change)'
 Field 'Secure Boot' $(if ($null -eq $posture.SecureBoot) { 'unknown' } elseif ($posture.SecureBoot) { 'ON' } else { 'off (pre-existing; Nexus neither needs nor changes this)' })
@@ -292,46 +387,54 @@ Field 'INF stamped' $(if ($package.Stamped) { "yes  DriverVer = $($package.Drive
 Field 'Hardware ID' $(if ($package.HardwareId) { $package.HardwareId } else { 'could not be read from the INF' })
 Field 'Driver DLL' $(if ($package.DllPresent) { "present  $($package.DllHash.Substring(0,16))..." } else { 'MISSING' })
 Field 'Catalog' $(if ($package.CatPresent) { "present  ($($package.CatStatus))" } else { 'MISSING' })
-Field 'Catalog signer' $(if ($package.CatSigner) { $package.CatSigner } else { '- (unsigned)' })
+Field 'Catalog signer' $(if ($package.CatSigner) { "$($package.CatSigner)  $($package.CatThumb)" } else { '- (unsigned)' })
 
-Section 'Device tooling (WDK)'
+Section 'Tooling (WDK)'
 Field 'devgen.exe' $(if ($devgen) { $devgen } else { 'NOT FOUND' })
-Field 'devcon.exe' $(if ($devcon) { $devcon } else { 'NOT FOUND' })
+Field 'signtool.exe' $(if ($signtool) { $signtool } else { 'NOT FOUND' })
 
 Section 'Current install state'
-Field 'In Driver Store' $(if ($installed.InDriverStore) { 'YES' } else { 'no' })
+Field 'Nexus packages' $(if ($installed.Packages.Count -eq 0) { 'none' } else { $installed.Packages -join ', ' })
 Field 'Nexus devices' $installed.DeviceCount
 if ($installed.DeviceCount -gt 0) {
-    $installed.Devices | ForEach-Object { Field '  instance' $_.InstanceId }
+    $installed.Devices | ForEach-Object { Field '  instance' "$($_.InstanceId) ($($_.Status))" }
 }
 Field 'Trusted Nexus certs' $(if ($installed.TrustedCerts.Count -eq 0) { 'none' } else { ($installed.TrustedCerts | ForEach-Object { "$($_.Store):$($_.Thumbprint)" }) -join ', ' })
+Field 'Signing key (personal)' $(if ($installed.SigningKeys.Count -eq 0) { 'none (Install creates one)' } else { ($installed.SigningKeys | ForEach-Object { "$($_.Thumbprint) until $($_.NotAfter.ToString('yyyy-MM-dd'))" }) -join ', ' })
+Field 'PC Core running' $(if ($pcCore.Count -gt 0) { "yes (pid $($pcCore.Id -join ', '))" } else { 'no' })
+Field 'Elevated' $(if ($elevated) { 'yes' } else { 'no' })
 
 # --------------------------------------------------------------- safety assertions
 
 $blockers = @()
 
-if ($posture.TestSigning) {
+if ($posture.TestSigning -and $Action -ne 'Uninstall') {
     $blockers += 'TESTSIGNING is ON. Nexus does not install under test signing; the whole point is a package that loads on a normally secured machine.'
 }
-if (-not $package.InfPresent) { $blockers += "INF missing from the canonical package: $($package.Inf)" }
-if (-not $package.DllPresent) { $blockers += 'Driver DLL missing. Run tools\validate-driver-package.ps1 first.' }
-if ($package.InfPresent -and -not $package.Stamped) { $blockers += 'INF is not stamped. Run tools\validate-driver-package.ps1.' }
-if (-not $package.HardwareId) { $blockers += 'Hardware ID could not be read from the INF.' }
 
 if ($Action -in @('Install', 'Repair')) {
-    if (-not $package.CatPresent) {
-        $blockers += 'No catalog in the canonical package. Run validate-driver-package.ps1, then sign it.'
-    }
-    elseif ($package.CatStatus -ne 'Valid') {
-        $blockers += "Catalog signature is '$($package.CatStatus)'. Windows will refuse an unsigned or untrusted package, and that refusal is correct."
-    }
-    if (-not $devgen -and -not $devcon) {
-        $blockers += 'Neither devgen.exe nor devcon.exe was found. A root-enumerated device cannot be created without one.'
+    if (-not $package.InfPresent) { $blockers += "INF missing from the canonical package: $($package.Inf). Run tools\validate-driver-package.ps1 first." }
+    if (-not $package.DllPresent) { $blockers += 'Driver DLL missing. Run tools\validate-driver-package.ps1 first.' }
+    if ($package.InfPresent -and -not $package.Stamped) { $blockers += 'INF is not stamped. Run tools\validate-driver-package.ps1.' }
+    if ($package.InfPresent -and -not $package.HardwareId) { $blockers += 'Hardware ID could not be read from the INF.' }
+    if (-not $package.CatPresent) { $blockers += 'No catalog in the canonical package. Run tools\validate-driver-package.ps1.' }
+}
+
+if ($Action -eq 'Install') {
+    if (-not $devgen) { $blockers += 'devgen.exe was not found. Install the WDK (10.0.26100); a root-enumerated device cannot be created without it.' }
+    if (-not $signtool) { $blockers += 'signtool.exe was not found. Install the Windows SDK / WDK (10.0.26100).' }
+
+    if ($installed.DeviceCount -gt 0) {
+        $blockers += "A Nexus device already exists ($($installed.DeviceCount)). Installing again would create a duplicate root devnode publishing a second set of HID collections. Newer drivers arrive through the Nexus updater; to start over, follow the -Action Uninstall plan first."
     }
 }
 
-if ($Action -eq 'Install' -and $installed.DeviceCount -gt 0) {
-    $blockers += "A Nexus device already exists ($($installed.DeviceCount)). Use -Action Repair; installing again would create a duplicate root devnode publishing a second set of HID collections."
+if ($Action -eq 'Uninstall' -and $pcCore.Count -gt 0) {
+    $blockers += 'PC Core is running and holds the Nexus HID device open, so Windows could only remove it at the next restart. Exit Nexus from its tray icon first.'
+}
+
+if ($Apply -and $Action -in @('Install', 'Uninstall') -and -not $elevated) {
+    $blockers += 'Not elevated. -Apply changes the Driver Store and what this PC trusts; run it from an elevated PowerShell.'
 }
 
 if ($blockers.Count -gt 0) {
@@ -344,13 +447,8 @@ if ($blockers.Count -gt 0) {
 Section "Plan: $Action"
 
 $hwid = $package.HardwareId
-$deviceStep = if ($devgen) {
-    "devgen /add /bus ROOT /hardwareid `"$hwid`" /instanceid $InstanceId"
-} elseif ($devcon) {
-    "devcon install `"$($package.Inf)`" `"$hwid`""
-} else {
-    '(no device-creation tool available)'
-}
+$devgenText = if ($devgen) { "& '$devgen'" } else { 'devgen' }
+$signtoolText = if ($signtool) { "& '$signtool'" } else { 'signtool' }
 
 switch ($Action) {
     'Inspect' {
@@ -358,41 +456,54 @@ switch ($Action) {
     }
 
     'Install' {
-        Write-Output '   1. Create a Nexus-owned code-signing certificate (once, kept local):'
-        Write-Output "        New-SelfSignedCertificate -Type CodeSigningCert -Subject '$CertSubject' ``"
-        Write-Output "            -CertStoreLocation Cert:\CurrentUser\My -KeyUsage DigitalSignature ``"
-        Write-Output "            -TextExtension '2.5.29.37={text}1.3.6.1.5.5.7.3.3' -NotAfter (Get-Date).AddYears(5)"
-        Write-Output '      EKU 1.3.6.1.5.5.7.3.3 is Code Signing, and it is the only one this needs.'
+        Write-Output '   Run these in ONE elevated PowerShell, in order; each step uses $cert from step 1.'
         Write-Output ''
-        Write-Output '   2. Sign the catalog IN PLACE, in the canonical package:'
-        Write-Output "        signtool sign /fd SHA256 /a /n 'Nexus Driver Signing' '$($package.Catalog)'"
+        $existingKey = $installed.SigningKeys | Where-Object { $_.NotAfter -gt (Get-Date).AddDays(30) } |
+                       Sort-Object NotAfter -Descending | Select-Object -First 1
+        if ($existingKey) {
+            Write-Output "   1. The signing key already exists ($($existingKey.Thumbprint)); use it:"
+            Write-Output "        `$cert = Get-Item Cert:\CurrentUser\My\$($existingKey.Thumbprint)"
+        } else {
+            Write-Output '   1. Create the signing key (kept on this PC; the private key cannot be exported):'
+            Write-Output "        `$cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject '$CertSubject' ``"
+            Write-Output '            -KeyAlgorithm RSA -KeyLength 3072 -HashAlgorithm SHA256 -KeyUsage DigitalSignature `'
+            Write-Output '            -KeyExportPolicy NonExportable -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddYears(5)'
+            Write-Output '      Code Signing (1.3.6.1.5.5.7.3.3) is the only purpose it has.'
+        }
+        Write-Output ''
+        Write-Output '   2. Sign the catalog IN PLACE, in the canonical package, with exactly that key:'
+        Write-Output "        $signtoolText sign /fd SHA256 /s My /sha1 `$cert.Thumbprint '$($package.Catalog)'"
         Write-Output '      No timestamp, deliberately: a timestamp exists so a signature outlives its'
         Write-Output '      certificate, which matters for distribution and not for one machine that can'
         Write-Output '      re-sign at will.'
         Write-Output ''
-        Write-Output '   3. Trust exactly that certificate, in exactly two Local Machine stores (admin):'
-        Write-Output '        Root             - so the chain validates'
-        Write-Output '        TrustedPublisher - so PnP installs without prompting'
-        Write-Output '      Export the .cer from CurrentUser\My and import only that file. This is the one'
-        Write-Output '      step that changes what this computer trusts.'
+        Write-Output '   3. Trust exactly that certificate, in exactly two Local Machine stores. This is the one'
+        Write-Output '      step that changes what this computer trusts, so read what you are trusting first:'
+        Write-Output '        $cert | Format-List Subject, Thumbprint, NotAfter'
+        Write-Output '        Export-Certificate -Cert $cert -FilePath "$env:TEMP\nexus-driver-signing.cer" -Type CERT'
+        Write-Output '        Import-Certificate -FilePath "$env:TEMP\nexus-driver-signing.cer" -CertStoreLocation Cert:\LocalMachine\Root'
+        Write-Output '        Import-Certificate -FilePath "$env:TEMP\nexus-driver-signing.cer" -CertStoreLocation Cert:\LocalMachine\TrustedPublisher'
+        Write-Output '        Remove-Item "$env:TEMP\nexus-driver-signing.cer"'
+        Write-Output '      Root lets the chain validate; TrustedPublisher lets PnP install without prompting.'
         Write-Output ''
         Write-Output '   4. Verify before installing:'
         Write-Output "        Get-AuthenticodeSignature '$($package.Catalog)'   # expect Status = Valid"
         Write-Output ''
-        Write-Output '   5. CREATE THE ROOT DEVICE (admin). This step is not optional:'
-        Write-Output "        $deviceStep"
+        Write-Output '   5. CREATE THE ROOT DEVICE. This step is not optional:'
+        Write-Output "        $devgenText /add /bus ROOT /hardwareid `"$hwid`" /instanceid $InstanceId"
         Write-Output ''
         Write-Output '      pnputil /add-driver /install alone does NOT create a devnode. It stages the'
         Write-Output '      package and binds it to devices that already exist; a root-enumerated device'
         Write-Output '      has no bus to enumerate it, so nothing appears and the install looks like it'
         Write-Output '      silently did nothing. The device has to be generated first.'
         Write-Output ''
-        Write-Output '   6. Add and install the package (admin):'
+        Write-Output '   6. Add and install the package:'
         Write-Output "        pnputil /add-driver '$($package.Inf)' /install"
         Write-Output ''
         Write-Output '   7. ROLLBACK POINT. If step 5 succeeded and step 6 fails, or the device does not'
-        Write-Output '      start, the devnode exists with no working driver. Remove it before retrying:'
-        Write-Output "        devgen /remove <instance id from step 5>"
+        Write-Output '      start, the devnode exists with no working driver. Remove it, and the package if'
+        Write-Output '      it was added (pnputil /delete-driver <oem#.inf> /uninstall), before retrying:'
+        Write-Output "        pnputil /remove-device $DeviceInstance"
         Write-Output '      Leaving it behind is what produces duplicates on the next attempt.'
         Write-Output ''
         Write-Output '   8. Confirm the posture is UNCHANGED from the captured baseline:'
@@ -400,41 +511,52 @@ switch ($Action) {
         Write-Output '      Not "Secure Boot ON" - unchanged. Any difference means the install did'
         Write-Output '      something it should not have, and it should be rolled back.'
         Write-Output ''
-        Write-Output '   9. Verify enumeration before trusting anything:'
-        Write-Output "        Get-PnpDevice | Where-Object InstanceId -like '*NEXUSHID*'"
-        Write-Output '      Expect Nexus Mouse, Nexus Keyboard, Nexus Touch. input.status reporting'
-        Write-Output '      VIRTUAL_HID without enumerated devices is a failed install, not a working one.'
+        Write-Output '   9. Verify that the driver RUNS, not only that it is bound: the device started with'
+        Write-Output "      no problem code, the stack WUDFRd -> vhf, and the loaded driver answering $($package.Version)"
+        Write-Output '      over IOCTL_NEXUS_HID_GET_VERSION. Then start Nexus: its log says'
+        Write-Output '      "Virtual HID: Ready - Nexus HID ... published 3 device(s)" (mouse, keyboard, touch).'
     }
 
     'Repair' {
-        Write-Output "   1. Compare the installed package version against $ExpectedVersion (INF says $($package.DriverVer))."
-        Write-Output '   2. Update the package in place; do NOT create a second device:'
+        Write-Output "   1. Compare the installed package version against the package's ($($package.Version))."
+        Write-Output '   2. A newer driver reaches an installed PC through the Nexus updater, which updates'
+        Write-Output '      the existing device in place, verifies that the new driver runs, and rolls back'
+        Write-Output '      (tools\publish-release.ps1 -Install; docs\updating.md). By hand, the same:'
         Write-Output "        pnputil /add-driver '$($package.Inf)' /install"
-        Write-Output '   3. If the driver must be replaced rather than updated:'
-        Write-Output '        pnputil /delete-driver <oem#.inf> /uninstall     then re-add as above.'
-        Write-Output "   4. Existing Nexus devices: $($installed.DeviceCount). More than one means a"
-        Write-Output '      previous install left a devnode behind; remove the extras with devgen /remove.'
-        Write-Output '   5. Re-verify enumeration and identity resolution afterwards.'
+        Write-Output '      Never create a second device.'
+        Write-Output "   3. Existing Nexus devices: $($installed.DeviceCount). More than one means a"
+        Write-Output '      previous install left a devnode behind; remove the extras with pnputil /remove-device.'
+        Write-Output '   4. To start over completely: the -Action Uninstall plan, then the -Action Install plan.'
     }
 
     'Uninstall' {
-        Write-Output '   1. Neutralize: PC Core releases held HID state through the HID backend first.'
-        Write-Output '   2. Stop routing to Virtual HID and let the router fall back.'
-        Write-Output '   3. Remove the exact device(s), by instance id:'
+        Write-Output '   1. PC Core must not be running: it holds the device, and a held device is only'
+        Write-Output '      removed at the next restart. Exit Nexus from its tray icon first.'
+        Write-Output '   2. Remove the device, by instance id (its mouse, keyboard and touch go with it):'
         if ($installed.DeviceCount -gt 0) {
-            $installed.Devices | ForEach-Object { Write-Output "        devgen /remove $($_.InstanceId)" }
+            $installed.Devices | Where-Object { $_.InstanceId -like 'ROOT\*' } |
+                ForEach-Object { Write-Output "        pnputil /remove-device $($_.InstanceId)" }
         } else {
             Write-Output '        (none present)'
         }
-        Write-Output '      devgen /remove only removes devices devgen created, which is why the install'
-        Write-Output '      path uses it rather than a generic device removal.'
-        Write-Output '   4. Remove the package:'
-        Write-Output '        pnputil /delete-driver <oem#.inf> /uninstall'
-        Write-Output '   5. Remove the certificate from BOTH stores - uninstall that leaves the key'
+        Write-Output '   3. Remove every Nexus package from the Driver Store:'
+        if ($installed.Packages.Count -gt 0) {
+            $installed.Packages | ForEach-Object { Write-Output "        pnputil /delete-driver $_ /uninstall" }
+        } else {
+            Write-Output '        (none present)'
+        }
+        Write-Output '   4. Remove the certificate from BOTH stores - uninstall that leaves the key'
         Write-Output '      trusted leaves the machine trusting something for no reason:'
         Write-Output "        Get-ChildItem Cert:\LocalMachine\Root, Cert:\LocalMachine\TrustedPublisher |"
         Write-Output "            Where-Object Subject -eq '$CertSubject' | Remove-Item"
-        Write-Output '   6. Clear trusted Nexus identities in PC Core (automatic on backend loss).'
+        if ($RemoveSigningKey -and $installed.SigningKeys.Count -gt 0) {
+            Write-Output '   5. Delete the signing key (not elevated: it is in your own store):'
+            $installed.SigningKeys | ForEach-Object { Write-Output "        Remove-Item Cert:\CurrentUser\My\$($_.Thumbprint) -DeleteKey" }
+        } else {
+            Write-Output '   5. The signing key in Cert:\CurrentUser\My stays, untrusted, for a later install'
+            Write-Output '      (-RemoveSigningKey adds deleting it to this plan).'
+        }
+        Write-Output '   6. PC Core falls back to injected input the next time it starts.'
     }
 }
 
@@ -444,7 +566,9 @@ Section 'Result'
 
 if (-not $Apply) {
     Write-Output '   DRY RUN. Nothing was changed.'
-    Write-Output '   Re-run with -Apply to perform the action, which will ask for confirmation first.'
+    if ($Action -in @('Install', 'Uninstall')) {
+        Write-Output '   Run the steps above from an elevated PowerShell, checking each result before the next.'
+    }
 
     # The baseline is written on a dry run too, so the comparison after a real install is against
     # the posture as it was before anything happened rather than after step one.
@@ -459,26 +583,27 @@ if (-not $Apply) {
     return
 }
 
-if ($blockers.Count -gt 0) {
-    Write-Output '   REFUSED. Resolve the blockers above first.'
-    Write-Output '   This script will not weaken Secure Boot, HVCI, TESTSIGNING or UAC to make an install succeed.'
-    exit 1
-}
-
 if ($Action -eq 'Inspect') {
     Write-Output '   Inspect changes nothing; -Apply has no effect.'
     return
 }
 
-Write-Output "   About to $Action the Nexus HID driver on this machine."
-Write-Output '   This changes machine state. Read the plan above before answering.'
-$answer = Read-Host "   Type the word $($Action.ToUpperInvariant()) to proceed"
-
-if ($answer -cne $Action.ToUpperInvariant()) {
-    Write-Output '   Cancelled. Nothing was changed.'
+if ($Action -eq 'Repair') {
+    Write-Output '   Repair is a plan, not an action: driver updates go through the Nexus updater, which'
+    Write-Output '   checks that the new driver runs and rolls back if it does not. Nothing was changed.'
     return
 }
 
-throw 'Apply is not implemented, deliberately. The first real install is an owner-driven pass that ' +
-      'should be watched command by command - especially step 5, where a device is created and a ' +
-      'failure between it and step 6 leaves a devnode to clean up.'
+if ($blockers.Count -gt 0) {
+    Write-Output '   REFUSED. Resolve the blockers above first. Nothing was changed.'
+    Write-Output '   This script will not weaken Secure Boot, HVCI, TESTSIGNING or UAC to make an install succeed.'
+    exit 1
+}
+
+# Performing the plan is deliberately not automated yet: every step above is printed with its exact
+# command and tool path, and is run by hand, from an elevated PowerShell, watching each result -
+# especially step 5, where a device is created and a failure between it and step 6 leaves a devnode
+# to remove (step 7).
+Write-Output "   -Apply does not perform $Action yet. Run the plan above step by step from an elevated PowerShell."
+Write-Output '   Nothing was changed.'
+exit 1
