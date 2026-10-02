@@ -5,6 +5,7 @@ was measured and what broke on real hardware. This page is the short version.
 
 | Version | Milestone |
 |---|---|
+| **1.6** | [The first public release](#16--the-first-public-release) |
 | **1.5** | [The AI Assistant](#15--the-ai-assistant) |
 | **1.4** | [Files and clipboard](#14--files-and-clipboard) |
 | **1.3** | [Nexus updates itself](#13--nexus-updates-itself) |
@@ -19,6 +20,22 @@ was measured and what broke on real hardware. This page is the short version.
 | **0.1–0.4** | [PC Core foundations](#0104--pc-core-foundations) |
 
 ---
+
+## 1.6 — The first public release
+
+Nexus is published under the Apache License 2.0, for anyone who wants the same thing for their own PC
+and phone. Nothing about who it is for changed: one owner, one phone, one PC, built from this
+repository on that PC. What changed is that a stranger can now get there. The HID driver plan prints
+every command a new PC needs, its own signing key included; there is a complete uninstall; and the
+documentation says what is true rather than what was hoped: Windows 11 for the driver, a Tailscale
+account, and the AI Assistant as the one part that uses a cloud service.
+
+Since 1.5, PC Assistant moved into this repository and Nexus releases build, install and update it.
+The HID driver went from 0.9.2.0 to 0.9.2.4: one power policy owner, which ended a bugcheck on
+hibernate (0.9.2.2); a declarative package with the C runtime linked in, so a Storage Sense cleanup
+can no longer unregister it (0.9.2.3); and updates that load the new driver at once, proven on the
+real PC by a version-only 0.9.2.4. → [getting-started.md](getting-started.md),
+[virtual-hid.md](virtual-hid.md)
 
 ## 1.5 — The AI Assistant
 
