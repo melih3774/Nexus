@@ -706,3 +706,30 @@ its last log line; the update ends `UpdateOutcome.RestartRequired`, `status.json
 succeeded once Windows has restarted. A driver that only loads at the next boot has not been checked
 running by the update: if it fails to load then, it is not rolled back automatically, and PC Core's
 `Virtual HID` line is where it shows.
+
+## 13.12 On this PC: 0.9.2.3 to 0.9.2.4 without a restart (release 28)
+
+0.9.2.4 is 0.9.2.3 under a new number (`NEXUS_HID_DRIVER_VERSION` and `DriverVer` only), built with
+`validate-driver-package.ps1` (import gate passed: no `VCRUNTIME140`), its catalog signed with the same
+`CN=Nexus Driver Signing` certificate as release 27. It exists so the handoff above runs once on the real
+PC through the normal path: `publish-release.ps1 -Install`, release 28, the real UAC prompt.
+
+Before: 0.9.2.3 running (`GET_VERSION` from the device), `oem118.inf` the only Nexus package, PC Core
+started from the Start Menu shortcut and holding the device (`Virtual HID: Ready - Nexus HID 9.2.3
+published 3 device(s)`).
+
+| Time | Who | What |
+|---|---|---|
+| 19:00:17 | updater (unelevated) | staged and hashed; "Requesting administrator approval (UAC)" |
+| 19:00:19 | elevated half | payloads verified; asks over the handoff events |
+| 19:00:19 | updater | stops PC Core (process 25896), answers; elevated half: "PC Core has let go of the HID device" |
+| 19:00:20 | elevated half | `pnputil /add-driver /install` exit 0 (`oem119.inf`); SetupAPI "Restarting device completed", no veto, no Kernel-PnP 225; check: bound and **running** 0.9.2.4 |
+| 19:00:20 | elevated half | `oem118.inf` (0.9.2.3) deleted; check after cleanup healthy; exit 0 |
+| 19:00:22 | updater | PC Core files swapped (no second stop), new PC Core started (process 10136, not elevated) |
+| 19:00:23 | PC Core | `Virtual HID: Ready - Nexus HID 9.2.4 published 3 device(s)`; mouse probe report seen as Raw Input from the trusted Nexus device |
+| 19:00:28 | updater | "Updated to Nexus 1.5.0 (release 28)", exit 0, `status.json` `succeeded` |
+
+After, with no restart: the device answers 0.9.2.4, `DN_NEED_RESTART` clear, problem 0, stack `WUDFRd,
+vhf, PnpManager`; `oem119.inf` 0.9.2.4 is the only Nexus package; the UMDF registration points into its
+Driver Store folder; mouse, keyboard and touch children are present and OK. No application errors and
+no dump.
