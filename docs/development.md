@@ -106,8 +106,10 @@ runner:
 cd src/Assistant && dotnet test
 ```
 
-Some of its tests drive real windows on the desktop, so they want a session nobody else is typing in.
-A handful of live suites skip themselves unless opted into with `PCASSISTANT_REAL_CLAUDE=1`.
+Some of its tests drive real windows on the desktop, so they want a session nobody else is typing in,
+and from a terminal that is not elevated: `PcAssistantItselfIsNotElevated` fails in an elevated one.
+The live suites skip themselves unless opted into with `PCASSISTANT_REAL_CLAUDE=1`,
+`PCASSISTANT_NATIVE_SMOKE=1` or `PCASSISTANT_ELEVATION_LIVE=1`.
 
 Android unit tests (JVM):
 

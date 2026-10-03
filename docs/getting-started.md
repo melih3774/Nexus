@@ -46,8 +46,10 @@ points auto-start at the installed copy rather than at `bin\Release`, a folder t
 branch switch can empty. Everything stays per-user: no elevation, no service, no `Program Files`.
 `--shell-status` reports what is installed where.
 
-After that, **Nexus** in the Start Menu starts PC Core with a tray icon. **Open Nexus** in the tray
-menu opens the local control panel.
+After that, **Nexus** in the Start Menu starts PC Core in a console window that shows its log, and
+with a tray icon; Windows 11 may put the icon behind the **^** arrow in the notification area. Minimise the console window rather than closing it: closing it ends PC Core at
+once, without the orderly shutdown that **Exit Nexus** in the tray menu performs. **Open Nexus** in
+the tray menu opens the local control panel.
 
 <p align="center">
   <img src="assets/screenshots/windows-control-panel.png" alt="The Nexus control panel on the PC, showing update status" width="720">
@@ -129,7 +131,9 @@ path. Run those commands in one elevated PowerShell, in order, checking each res
 1. create the signing key, or reuse the one this PC already has;
 2. sign the package's catalog with it;
 3. trust that one certificate in `LocalMachine\Root` and `LocalMachine\TrustedPublisher`;
-4. check the signature is `Valid`;
+4. check the signature is `Valid` and that both stores now hold the certificate (a `Valid`
+   signature needs only `Root`; without `TrustedPublisher`, step 6 stops at a Windows Security
+   prompt instead);
 5. create the root device with `devgen`;
 6. install the package with `pnputil`;
 7. if 6 fails, remove the device before retrying;
@@ -144,6 +148,12 @@ the same PC carries the package as you signed it; a rebuilt driver has to be sig
 same key (step 2) before a release includes it ([updating.md](updating.md)). The uninstall plan
 below removes the trust. The script refuses to plan an install under test signing or over an
 existing Nexus device, and nothing in it changes Secure Boot, Memory Integrity, test signing or UAC.
+
+**The driver's devices belong to the PC's console session.** PC Core adopts its mouse, keyboard and
+touch screen through Raw Input in the session it runs in. In Windows Sandbox, which has no console
+session, the driver installed and ran and Windows enumerated all three devices, but Raw Input in
+the sandbox's remote session never listed them, so PC Core reported `Virtual HID: Refused` and kept
+injecting input. Run Nexus in the session signed in at the PC itself.
 
 **SecureCapture** (lets the phone see UAC prompts and the lock screen), from an elevated terminal.
 It copies itself to `%ProgramFiles%\Nexus\SecureCapture` and registers the `NexusSecureCapture`
@@ -199,7 +209,8 @@ Elsewhere on the PC:
 | `%LOCALAPPDATA%\PcCore` | the local control panel's session token |
 | `%LOCALAPPDATA%\PcAssistant` | PC Assistant's own tasks, settings and logs, if you use it |
 | `%ProgramFiles%\Nexus` | SecureCapture, and the elevated updater's log under `Updates\` |
-| Driver Store, `LocalMachine\Root` and `TrustedPublisher`, `CurrentUser\My` | the HID driver package, the trusted signing certificate and its key |
+| `%ProgramData%\Nexus` | SecureCapture's log, `secure-capture.log` |
+| Driver Store, `LocalMachine\Root` and `TrustedPublisher`, `CurrentUser\My` | the HID driver package, the trusted signing certificate and its key (`New-SelfSignedCertificate` also puts a copy of the certificate, without the key, in `CurrentUser\CA`) |
 
 ## Configuration
 
@@ -243,18 +254,21 @@ installed.
    setting if you turned it on, then close PC Assistant.
 2. **The HID driver.** Print the plan, then run its commands from an elevated PowerShell. It removes
    the device, every Nexus driver package and the trust in the signing certificate; with
-   `-RemoveSigningKey` it deletes the key as well.
+   `-RemoveSigningKey` it deletes the key, and the copy of its certificate in `CurrentUser\CA`, as
+   well.
 
    ```powershell
    powershell -ExecutionPolicy Bypass -File tools/nexus-hid-install.ps1 -Action Uninstall -RemoveSigningKey
    ```
 
-3. **SecureCapture**, from an elevated terminal. It stops and deletes the service, and the folder can
-   go afterwards:
+3. **SecureCapture**, from an elevated terminal. It asks the service to stop and deletes it; the
+   folder can go once the service process has ended, which can take a few seconds, and its log goes
+   with it:
 
    ```powershell
    & "$env:ProgramFiles\Nexus\SecureCapture\PcCore.SecureCapture.exe" --uninstall
-   Remove-Item -Recurse "$env:ProgramFiles\Nexus"
+   Wait-Process -Name PcCore.SecureCapture -Timeout 30 -ErrorAction SilentlyContinue
+   Remove-Item -Recurse "$env:ProgramFiles\Nexus", "$env:ProgramData\Nexus"
    ```
 
 4. **The input broker**, if you installed it, from an elevated terminal:
@@ -286,4 +300,7 @@ installed.
 7. **The phone:** uninstall the Nexus app. Tailscale is yours, and Nexus never changed it.
 
 Nothing else is left: apart from what these steps remove, Nexus adds no service, scheduled task,
-firewall rule or registry value.
+firewall rule or registry value. Windows keeps its own records of programs and devices it has seen,
+and those stay: the tray icon's settings, Start's tile cache, the removed Nexus mouse, keyboard and
+touch screen as hidden entries in Device Manager, and an empty
+`HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\WUDF\Services\NexusHidDriver` key.
