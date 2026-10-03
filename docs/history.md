@@ -37,6 +37,11 @@ can no longer unregister it (0.9.2.3); and updates that load the new driver at o
 real PC by a version-only 0.9.2.4. → [getting-started.md](getting-started.md),
 [virtual-hid.md](virtual-hid.md)
 
+Taking the first real captures of a UAC prompt on the phone found one more bug. With Direct acting
+as a mouse, a tap at the prompt is a move, which the Secure Desktop refuses, and a click, which the
+Nexus HID mouse carried to wherever the pointer rested. PC Core now withholds that click until a move
+lands; at a prompt, use Touchpad. → [remote-control.md](remote-control.md#the-secure-desktop)
+
 ## 1.5 — The AI Assistant
 
 An owner who has authenticated on their phone can instruct **PC Assistant**, a separate Windows

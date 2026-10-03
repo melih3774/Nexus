@@ -209,6 +209,15 @@ What Nexus adds is the ability to *see* the prompt and answer it yourself from t
   is a small LocalSystem service that starts a capture worker inside the console session, where the
   Winlogon desktop's access list admits it, and that worker returns frames.
 
+<p align="center">
+  <img src="assets/screenshots/android-uac-prompt.png" alt="The phone's Screen view showing a UAC consent prompt for Windows PowerShell from the Secure Desktop, with Evet and Hayır (Yes and No)" width="49%">
+  <img src="assets/screenshots/android-remote-typing.png" alt="The phone's Screen view a moment later: PowerShell on the PC shows a line typed on the phone, the Start-Process -Verb RunAs command, and Windows reporting that the operation was cancelled by the user" width="49%">
+  <br>
+  <sub>Real captures on the phone, Nexus 1.5.0. Left: a prompt raised by
+  <code>Start-Process powershell -Verb RunAs</code>, typed on the phone. Right: after the phone
+  answered No, Windows reports the operation cancelled by the user. The PC's Windows is in Turkish.</sub>
+</p>
+
 ```
 PC Core (standard user)            creates the frame pipe, chooses its name and a 32-byte nonce
       |                            asks: "start a worker for the console session"
