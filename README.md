@@ -101,7 +101,7 @@ while the app is closed, and switching AUTO/ASK from the phone.
   </tr>
 </table>
 
-<p align="center"><sub>Real captures from the maintainer's phone, not recreations. The prompt, Home and the AI Assistant are Nexus 1.5.0 on 3 October 2026, whose app is the same as 1.6.0's; Security is 1.4.0. The PC's Windows is set to Turkish.</sub></p>
+<p align="center"><sub>Real captures from the maintainer's phone, not recreations. The prompt, Home and the AI Assistant are Nexus 1.5.0 on 3 October 2026, and those screens are unchanged in 1.6.0; Security is 1.4.0. The PC's Windows is set to Turkish.</sub></p>
 
 ## Who is at the keyboard
 

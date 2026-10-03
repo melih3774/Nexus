@@ -29,8 +29,8 @@ labelled as such wherever it appears:
 
 Phone captures are 540 px wide in portrait and 1280 px wide in landscape, with the status bar and
 navigation bar cropped. Redactions are solid `#2A343F` blocks, so a redaction is visibly a redaction
-rather than an empty field. The 1.5.0 captures are from the same app as 1.6.0: no Android source
-changed between the two.
+rather than an empty field. The screens in the 1.5.0 captures are unchanged in 1.6.0, which changed
+only wording on the Security screen and in its alert setting.
 
 The diagrams are SVG with their own dark background, so they read the same in GitHub's light and dark
 themes. Their text uses the system font stack (Segoe UI, Roboto, Helvetica Neue, Arial) and has room

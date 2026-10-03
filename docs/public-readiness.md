@@ -1,8 +1,8 @@
 # Public-readiness audit
 
-The repository is private. This records what was checked before it was first pushed to GitHub, what
-was fixed, and what to decide before it could ever become public. Sensitive values are described
-here, never quoted.
+This records what was checked before the repository was first pushed to GitHub, as a private
+repository, and again before it was made public: what was found, what was fixed, and what was
+accepted. Sensitive values are described here, never quoted.
 
 ## Audit of 2026-09-14
 
@@ -97,8 +97,8 @@ against the code.
 
 ### Remaining in history
 
-- Commit `368d26d` contains the home path fixed above, which shows the developer's Windows user
-  name. That name is already part of the GitHub account name.
+- Commits `368d26d` to `6f3761b` (ten of them) contain the home path fixed above, which shows the
+  developer's Windows user name. That name is already part of the GitHub account name.
 - The items accepted on 2026-09-14 are unchanged.
 
 ### Local only, never to be pushed
@@ -107,20 +107,81 @@ The developer's clone keeps, from before the message rewrite of 2026-09-14, `ref
 `refs/backup/*`, and two old session branches with their worktrees, whose commits still carry the
 removed trailer. Push only `main` and tags by name; never `git push --all` or `--mirror`.
 
+## Audit of 2026-10-03
+
+**Scope:** the complete history that would become public, not only the new commits: every commit,
+tree and blob reachable from `main`, `origin/main` and the 14 tags (83 commits, 1177 blobs), every
+commit and tag message, and every author, committer and tagger. gitleaks 8.30.1 ran over the same
+set, and targeted scanners searched every blob, in UTF-8 and UTF-16, for this PC's and this phone's
+real values: host and user name, profile path, Tailscale addresses and tailnet, the phone's serial and
+model, adapter addresses, saved Wi-Fi names, and the ids, keys and tokens in PC Core's real state.
+Every image ever committed, deleted ones included, was looked at.
+
+### Clean
+
+- No private key, certificate, keystore, token, password or real pairing secret, in any blob or
+  message. gitleaks's eight hits are the protocol vectors' synthetic secrets (the bytes 01..20 and
+  20..01).
+- No log, state file, evidence, crash dump or test result was ever committed. The only binary ever
+  committed is the Gradle wrapper jar, whose SHA-256 matches the official 9.4.1 checksum. The
+  largest blob is the launch animation (2.0 MB).
+- All identities use the GitHub `noreply` address; no message carries a co-author trailer. No image
+  carries metadata.
+
+### Fixed in the current tree
+
+- **A real installation id.** `HomeScreenTest.kt` used a real PC Core installation id, since replaced
+  on this PC, as its fixture. The audit of 2026-09-14 said none appeared; it now is a synthetic GUID.
+- **A second pass over claims:** "no cloud, no account and no server" in security-monitoring.md;
+  "local only" and "no networking" in PC Assistant's README (Claude Code talks to Anthropic); "the
+  only part that ever asks for UAC" in development.md; wording that implied a published release
+  signs the driver (it leaves an unsigned package out); a sentence in updating.md that described the
+  maintainer's phone rather than the reader's; and the uninstall steps now include the release
+  signing key. The app and the control panel had the same kind of wording ("uses no cloud
+  service", "the Android app that does not exist yet"), fixed too.
+- **A click on the Secure Desktop where the owner did not aim.** Taking the captures below found it:
+  with Direct acting as a mouse, a tap at a UAC prompt is a move, which the Secure Desktop refuses,
+  and a click, which the Nexus HID mouse delivered at wherever the pointer rested. A tap on No could
+  have answered Yes. PC Core now withholds that click until a move is delivered
+  ([remote-control.md](remote-control.md#the-secure-desktop)).
+- **Real captures** of remote control, a UAC prompt from the Secure Desktop and the AI Assistant,
+  taken on the maintainer's phone with Nexus 1.5.0; those screens are unchanged in 1.6.0. Each was
+  checked at full size against the redaction rules ([assets/README.md](assets/README.md)).
+
+### Remaining in history, accepted
+
+- **The installation id above** is in 80 of the 83 commits. It is not a secret, cannot be used
+  without the pairing secret, and belongs to an installation this PC no longer has.
+- **The developer's first name** is PC Assistant's `<Authors>` and `<Company>` in
+  `src/Assistant/Directory.Build.props`, in the current tree too. It is part of the GitHub account
+  name and is kept.
+- **Machine-local identifiers in tests:** the names of this PC's network adapters and one link-local
+  address (`TailscaleDetectionTests.cs`), and three of its PnP device instance paths
+  (`NexusHidResolutionTests.cs`, and one in a comment in `NexusHidPnpAncestry.cs`). None is routable
+  or a serial number.
+- Commit and tag times carry the developer's time zone (+03:00).
+
+The audit's recommendation is to publish the existing history as it is: nothing in it is a
+credential, and nothing in it can be used to reach or impersonate the PC or the phone. A fresh,
+squashed history would remove the items above, and is the owner's choice, not a requirement.
+
 ## Before making the repository public
 
 - [x] Choose a license: Apache 2.0
-- [x] Re-run this audit on the new commits since the date above (2026-10-02)
-- [ ] Decide whether the history items above are acceptable in public, or publish a fresh history
-- [x] Take the screenshot placeholder off the README (2026-10-03, with the launch README). A real
-      remote-control capture is still wanted ([assets/README.md](assets/README.md#still-wanted))
-- [ ] Check every image against the redaction rules again. The launch animation, its poster and the
-      social preview show only recreated screens and the repository URL; the four captures are
-      unchanged since the first audit
-- [ ] Upload `docs/assets/social-preview.png` as the repository's social preview (Settings →
-      General)
-- [ ] Right after going public: enable private vulnerability reporting (SECURITY.md depends on it),
-      Dependabot alerts, and branch protection on `main`; review Actions
-- [ ] Reconsider whether design records that describe this machine's security posture in detail
-      (`docs/virtual-hid.md` §13, `docs/native-input.md`, `src/Assistant/docs/RESEARCH-*.md`)
-      should stay as written
+- [x] Re-run this audit on the new commits (2026-10-02), then on the complete history (2026-10-03)
+- [x] Take the screenshot placeholder off the README, and add real captures of remote control, the
+      UAC prompt and the AI Assistant (2026-10-03)
+- [x] Check every image against the redaction rules again (2026-10-03: every image ever committed,
+      and the new captures at full size)
+- [x] Repository description, topics and Dependabot alerts (2026-10-03, while private)
+- [ ] Owner: accept the history as it is, or publish a fresh one (recommended: as it is)
+- [ ] Owner: upload `docs/assets/social-preview.png` as the social preview (Settings → General);
+      GitHub has no API for it
+- [ ] Owner: decide whether the records that describe this machine's security posture in detail stay
+      as written: `docs/virtual-hid.md` §13, `docs/native-input.md`,
+      `src/Assistant/docs/RESEARCH-ELEVATION.md` and `RESEARCH-BROWSER.md`, the help text of
+      `tools/nexus-hid-install.ps1` (Secure Boot off on the development PC) and
+      `src/Assistant/README.md` (the privileged helper installed on this machine)
+- [ ] Right after going public: private vulnerability reporting (SECURITY.md depends on it), branch
+      protection on `main`, secret scanning and push protection. GitHub offers none of these for a
+      private repository on this plan. There are no Actions workflows to review
