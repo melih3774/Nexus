@@ -39,8 +39,9 @@ real PC by a version-only 0.9.2.4. → [getting-started.md](getting-started.md),
 
 Taking the first real captures of a UAC prompt on the phone found one more bug. With Direct acting
 as a mouse, a tap at the prompt is a move, which the Secure Desktop refuses, and a click, which the
-Nexus HID mouse carried to wherever the pointer rested. PC Core now withholds that click until a move
-lands; at a prompt, use Touchpad. → [remote-control.md](remote-control.md#the-secure-desktop)
+Nexus HID mouse carried to wherever the pointer rested. An elevated window in front, on a PC without
+the input broker, did the same. PC Core now withholds that click until a move lands; at a prompt, use
+Touchpad. → [remote-control.md](remote-control.md#the-secure-desktop)
 
 ## 1.5 — The AI Assistant
 

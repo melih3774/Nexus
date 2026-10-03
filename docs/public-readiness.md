@@ -144,7 +144,8 @@ included, was looked at.
 - **A click on the Secure Desktop where the owner did not aim.** Taking the captures below found it:
   with Direct acting as a mouse, a tap at a UAC prompt is a move, which the Secure Desktop refuses,
   and a click, which the Nexus HID mouse delivered at wherever the pointer rested. A tap on No could
-  have answered Yes. PC Core now withholds that click until a move is delivered
+  have answered Yes. An elevated window in front did the same on a PC without the input broker. PC
+  Core now withholds that click until a move is delivered
   ([remote-control.md](remote-control.md#the-secure-desktop)).
 - **Real captures** of remote control, a UAC prompt from the Secure Desktop and the AI Assistant,
   taken on the maintainer's phone with Nexus 1.5.0; those screens are unchanged in 1.6.0. Each was
