@@ -435,7 +435,7 @@ if ($Action -eq 'Uninstall' -and $pcCore.Count -gt 0) {
 }
 
 if ($Apply -and $Action -in @('Install', 'Uninstall') -and -not $elevated) {
-    $blockers += 'Not elevated. -Apply changes the Driver Store and what this PC trusts; run it from an elevated PowerShell.'
+    $blockers += 'Not elevated. The plan''s steps change the Driver Store and what this PC trusts; run them from an elevated PowerShell.'
 }
 
 if ($blockers.Count -gt 0) {

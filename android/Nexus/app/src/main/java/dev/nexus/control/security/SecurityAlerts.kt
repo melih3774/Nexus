@@ -82,7 +82,8 @@ fun SecurityAlertToggle(modifier: Modifier = Modifier) {
 
         Text(
             "Keeps a connection to your PC so an alert can arrive while the app is closed. Nexus " +
-                "shows a permanent notification while this is on, and uses no cloud service to do it.",
+                "shows a permanent notification while this is on. The alert comes from your PC over " +
+                "Tailscale, not through a push service.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

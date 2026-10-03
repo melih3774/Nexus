@@ -33,7 +33,8 @@ import kotlinx.coroutines.launch
  * exactly two options. Firebase Cloud Messaging would mean routing a signal about the owner's home
  * through Google's infrastructure and standing up a cloud backend for a system that has deliberately
  * had neither. A foreground service costs battery and shows a permanent notification, and needs no
- * server, no account, and no third party. For one owner watching one PC, that is the right trade —
+ * server or account of Nexus's own and no third party beyond the Tailscale link the phone already
+ * uses. For one owner watching one PC, that is the right trade —
  * and the permanent notification is honest rather than unfortunate: a phone that is holding a
  * connection open should say so.
  *
