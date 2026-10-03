@@ -157,7 +157,7 @@ A machine with neither still gets remote control, through injection, of everythi
 windows and the Secure Desktop. The elevated input broker (`--install-native-input`) is a middle
 option. See [remote-control.md](remote-control.md#how-input-reaches-windows).
 
-Those are three of Nexus's five privileged parts. The other two are the updater's one elevated step
+The driver, SecureCapture and the input broker are three of Nexus's five privileged parts. The other two are the updater's one elevated step
 and PC Assistant's privileged helper, which you install from PC Assistant if you want it
 ([security-model.md](security-model.md#privileged-components)).
 
@@ -280,7 +280,8 @@ installed.
    ```
 
    If you set up release signing ([updating.md](updating.md#one-time-setup)), its key is in
-   `%USERPROFILE%\.nexus`; delete that folder too.
+   `%USERPROFILE%\.nexus`; delete that folder too. Back it up first if you may build Nexus for the
+   same phone again: without that key, a new build cannot update the app already installed.
 
 7. **The phone:** uninstall the Nexus app. Tailscale is yours, and Nexus never changed it.
 

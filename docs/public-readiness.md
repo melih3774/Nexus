@@ -110,20 +110,22 @@ removed trailer. Push only `main` and tags by name; never `git push --all` or `-
 ## Audit of 2026-10-03
 
 **Scope:** the complete history that would become public, not only the new commits: every commit,
-tree and blob reachable from `main`, `origin/main` and the 14 tags (83 commits, 1177 blobs), every
-commit and tag message, and every author, committer and tagger. gitleaks 8.30.1 ran over the same
-set, and targeted scanners searched every blob, in UTF-8 and UTF-16, for this PC's and this phone's
-real values: host and user name, profile path, Tailscale addresses and tailnet, the phone's serial and
-model, adapter addresses, saved Wi-Fi names, and the ids, keys and tokens in PC Core's real state.
-Every image ever committed, deleted ones included, was looked at.
+tree and blob reachable from `main` at `f005e91`, `origin/main` and the 14 tags (83 commits, 1177
+blobs), every commit and tag message, and every author, committer and tagger. The commits made after
+it, before the push, were scanned the same way, with gitleaks and for the same real values, and
+added nothing. gitleaks 8.30.1 ran over the same set, and targeted scanners searched every blob, in
+UTF-8 and UTF-16, for this PC's and this phone's real values: host and user name, profile path,
+Tailscale addresses and tailnet, the phone's serial and model, adapter addresses, saved Wi-Fi names,
+and the ids, keys and tokens in PC Core's real state. Every image ever committed, deleted ones
+included, was looked at.
 
 ### Clean
 
 - No private key, certificate, keystore, token, password or real pairing secret, in any blob or
   message. gitleaks's eight hits are the protocol vectors' synthetic secrets (the bytes 01..20 and
   20..01).
-- No log, state file, evidence, crash dump or test result was ever committed. The only binary ever
-  committed is the Gradle wrapper jar, whose SHA-256 matches the official 9.4.1 checksum. The
+- No log, state file, evidence, crash dump or test result was ever committed. The only executable
+  ever committed is the Gradle wrapper jar, whose SHA-256 matches the official 9.4.1 checksum. The
   largest blob is the launch animation (2.0 MB).
 - All identities use the GitHub `noreply` address; no message carries a co-author trailer. No image
   carries metadata.
@@ -150,8 +152,9 @@ Every image ever committed, deleted ones included, was looked at.
 
 ### Remaining in history, accepted
 
-- **The installation id above** is in 80 of the 83 commits. It is not a secret, cannot be used
-  without the pairing secret, and belongs to an installation this PC no longer has.
+- **The installation id above** is in every commit up to the one that replaced it. It is not a
+  secret, cannot be used without the pairing secret, and belongs to an installation this PC no
+  longer has.
 - **The developer's first name** is PC Assistant's `<Authors>` and `<Company>` in
   `src/Assistant/Directory.Build.props`, in the current tree too. It is part of the GitHub account
   name and is kept.

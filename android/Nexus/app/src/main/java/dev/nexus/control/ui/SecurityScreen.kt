@@ -235,7 +235,8 @@ fun SecurityScreen(
             Spacer(Modifier.height(12.dp))
             Explanation(
                 "Armed",
-                "You are away. A person at the PC's keyboard or mouse opens a security session; " +
+                "You are away. With detection on, a person at the PC's keyboard or mouse opens a " +
+                    "security session; " +
                     "your own input through Nexus does not.",
             )
             Spacer(Modifier.height(12.dp))

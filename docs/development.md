@@ -25,7 +25,7 @@ src/
   PcCore.Transport.Remote/    Tailscale-bound WebSocket, device authentication, sessions
   PcCore.SecureCapture/       LocalSystem service + worker for Secure Desktop frames
   PcCore.Update/              release manifest, store, plan, staging, journalled swap and rollback
-  PcCore.Updater/             the separate updater; the only part of PC Core that asks for UAC
+  PcCore.Updater/             the separate updater; its UAC step is the only one PC Core takes in normal use
   PcCore.Host/                composition root, tray, control panel, self-tests, simulator
   driver/NexusHid/            the UMDF2 + VHF source driver (C) and its INF
   Assistant/                  the AI Assistant component: its own solution, projects and tests,
