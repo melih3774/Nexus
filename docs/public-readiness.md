@@ -169,6 +169,43 @@ The audit's recommendation is to publish the existing history as it is: nothing 
 credential, and nothing in it can be used to reach or impersonate the PC or the phone. A fresh,
 squashed history would remove the items above, and is the owner's choice, not a requirement.
 
+### A fresh install, followed literally
+
+A fresh clone was built and tested on the development PC, then installed and removed in Windows
+Sandbox, following the README and getting-started.md as written. The clone built cleanly, and the
+suites passed: PC Core 1201 of 1201 at `f005e91` (1215 with the fixes since), Android 253 of 253,
+and PC Assistant 381 of 419, with its 36 opt-in live tests skipped and two failing only because the
+sandbox runs elevated (that test passes on the PC, unelevated) and its image opens no Character Map
+window.
+
+- **Base install and uninstall** work as written. They left SecureCapture's log in
+  `%ProgramData%\Nexus`, and the SecureCapture step failed once because `--uninstall` returns before
+  the service process ends. The guide now covers both, and names what Windows itself keeps.
+- **The HID driver on a clean machine:** proven, after a fix. The plan as printed stopped at a
+  Windows Security prompt because its trust step had silently failed. With the fix it ran in one
+  pass: the per-PC key, the signed catalog, the device, the driver answering 0.9.2.4, and Windows
+  enumerating the mouse, keyboard and touch screen once PC Core connected. The uninstall plan then
+  left no certificate, package or device behind.
+- **Not provable in a sandbox:** PC Core adopting those devices (`Virtual HID: Ready`). The sandbox
+  has no console session, and Raw Input in its remote session never listed the devices. That, and a
+  machine with Secure Boot or Memory Integrity on, needs a real second PC.
+
+### Known issues, not fixed in 1.6.0
+
+- Starting Nexus while it already runs: the second copy overwrites the control panel's token file,
+  briefly creates a second set of virtual devices, then fails to take port 47811 and exits with an
+  error report. A single-instance guard has to be designed with the updater's handoff in mind, so it
+  is left for a later release; getting-started.md says to start Nexus once.
+- `PcCore.SecureCapture.exe --uninstall` returns before the service process has ended (the guide
+  waits for it).
+- PC Core's console window shows the control panel's session token in its log.
+- On a congested link, a click can overtake the move sent before it, because a connection handles up
+  to four requests at once; the Secure Desktop guard cannot help then. At a UAC prompt, use
+  Touchpad.
+- PC Assistant's risk check reads PowerShell's `Format-List` and `Format-Table` as the disk command
+  `format`, so ASK mode asks about them as high-impact; and the app shows Claude's Markdown as
+  plain text.
+
 ## Before making the repository public
 
 - [x] Choose a license: Apache 2.0

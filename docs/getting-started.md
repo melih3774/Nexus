@@ -47,9 +47,11 @@ branch switch can empty. Everything stays per-user: no elevation, no service, no
 `--shell-status` reports what is installed where.
 
 After that, **Nexus** in the Start Menu starts PC Core in a console window that shows its log, and
-with a tray icon; Windows 11 may put the icon behind the **^** arrow in the notification area. Minimise the console window rather than closing it: closing it ends PC Core at
-once, without the orderly shutdown that **Exit Nexus** in the tray menu performs. **Open Nexus** in
-the tray menu opens the local control panel.
+with a tray icon; Windows 11 may put the icon behind the **^** arrow in the notification area.
+Minimise the console window rather than closing it: closing it ends PC Core at once, without the
+orderly shutdown that **Exit Nexus** in the tray menu performs. **Open Nexus** in the tray menu
+opens the local control panel. Start Nexus once: a second start while it runs does not bring the
+running one forward, but fails to take its port and exits with an error report.
 
 <p align="center">
   <img src="assets/screenshots/windows-control-panel.png" alt="The Nexus control panel on the PC, showing update status" width="720">
