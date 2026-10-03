@@ -482,13 +482,20 @@ switch ($Action) {
         Write-Output '      step that changes what this computer trusts, so read what you are trusting first:'
         Write-Output '        $cert | Format-List Subject, Thumbprint, NotAfter'
         Write-Output '        Export-Certificate -Cert $cert -FilePath "$env:TEMP\nexus-driver-signing.cer" -Type CERT'
-        Write-Output '        Import-Certificate -FilePath "$env:TEMP\nexus-driver-signing.cer" -CertStoreLocation Cert:\LocalMachine\Root'
-        Write-Output '        Import-Certificate -FilePath "$env:TEMP\nexus-driver-signing.cer" -CertStoreLocation Cert:\LocalMachine\TrustedPublisher'
+        Write-Output '        certutil -addstore -f Root "$env:TEMP\nexus-driver-signing.cer"'
+        Write-Output '        certutil -addstore -f TrustedPublisher "$env:TEMP\nexus-driver-signing.cer"'
         Write-Output '        Remove-Item "$env:TEMP\nexus-driver-signing.cer"'
         Write-Output '      Root lets the chain validate; TrustedPublisher lets PnP install without prompting.'
+        Write-Output '      certutil, not Import-Certificate: on a fresh Windows Sandbox, Import-Certificate was'
+        Write-Output '      refused (E_ACCESSDENIED) on the first write to LocalMachine\TrustedPublisher while'
+        Write-Output '      certutil -addstore succeeded, and a missing TrustedPublisher entry only shows at step 6.'
         Write-Output ''
-        Write-Output '   4. Verify before installing:'
+        Write-Output '   4. Verify before installing - all three, because a Valid signature needs only Root:'
         Write-Output "        Get-AuthenticodeSignature '$($package.Catalog)'   # expect Status = Valid"
+        Write-Output '        Test-Path "Cert:\LocalMachine\Root\$($cert.Thumbprint)"               # expect True'
+        Write-Output '        Test-Path "Cert:\LocalMachine\TrustedPublisher\$($cert.Thumbprint)"   # expect True'
+        Write-Output '      Stop here if either is False. Without TrustedPublisher, step 6 stops at a "Would you'
+        Write-Output '      like to install this device software?" prompt, and fails if it is declined.'
         Write-Output ''
         Write-Output '   5. CREATE THE ROOT DEVICE. This step is not optional:'
         Write-Output "        $devgenText /add /bus ROOT /hardwareid `"$hwid`" /instanceid $InstanceId"
@@ -553,6 +560,8 @@ switch ($Action) {
         if ($RemoveSigningKey -and $installed.SigningKeys.Count -gt 0) {
             Write-Output '   5. Delete the signing key (not elevated: it is in your own store):'
             $installed.SigningKeys | ForEach-Object { Write-Output "        Remove-Item Cert:\CurrentUser\My\$($_.Thumbprint) -DeleteKey" }
+            Write-Output '      and the copy of its certificate that New-SelfSignedCertificate put in CurrentUser\CA:'
+            Write-Output "        Get-ChildItem Cert:\CurrentUser\CA | Where-Object Subject -eq '$CertSubject' | Remove-Item"
         } else {
             Write-Output '   5. The signing key in Cert:\CurrentUser\My stays, untrusted, for a later install'
             Write-Output '      (-RemoveSigningKey adds deleting it to this plan).'
@@ -572,13 +581,17 @@ if (-not $Apply) {
     }
 
     # The baseline is written on a dry run too, so the comparison after a real install is against
-    # the posture as it was before anything happened rather than after step one.
-    try {
-        New-Item -ItemType Directory -Force (Split-Path $BaselineFile) | Out-Null
-        $posture | ConvertTo-Json | Set-Content -Path $BaselineFile -Encoding utf8
-        Write-Output "   Security baseline recorded: $BaselineFile"
-    } catch {
-        Write-Output "   (could not record the security baseline: $_)"
+    # the posture as it was before anything happened rather than after step one. Only by the Install
+    # plan, before a device exists: an Inspect or Uninstall run after the install would otherwise
+    # overwrite the before-picture with the after-picture it is meant to be compared against.
+    if ($Action -eq 'Install' -and $installed.DeviceCount -eq 0) {
+        try {
+            New-Item -ItemType Directory -Force (Split-Path $BaselineFile) | Out-Null
+            $posture | ConvertTo-Json | Set-Content -Path $BaselineFile -Encoding utf8
+            Write-Output "   Security baseline recorded: $BaselineFile"
+        } catch {
+            Write-Output "   (could not record the security baseline: $_)"
+        }
     }
 
     return
