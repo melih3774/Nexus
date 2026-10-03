@@ -185,7 +185,7 @@ window.
   left no certificate, package or device behind.
 - **Not provable in a sandbox:** PC Core adopting those devices (`Virtual HID: Ready`). The sandbox
   has no console session, and Raw Input in its remote session never listed the devices. That, and a
-  machine with Secure Boot or Memory Integrity on, needs a real second PC.
+  machine with Secure Boot on, needs a real second PC; Memory Integrity is on on the development PC.
 
 ### Known issues, not fixed in 1.6.0
 
