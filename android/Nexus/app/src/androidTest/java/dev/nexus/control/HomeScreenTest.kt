@@ -34,7 +34,7 @@ class HomeScreenTest {
     val compose = createComposeRule()
 
     private val pc = PairedPc(
-        pcInstanceId = "e2df2a34-40f2-4ab5-9789-bcfc38452c2b",
+        pcInstanceId = "11111111-2222-4333-8444-555555555555",
         deviceId = "bYWObWzU6kQ9UMMZT3kCog",
         endpoint = "100.101.102.103:47812",
         pairedAt = "2026-08-29T12:34:56.789+00:00",
