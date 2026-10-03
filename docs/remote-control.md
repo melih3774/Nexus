@@ -190,6 +190,10 @@ layouts. Turkish text is correct because it is injected as characters. The visib
 that `input.key` reaches an elevated window through HID and `input.text` does not. `input.status`
 reports this as `text_uses_character_injection`.
 
+Absolute pointer moves are injected too, because the HID mouse moves only by relative steps, so with
+an elevated window in front and no broker Windows refuses Direct's move, and Nexus withholds the
+click after it rather than send it to wherever the pointer was.
+
 ## The Secure Desktop
 
 A UAC consent prompt, the lock screen and Ctrl+Alt+Del run on a separate desktop that the
@@ -203,8 +207,9 @@ What Nexus adds is the ability to *see* the prompt and answer it yourself from t
   including the Secure Desktop. When mouse and keyboard are Nexus HID devices, an owner-authenticated
   session can move the pointer and click inside the prompt. The injection paths cannot reach it and
   stop there. That check lives inside the injector, below the protocol. The HID mouse moves only by
-  relative steps, so use Touchpad at a prompt: a Direct tap whose move could not be carried sends no
-  click, rather than clicking wherever the pointer was. The keys work too, and Esc answers No.
+  relative steps, so use Touchpad at a prompt, not Direct. A Direct tap whose move could not be
+  carried sends no click rather than clicking wherever the pointer was, but on a congested link a
+  click can still overtake its move. The keys work too, and Esc answers No.
 - **Picture.** Desktop Duplication stops the moment Windows switches desktops. `PcCore.SecureCapture`
   is a small LocalSystem service that starts a capture worker inside the console session, where the
   Winlogon desktop's access list admits it, and that worker returns frames.

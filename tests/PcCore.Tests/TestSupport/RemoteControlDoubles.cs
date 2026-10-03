@@ -149,10 +149,11 @@ public sealed class RecordingInputController : IInputController
     public bool Fail { get; set; }
 
     /// <summary>
-    /// When set, an absolute move is refused at the Secure Desktop and everything else is delivered:
-    /// a UAC prompt reached through the Nexus HID mouse, which cannot position absolutely.
+    /// When set, every absolute move is refused with this and everything else is delivered: a UAC
+    /// prompt, or an elevated window without the broker, reached through the Nexus HID mouse, which
+    /// cannot position absolutely.
     /// </summary>
-    public bool SecureDesktopRefusesAbsoluteMoves { get; set; }
+    public InputResult? AbsoluteMoveRefusal { get; set; }
 
     private InputResult Record(string what)
     {
@@ -170,9 +171,7 @@ public sealed class RecordingInputController : IInputController
     {
         var result = Record($"move-absolute {x},{y}");
 
-        return SecureDesktopRefusesAbsoluteMoves
-            ? InputResult.SecureDesktop("Windows is showing a secure prompt")
-            : result;
+        return AbsoluteMoveRefusal ?? result;
     }
 
     public InputResult MovePointerRelative(int dx, int dy) => Record($"move-relative {dx},{dy}");

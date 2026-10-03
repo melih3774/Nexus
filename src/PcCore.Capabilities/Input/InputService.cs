@@ -222,7 +222,7 @@ public sealed class InputService : IInputService
         var result = Perform(
             state, ActivityKind.PointerActivity, 1, () => _controller.MovePointerAbsolute(pixelX, pixelY));
 
-        NotePointer(state, result, absolute: true);
+        NotePointer(state, result, absolute: true, moved: true);
         return result;
     }
 
@@ -242,7 +242,7 @@ public sealed class InputService : IInputService
         var result = Perform(
             state, ActivityKind.PointerActivity, 1, () => _controller.MovePointerRelative(moveX, moveY));
 
-        NotePointer(state, result, absolute: false);
+        NotePointer(state, result, absolute: false, moved: moveX != 0 || moveY != 0);
         return result;
     }
 
@@ -255,21 +255,30 @@ public sealed class InputService : IInputService
             throw new CapabilityException(ErrorCodes.InvalidParameters, "Unknown pointer button or action.");
         }
 
-        // A press where the owner did not aim. Direct sends a move before every click, and on the
-        // Secure Desktop that move is refused while the press after it is not, so the press would
-        // land wherever the pointer was left: a tap on No could answer Yes. Refused before anything
-        // is declared, because a press that is never sent has nothing to declare. A release always
-        // goes through, or a button could be left held.
-        if (action != ButtonAction.Up && IsPointerOffTarget(state))
+        // A press where the owner did not aim. Direct sends a move before every click, and the HID
+        // mouse cannot carry that move, so where injection refuses it too (the Secure Desktop, or an
+        // elevated window without the broker) the press after it would land wherever the pointer was
+        // left: a tap on No could answer Yes. Refused before anything is declared, because a press
+        // that is never sent has nothing to declare. A release always goes through, or a button could
+        // be left held.
+        if (action != ButtonAction.Up && MissedMove(state) is { } missed)
         {
             _logger.LogInformation(
-                "{Button} {Action} for {Owner} was not sent: the pointer could not be moved to where "
-                + "it was aimed on the Secure Desktop.",
+                "{Button} {Action} for {Owner} was not sent: the pointer could not be moved to where it "
+                + "was aimed ({Delivery}).",
                 button,
                 action,
-                state.Session.OwnerId);
+                state.Session.OwnerId,
+                missed.Delivery);
 
-            return InputResult.SecureDesktop(PointerOffTargetDiagnostic);
+            // Only the HID mouse would have carried this press, so only then is Touchpad the answer.
+            // Otherwise the press would have been refused for the move's own reason, and that reason
+            // (answer the prompt at the PC, an elevated window in front) is what the owner needs.
+            // Status is asked here and not per event: it reaches the broker or Task Scheduler, which
+            // is too slow for a pointer stream and fine for a tap that is being refused anyway.
+            return _controller.Status.Backends.Mouse == InputBackend.VirtualHid
+                ? new InputResult(missed.Delivery, PointerMissedDiagnostic)
+                : missed;
         }
 
         InputResult result;
@@ -566,45 +575,52 @@ public sealed class InputService : IInputService
     /// </summary>
     private const int MaxTouchContacts = 10;
 
-    /// <summary>What the phone shows when a press is held back by <see cref="IsPointerOffTarget"/>.</summary>
-    private const string PointerOffTargetDiagnostic =
-        "The pointer could not be moved to where you tapped on the Secure Desktop, so the click was not "
-        + "sent. Use Touchpad to move it.";
+    /// <summary>What a withheld press says when the HID mouse would have carried it.</summary>
+    private const string PointerMissedDiagnostic =
+        "The click was not sent, because the pointer could not be moved to where you tapped. "
+        + "Move it with Touchpad, then tap.";
 
     /// <summary>
     /// Remembers whether the pointer is where the owner last aimed it.
     /// <para>
-    /// Set only by an absolute move refused at the Secure Desktop. A prompt there is reached through
-    /// the Nexus HID mouse, which clicks wherever the pointer is but moves only by relative steps, so
-    /// the absolute move cannot be carried and the click after it can. Cleared by any move that is
-    /// delivered, a relative one included: Touchpad on the HID mouse is how the owner reaches the
-    /// prompt's buttons, and once they have moved the pointer it is where they put it.
+    /// Set by an absolute move that Windows refused at a boundary: the Secure Desktop, or an
+    /// elevated window in front with no elevated broker (UIPI). The Nexus HID mouse reaches past
+    /// both, but it moves only by relative steps, so an absolute move always falls through to
+    /// injection, which both refuse, while the click after it is carried by the HID mouse. Any other
+    /// outcome leaves this alone.
+    /// </para>
+    /// <para>
+    /// Cleared by any delivered move that moved the pointer, a relative one included: Touchpad on the
+    /// HID mouse is how the owner reaches those buttons, and once they have moved the pointer it is
+    /// where they put it. A delta that rounds to nothing moved nothing, and clears nothing.
     /// </para>
     /// <para>
     /// Touch takes no part. A contact is pressed and placed in one call: a digitizer puts it where
     /// the finger is, and the pointer fallback presses only after its own move has landed.
     /// </para>
     /// </summary>
-    private void NotePointer(SessionState state, InputResult moved, bool absolute)
+    private void NotePointer(SessionState state, InputResult result, bool absolute, bool moved)
     {
         lock (_gate)
         {
-            if (moved.Succeeded)
+            if (result.Succeeded && moved)
             {
-                state.PointerOffTarget = false;
+                state.MissedMove = null;
             }
-            else if (absolute && moved.Delivery == InputDelivery.BlockedBySecureDesktop)
+            else if (absolute
+                && result.Delivery is InputDelivery.BlockedBySecureDesktop or InputDelivery.BlockedByIntegrity)
             {
-                state.PointerOffTarget = true;
+                state.MissedMove = result;
             }
         }
     }
 
-    private bool IsPointerOffTarget(SessionState state)
+    /// <summary>The refused absolute move the pointer is still short of, or null when there is none.</summary>
+    private InputResult? MissedMove(SessionState state)
     {
         lock (_gate)
         {
-            return state.PointerOffTarget;
+            return state.MissedMove;
         }
     }
 
@@ -775,10 +791,12 @@ public sealed class InputService : IInputService
         public bool WarnedAboutSecureDesktop { get; set; }
 
         /// <summary>
-        /// The last absolute move was refused at the Secure Desktop and nothing has moved the pointer
-        /// since. Lives and dies with the session, like the rest of this state.
+        /// The absolute move Windows refused at the Secure Desktop or at an elevated window, kept
+        /// while nothing has moved the pointer since. Its delivery and diagnostic are what a withheld
+        /// press reports when no HID mouse would have carried it. Lives and dies with the session,
+        /// like the rest of this state.
         /// </summary>
-        public bool PointerOffTarget { get; set; }
+        public InputResult? MissedMove { get; set; }
     }
 
     /// <summary>

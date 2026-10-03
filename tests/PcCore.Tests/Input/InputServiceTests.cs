@@ -410,7 +410,17 @@ public sealed class InputServiceTests
         Assert.NotNull(result.Diagnostic);
     }
 
-    // --- The Secure Desktop ----------------------------------------------------------------------------
+    // --- Where the pointer could not go ---------------------------------------------------------------
+
+    private static readonly InputResult SecurePrompt = InputResult.SecureDesktop(
+        "Windows is showing a secure prompt. Local administrator confirmation is required on the PC.");
+
+    private static readonly InputResult ElevatedWindow =
+        InputResult.Blocked("Windows blocked this input. The window in focus is running as administrator.");
+
+    /// <summary>The pointer goes through the Nexus HID mouse, as on a PC with the driver installed.</summary>
+    private static void MouseThroughHid(RecordingInputController controller) =>
+        controller.Status = controller.Status with { Backends = InputBackends.All(InputBackend.VirtualHid) };
 
     [Theory]
     [InlineData(ButtonAction.Click)]
@@ -422,11 +432,11 @@ public sealed class InputServiceTests
         // The HID mouse cannot carry the move, but it carries the click, at wherever the pointer
         // was resting. A tap aimed at No answered Yes.
         var service = Build(out var controller);
+        MouseThroughHid(controller);
         service.Begin(Owner);
-        controller.SecureDesktopRefusesAbsoluteMoves = true;
+        controller.AbsoluteMoveRefusal = SecurePrompt;
 
-        var moved = service.MoveAbsolute(Owner, 0, 0.6, 0.7);
-        Assert.Equal(InputDelivery.BlockedBySecureDesktop, moved.Delivery);
+        service.MoveAbsolute(Owner, 0, 0.6, 0.7);
 
         controller.Events.Clear();
         var pressed = service.Button(Owner, PointerButton.Left, action);
@@ -441,13 +451,80 @@ public sealed class InputServiceTests
     }
 
     [Fact]
-    public void ATouchpadMoveAtTheSecureDesktopMakesClickingPossibleAgain()
+    public void AnElevatedWindowHoldsBackThePressToo()
+    {
+        // The same defect away from the prompt. Without the broker an absolute move is a SendInput
+        // that UIPI refuses while an elevated window is in front, and the click after it went
+        // through the HID mouse into that window, wherever the pointer was.
+        var service = Build(out var controller);
+        MouseThroughHid(controller);
+        service.Begin(Owner);
+        controller.AbsoluteMoveRefusal = ElevatedWindow;
+
+        service.MoveAbsolute(Owner, 0, 0.6, 0.7);
+
+        controller.Events.Clear();
+        var pressed = service.Button(Owner, PointerButton.Left, ButtonAction.Click);
+
+        Assert.False(pressed.Succeeded);
+        Assert.Equal(InputDelivery.BlockedByIntegrity, pressed.Delivery);
+        Assert.Contains("Touchpad", pressed.Diagnostic);
+        Assert.Empty(controller.Events);
+    }
+
+    [Fact]
+    public void WithoutTheHidMouseThePressSaysWhyTheMoveWasRefused()
+    {
+        // A PC without the driver, which is the default install. Nothing there reaches the prompt,
+        // so Touchpad would not help, and the phone shows the click's answer rather than the
+        // move's. The press would have been refused for the move's own reason, so it says that.
+        var service = Build(out var controller);
+        service.Begin(Owner);
+
+        var noDevice = InputResult.SecureDesktop(
+            "Windows is showing a secure screen, and this PC has no Nexus HID device able to reach it. "
+            + "Answer the prompt at the PC.");
+
+        controller.AbsoluteMoveRefusal = noDevice;
+        service.MoveAbsolute(Owner, 0, 0.6, 0.7);
+
+        controller.Events.Clear();
+        var pressed = service.Button(Owner, PointerButton.Left, ButtonAction.Click);
+
+        Assert.Equal(noDevice, pressed);
+        Assert.Empty(controller.Events);
+    }
+
+    [Theory]
+    [InlineData(InputDelivery.Failed)]
+    [InlineData(InputDelivery.Unsupported)]
+    public void OnlyTheBoundariesTheHidMouseReachesPastHoldBackThePress(InputDelivery delivery)
+    {
+        // The Secure Desktop and UIPI are where the click gets through and the move does not. Any
+        // other refusal is reported as it always was, and the press is the controller's to judge.
+        var service = Build(out var controller);
+        MouseThroughHid(controller);
+        service.Begin(Owner);
+        controller.AbsoluteMoveRefusal = new InputResult(delivery, "something else went wrong");
+
+        service.MoveAbsolute(Owner, 0, 0.6, 0.7);
+
+        controller.Events.Clear();
+        var clicked = service.Button(Owner, PointerButton.Left, ButtonAction.Click);
+
+        Assert.True(clicked.Succeeded);
+        Assert.Equal(["button Left down", "button Left up"], controller.Events);
+    }
+
+    [Fact]
+    public void ATouchpadMoveMakesClickingPossibleAgain()
     {
         // Relative steps are what the HID mouse does, so Touchpad is how the owner answers a prompt
         // from the phone. Once they have moved the pointer, it is where they put it.
         var service = Build(out var controller);
+        MouseThroughHid(controller);
         service.Begin(Owner);
-        controller.SecureDesktopRefusesAbsoluteMoves = true;
+        controller.AbsoluteMoveRefusal = SecurePrompt;
 
         service.MoveAbsolute(Owner, 0, 0.6, 0.7);
         service.MoveRelative(Owner, -40, 12);
@@ -460,15 +537,63 @@ public sealed class InputServiceTests
     }
 
     [Fact]
+    public void AMoveThatRoundsToNothingIsNotAMove()
+    {
+        // A delta under half a pixel reaches the controller as (0, 0). It is delivered and moves
+        // nothing, so the pointer is still where the refused move left it.
+        var service = Build(out var controller);
+        MouseThroughHid(controller);
+        service.Begin(Owner);
+        controller.AbsoluteMoveRefusal = SecurePrompt;
+
+        service.MoveAbsolute(Owner, 0, 0.6, 0.7);
+        Assert.True(service.MoveRelative(Owner, 0.3, -0.4).Succeeded);
+
+        controller.Events.Clear();
+        var pressed = service.Button(Owner, PointerButton.Left, ButtonAction.Click);
+
+        Assert.False(pressed.Succeeded);
+        Assert.Empty(controller.Events);
+    }
+
+    [Fact]
+    public void ARefusedRelativeMoveChangesNothing()
+    {
+        // It did not move the pointer, so it cannot clear a missed move. And Touchpad presses
+        // wherever the pointer is by design, so a refused relative step is no reason to set one.
+        var service = Build(out var controller);
+        MouseThroughHid(controller);
+        service.Begin(Owner);
+
+        controller.BlockedByIntegrity = true;
+        service.MoveRelative(Owner, 10, 10);
+        controller.BlockedByIntegrity = false;
+
+        Assert.True(service.Button(Owner, PointerButton.Left, ButtonAction.Click).Succeeded);
+
+        controller.AbsoluteMoveRefusal = SecurePrompt;
+        service.MoveAbsolute(Owner, 0, 0.6, 0.7);
+
+        controller.BlockedByIntegrity = true;
+        service.MoveRelative(Owner, 10, 10);
+        controller.BlockedByIntegrity = false;
+
+        controller.Events.Clear();
+        Assert.False(service.Button(Owner, PointerButton.Left, ButtonAction.Click).Succeeded);
+        Assert.Empty(controller.Events);
+    }
+
+    [Fact]
     public void AButtonIsReleasedEvenWhenThePointerCouldNotFollow()
     {
         // A drag held when the prompt appeared. Holding back the up would leave the button down
         // until the session ended.
         var service = Build(out var controller);
+        MouseThroughHid(controller);
         service.Begin(Owner);
 
         service.Button(Owner, PointerButton.Left, ButtonAction.Down);
-        controller.SecureDesktopRefusesAbsoluteMoves = true;
+        controller.AbsoluteMoveRefusal = SecurePrompt;
         service.MoveAbsolute(Owner, 0, 0.6, 0.7);
 
         controller.Events.Clear();
@@ -484,11 +609,12 @@ public sealed class InputServiceTests
         // The prompt has gone and Direct's moves land again, so the next tap is where the owner
         // aimed and is clicked.
         var service = Build(out var controller);
+        MouseThroughHid(controller);
         service.Begin(Owner);
-        controller.SecureDesktopRefusesAbsoluteMoves = true;
+        controller.AbsoluteMoveRefusal = SecurePrompt;
         service.MoveAbsolute(Owner, 0, 0.6, 0.7);
 
-        controller.SecureDesktopRefusesAbsoluteMoves = false;
+        controller.AbsoluteMoveRefusal = null;
         service.MoveAbsolute(Owner, 0, 0.2, 0.3);
 
         controller.Events.Clear();
@@ -499,18 +625,19 @@ public sealed class InputServiceTests
     }
 
     [Fact]
-    public void OnlyTheSecureDesktopHoldsBackTheNextPress()
+    public void EndingInputForgetsAMissedMove()
     {
-        // An integrity refusal is a different boundary with its own reporting. Nothing about it
-        // changes here.
+        // It belongs to the session, like a held button. A new session starts with no opinion about
+        // where the pointer is, and Direct's next tap brings its own move.
         var service = Build(out var controller);
+        MouseThroughHid(controller);
+        service.Begin(Owner);
+        controller.AbsoluteMoveRefusal = SecurePrompt;
+        service.MoveAbsolute(Owner, 0, 0.6, 0.7);
+
+        service.End(Owner);
         service.Begin(Owner);
 
-        controller.BlockedByIntegrity = true;
-        var moved = service.MoveAbsolute(Owner, 0, 0.6, 0.7);
-        Assert.Equal(InputDelivery.BlockedByIntegrity, moved.Delivery);
-
-        controller.BlockedByIntegrity = false;
         controller.Events.Clear();
         var clicked = service.Button(Owner, PointerButton.Left, ButtonAction.Click);
 
@@ -529,10 +656,11 @@ public sealed class InputServiceTests
             new AttributionOptions(), TestLog.For<NexusInputAttribution>(), time);
 
         var service = Build(out var controller, attribution: attribution);
+        MouseThroughHid(controller);
         service.Begin(Owner);
 
         service.Scroll(Owner, 0, 1);
-        controller.SecureDesktopRefusesAbsoluteMoves = true;
+        controller.AbsoluteMoveRefusal = SecurePrompt;
         service.MoveAbsolute(Owner, 0, 0.6, 0.7);
         service.Button(Owner, PointerButton.Left, ButtonAction.Click);
 
