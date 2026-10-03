@@ -151,11 +151,8 @@ same key (step 2) before a release includes it ([updating.md](updating.md)). The
 below removes the trust. The script refuses to plan an install under test signing or over an
 existing Nexus device, and nothing in it changes Secure Boot, Memory Integrity, test signing or UAC.
 
-**The driver's devices belong to the PC's console session.** PC Core adopts its mouse, keyboard and
-touch screen through Raw Input in the session it runs in. In Windows Sandbox, which has no console
-session, the driver installed and ran and Windows enumerated all three devices, but Raw Input in
-the sandbox's remote session never listed them, so PC Core reported `Virtual HID: Refused` and kept
-injecting input. Run Nexus in the session signed in at the PC itself.
+Run Nexus in the session signed in at the PC itself: the driver's devices belong to the console
+session, so a Remote Desktop session does not get them.
 
 **SecureCapture** (lets the phone see UAC prompts and the lock screen), from an elevated terminal.
 It copies itself to `%ProgramFiles%\Nexus\SecureCapture` and registers the `NexusSecureCapture`

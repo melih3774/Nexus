@@ -90,18 +90,17 @@ while the app is closed, and switching AUTO/ASK from the phone.
 <p align="center">
   <img src="docs/assets/screenshots/android-uac-prompt.png" width="100%" alt="The Nexus Screen view on the phone, in landscape, showing a real Windows UAC consent prompt from the Secure Desktop: Windows PowerShell, verified publisher Microsoft Windows, with the buttons Evet and Hayır. The PC's Windows is in Turkish.">
   <br>
-  <sub>A real UAC prompt from the Secure Desktop, on the phone. The command that raised it was typed on the phone, and the phone answered No (<a href="docs/remote-control.md#the-secure-desktop">the result</a>).</sub>
+  <sub>A UAC prompt on the Secure Desktop, on the phone</sub>
 </p>
 
 <table>
   <tr>
     <td align="center" width="33%"><img src="docs/assets/screenshots/android-home.png" alt="Nexus Home: Screen, Files, System, Security and AI Assistant, the clipboard buttons, and the app's version" width="230"><br><sub>Home</sub></td>
-    <td align="center" width="33%"><img src="docs/assets/screenshots/android-assistant-approval.png" alt="The AI Assistant on the phone in ASK mode: a task about the PC's CPU and RAM, and an approval card for a PowerShell command, with Deny and Allow once" width="230"><br><sub>An AI Assistant approval, answered on the phone</sub></td>
+    <td align="center" width="33%"><img src="docs/assets/screenshots/android-assistant-approval.png" alt="The AI Assistant on the phone in ASK mode: a task about the PC's CPU and RAM, and an approval card for a PowerShell command, with Deny and Allow once" width="230"><br><sub>AI Assistant</sub></td>
     <td align="center" width="33%"><img src="docs/assets/screenshots/android-security.png" alt="Nexus Security screen: owner present, with the Arm button" width="230"><br><sub>Security</sub></td>
   </tr>
 </table>
 
-<p align="center"><sub>Real captures from the maintainer's phone, not recreations. The prompt, Home and the AI Assistant are Nexus 1.5.0 on 3 October 2026, and those screens are unchanged in 1.6.0; Security is 1.4.0. The PC's Windows is set to Turkish.</sub></p>
 
 ## Who is at the keyboard
 
