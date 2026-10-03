@@ -147,8 +147,7 @@ included, was looked at.
   have answered Yes. An elevated window in front did the same on a PC without the input broker. PC
   Core now withholds that click until a move is delivered
   ([remote-control.md](remote-control.md#the-secure-desktop)).
-- **Real captures** of remote control, a UAC prompt from the Secure Desktop and the AI Assistant,
-  taken on the maintainer's phone with Nexus 1.5.0; those screens are unchanged in 1.6.0. Each was
+- **Real captures** of Home and the AI Assistant, taken on the maintainer's phone with Nexus 1.5.0; those screens are unchanged in 1.6.0. Each was
   checked at full size against the redaction rules ([assets/README.md](assets/README.md)).
 
 ### Remaining in history, accepted
@@ -210,8 +209,8 @@ window.
 
 - [x] Choose a license: Apache 2.0
 - [x] Re-run this audit on the new commits (2026-10-02), then on the complete history (2026-10-03)
-- [x] Take the screenshot placeholder off the README, and add real captures of remote control, the
-      UAC prompt and the AI Assistant (2026-10-03)
+- [x] Take the screenshot placeholder off the README, and add real captures of Home and the AI
+      Assistant (2026-10-03)
 - [x] Check every image against the redaction rules again (2026-10-03: every image ever committed,
       and the new captures at full size)
 - [x] Repository description, topics and Dependabot alerts (2026-10-03, while private)

@@ -31,7 +31,7 @@
     <img src="docs/assets/nexus-launch-animation.webp" width="100%" alt="Animated demo: a phone moves the pointer and types into Notepad on a Windows PC, answers a UAC prompt, starts an AI Assistant task that fixes a failing build, and then, at night, reports that a physical mouse was used on the armed PC, with the incident's timeline.">
   </picture>
   <br>
-  <sub>An animated demo that recreates the app's screens with their real strings. It is not a screen recording: <a href="#real-screens">real captures are below</a>.</sub>
+  <sub>An animated recreation of the app's screens, not a screen recording.</sub>
 </p>
 
 ## More than a remote screen
@@ -80,19 +80,6 @@ what lets it go further on that one machine.
 | **Files and clipboard** | Browse every drive; open, save and upload in resumable, hash-checked ranges; send text between the clipboards |
 | **Self-update** | The PC updates itself and rolls back on failure. The phone downloads its APK from its own PC and checks the hash and signer |
 
-Everything above is in use on the maintainer's own PC and phone, except for these, which are
-implemented and tested but not yet exercised end to end on the real phone: file transfers (browsing
-is in use), the clipboard, the live microphone, playback of evidence clips and audio, incident alerts
-while the app is closed, and switching AUTO/ASK from the phone.
-
-<a id="real-screens"></a>
-
-<p align="center">
-  <img src="docs/assets/screenshots/android-uac-prompt.png" width="100%" alt="The Nexus Screen view on the phone, in landscape, showing a real Windows UAC consent prompt from the Secure Desktop: Windows PowerShell, verified publisher Microsoft Windows, with the buttons Evet and Hayır. The PC's Windows is in Turkish.">
-  <br>
-  <sub>A UAC prompt on the Secure Desktop, on the phone</sub>
-</p>
-
 <table>
   <tr>
     <td align="center" width="33%"><img src="docs/assets/screenshots/android-home.png" alt="Nexus Home: Screen, Files, System, Security and AI Assistant, the clipboard buttons, and the app's version" width="230"><br><sub>Home</sub></td>
@@ -100,7 +87,6 @@ while the app is closed, and switching AUTO/ASK from the phone.
     <td align="center" width="33%"><img src="docs/assets/screenshots/android-security.png" alt="Nexus Security screen: owner present, with the Arm button" width="230"><br><sub>Security</sub></td>
   </tr>
 </table>
-
 
 ## Who is at the keyboard
 
@@ -207,7 +193,8 @@ every step, and how to remove all of it again.
 **1.6.0 is the first public release** of a personal project with one maintainer. Nexus has grown
 milestone by milestone since 0.1 ([release history](docs/history.md)) and is in use on the
 maintainer's own PC and phone, but it has not been tested across a range of hardware, and it comes
-without support.
+without support. Not yet used end to end on a real phone: file transfers, the clipboard, the live
+microphone, evidence playback, alerts while the app is closed, and switching AUTO/ASK.
 
 | | Supported |
 |---|---|
