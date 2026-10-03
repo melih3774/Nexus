@@ -18,13 +18,19 @@ labelled as such wherever it appears:
 | `nexus-attribution.svg` | Diagram: whose input raises an incident on an armed PC | drawn from [security-monitoring.md](../security-monitoring.md#detection) |
 | `nexus-architecture.svg` | Diagram: phone, tailnet, PC Core, the privileged parts, the Assistant, and what leaves the PC | drawn from [security-model.md](../security-model.md) and [ai-assistant.md](../ai-assistant.md) |
 | `social-preview.png` | 1280×640 card for links to the repository | the animation's end card. Not used in any page: upload it in the repository's **Settings → General → Social preview** |
-| `screenshots/android-home.png` | Home screen, connected | real capture, Nexus 1.4.0 on the owner's phone; machine name, device id, credential fingerprint, installation id and Tailscale address redacted |
+| `screenshots/android-uac-prompt.png` | README: a UAC consent prompt from the Secure Desktop, in the phone's Screen view | real capture, Nexus 1.5.0 on the owner's phone, 2026-10-03, in landscape. The command that raised it (`Start-Process powershell -Verb RunAs`) was typed on the phone, on a clean temporary desktop; the prompt was answered No from the phone. Nothing identifying on screen |
+| `screenshots/android-remote-typing.png` | The same session a moment later: the line typed on the phone and Windows' cancellation | real capture, 1.5.0, 2026-10-03, landscape. Shows the taskbar's generic pinned icons, weather and clock |
+| `screenshots/android-home.png` | Home screen, scrolled to the feature tiles, the AI Assistant card and the app version | real capture, 1.5.0, 2026-10-03; the part of Home with the machine name and ids is above the crop, so nothing needed blanking |
+| `screenshots/android-assistant-approval.png` | AI Assistant, ASK mode, an approval card | real capture, 1.5.0, 2026-10-03, from a read-only task about the PC's CPU and RAM. The recent-tasks list, which holds the owner's own tasks, is not in any capture |
+| `screenshots/android-assistant-answer.png` | The same task, done after Allow once | real capture, 1.5.0, 2026-10-03 |
 | `screenshots/android-files.png` | Files, drives and places | real capture, 1.4.0; Windows user name redacted in every path |
 | `screenshots/android-security.png` | Security, owner present | real capture, 1.4.0; nothing identifying on screen |
 | `screenshots/windows-control-panel.png` | Local control panel on the PC, update status | real capture of the loopback page, 1.4.0; no token, pairing or device data visible |
 
-Phone captures are 540 px wide, with the status bar and navigation bar cropped. Redactions are solid
-`#2A343F` blocks, so a redaction is visibly a redaction rather than an empty field.
+Phone captures are 540 px wide in portrait and 1280 px wide in landscape, with the status bar and
+navigation bar cropped. Redactions are solid `#2A343F` blocks, so a redaction is visibly a redaction
+rather than an empty field. The 1.5.0 captures are from the same app as 1.6.0: no Android source
+changed between the two.
 
 The diagrams are SVG with their own dark background, so they read the same in GitHub's light and dark
 themes. Their text uses the system font stack (Segoe UI, Roboto, Helvetica Neue, Arial) and has room
@@ -40,25 +46,22 @@ repository. A video uploaded through GitHub's own editor does play, if one is wa
 
 In order of value. One strong image beats several weak ones.
 
-1. **`android-remote-control.png`**, for the README's row of real captures. The phone showing the PC
-   desktop mid-control, ideally with a **UAC consent prompt** on screen being answered through
-   Nexus. Use a clean desktop: no personal windows, files, browser tabs or notifications.
-2. **`android-assistant.png`**. The AI Assistant screen with a finished task, from a task that names
-   no personal file or folder.
-3. **`android-incident.png`**. An incident with its timeline and an evidence item, from a **staged**
+The remote-control, UAC and AI Assistant captures arrived on 2026-10-03. Still open:
+
+1. **`android-incident.png`**. An incident with its timeline and an evidence item, from a **staged**
    test incident: arm the PC, touch the physical mouse yourself, and let a camera pointed at a blank
-   wall record. Never use a real incident.
-4. **`demo.gif`** or a WebP (optional, under ~5 MB, 10–20 s). Real footage this time: phone → desktop
+   wall record. Never use a real incident. This one needs a person at the PC; nothing else can
+   raise an incident, by design.
+2. **`demo.gif`** or a WebP (optional, under ~5 MB, 10–20 s), from real footage: phone → desktop
    control → UAC prompt answered → Files or Security. Record the phone screen (`adb shell
    screenrecord`), trim it, and export at around 360 px wide and 10–12 fps so the README stays fast
-   to load.
-5. **`android-stream-quality.png`**. The quality panel of the remote screen (profile, resolution,
+   to load. Record in landscape with the controls hidden, or the prompt is too small to read.
+3. **`android-stream-quality.png`**. The quality panel of the remote screen (profile, resolution,
    frame rate, bitrate).
-6. **`windows-tray.png`**. The tray menu, cropped to the menu itself so no other tray icons or
+4. **`windows-tray.png`**. The tray menu, cropped to the menu itself so no other tray icons or
    taskbar content show.
 
-Captures of the current version would also replace the 1.4.0 ones: the Home screen has gained the AI
-Assistant card since then.
+Files and Security are still 1.4.0 captures.
 
 ## Redaction rules
 

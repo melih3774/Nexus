@@ -83,20 +83,25 @@ what lets it go further on that one machine.
 Everything above is in use on the maintainer's own PC and phone, except for these, which are
 implemented and tested but not yet exercised end to end on the real phone: file transfers (browsing
 is in use), the clipboard, the live microphone, playback of evidence clips and audio, incident alerts
-while the app is closed, and answering the Assistant's approval cards or switching AUTO/ASK from the
-phone.
+while the app is closed, and switching AUTO/ASK from the phone.
 
 <a id="real-screens"></a>
 
+<p align="center">
+  <img src="docs/assets/screenshots/android-uac-prompt.png" width="100%" alt="The Nexus Screen view on the phone, in landscape, showing a real Windows UAC consent prompt from the Secure Desktop: Windows PowerShell, verified publisher Microsoft Windows, with the buttons Evet and Hayır. The PC's Windows is in Turkish.">
+  <br>
+  <sub>A real UAC prompt from the Secure Desktop, on the phone. The command that raised it was typed on the phone, and the phone answered No (<a href="docs/remote-control.md#the-secure-desktop">the result</a>).</sub>
+</p>
+
 <table>
   <tr>
-    <td align="center" width="33%"><img src="docs/assets/screenshots/android-home.png" alt="Nexus home screen, connected to the PC, identifiers redacted" width="230"><br><sub>Home</sub></td>
-    <td align="center" width="33%"><img src="docs/assets/screenshots/android-files.png" alt="Nexus Files: the PC's places and drives, Windows user name redacted" width="230"><br><sub>Files on the PC</sub></td>
+    <td align="center" width="33%"><img src="docs/assets/screenshots/android-home.png" alt="Nexus Home: Screen, Files, System, Security and AI Assistant, the clipboard buttons, and the app's version" width="230"><br><sub>Home</sub></td>
+    <td align="center" width="33%"><img src="docs/assets/screenshots/android-assistant-approval.png" alt="The AI Assistant on the phone in ASK mode: a task about the PC's CPU and RAM, and an approval card for a PowerShell command, with Deny and Allow once" width="230"><br><sub>An AI Assistant approval, answered on the phone</sub></td>
     <td align="center" width="33%"><img src="docs/assets/screenshots/android-security.png" alt="Nexus Security screen: owner present, with the Arm button" width="230"><br><sub>Security</sub></td>
   </tr>
 </table>
 
-<p align="center"><sub>Real captures of Nexus 1.4.0 on the maintainer's phone. Identifiers are blanked out, not made up.</sub></p>
+<p align="center"><sub>Real captures from the maintainer's phone, not recreations. The prompt, Home and the AI Assistant are Nexus 1.5.0 on 3 October 2026, whose app is the same as 1.6.0's; Security is 1.4.0. The PC's Windows is set to Turkish.</sub></p>
 
 ## Who is at the keyboard
 
@@ -245,7 +250,7 @@ src/Assistant/  the AI Assistant (C#, PcAssistant.*): its own solution and tests
 android/Nexus/  the Android app (Kotlin, Jetpack Compose)
 tests/          the .NET test suite
 shared/         protocol vectors asserted by both the C# and Kotlin tests
-tools/          release publishing, Android signing, driver validation and install
+tools/          release publishing, Android signing, driver validation and the driver install plan
 docs/           guides, research records, design history, assets
 ```
 

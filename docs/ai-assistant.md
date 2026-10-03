@@ -122,6 +122,16 @@ Open **AI Assistant** on the home screen.
 - **Switch AUTO/ASK** for an open task. The next tool call follows the new mode.
 - **Stop** a task that is working. PC Assistant ends Claude's process tree.
 
+<p align="center">
+  <img src="assets/screenshots/android-assistant-approval.png" alt="An ASK task on the phone waiting for approval of a PowerShell command, with Deny and Allow once" width="270">
+  &nbsp;
+  <img src="assets/screenshots/android-assistant-answer.png" alt="The same task done: Claude's answer about the PC's CPU and RAM, after the query was allowed from the phone" width="270">
+  <br>
+  <sub>A real task on Nexus 1.5.0, answered from the phone. The query only reads, but PC Assistant's
+  check takes <code>Format-List</code> for the disk command <code>format</code> and calls it
+  high-impact: it errs towards asking. The app shows Claude's Markdown as plain text.</sub>
+</p>
+
 ## What the phone shows
 
 The status line at the top of the screen:
