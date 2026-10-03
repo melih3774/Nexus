@@ -203,22 +203,20 @@ window.
   `format`, so ASK mode asks about them as high-impact; and the app shows Claude's Markdown as
   plain text.
 
-## Before making the repository public
+## Making the repository public
+
+The repository was made public on 2026-10-03, with the history as it is and the posture records as
+written.
 
 - [x] Choose a license: Apache 2.0
 - [x] Re-run this audit on the new commits (2026-10-02), then on the complete history (2026-10-03)
 - [x] Take the screenshot placeholder off the README (2026-10-03, with the launch README)
-- [x] Check every image against the redaction rules again (2026-10-03: every image ever committed,
-      and the new captures at full size)
+- [x] Check every image against the redaction rules again (2026-10-03: every image ever committed)
 - [x] Repository description, topics and Dependabot alerts (2026-10-03, while private)
-- [ ] Owner: accept the history as it is, or publish a fresh one (recommended: as it is)
-- [ ] Owner: upload `docs/assets/social-preview.png` as the social preview (Settings → General);
-      GitHub has no API for it
-- [ ] Owner: decide whether the records that describe this machine's security posture in detail stay
-      as written: `docs/virtual-hid.md` §13, `docs/native-input.md`,
-      `src/Assistant/docs/RESEARCH-ELEVATION.md` and `RESEARCH-BROWSER.md`, the help text of
-      `tools/nexus-hid-install.ps1` (Secure Boot off on the development PC) and
-      `src/Assistant/README.md` (the privileged helper installed on this machine)
-- [ ] Right after going public: private vulnerability reporting (SECURITY.md depends on it), branch
-      protection on `main`, secret scanning and push protection. GitHub offers none of these for a
-      private repository on this plan. There are no Actions workflows to review
+- [x] Keep the history as it is
+- [x] Keep the records that describe this machine's security posture as written
+- [x] Right after going public (2026-10-03): private vulnerability reporting, secret scanning and
+      push protection, and branch protection on `main` (no force-push, no deletion). There are no
+      Actions workflows to review
+- [ ] Upload `docs/assets/social-preview.png` as the social preview (Settings → General); GitHub has
+      no API for it
