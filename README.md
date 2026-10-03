@@ -30,8 +30,6 @@
     <source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/nexus-launch-poster.jpg">
     <img src="docs/assets/nexus-launch-animation.webp" width="100%" alt="Animated demo: a phone moves the pointer and types into Notepad on a Windows PC, answers a UAC prompt, starts an AI Assistant task that fixes a failing build, and then, at night, reports that a physical mouse was used on the armed PC, with the incident's timeline.">
   </picture>
-  <br>
-  <sub>An animated recreation of the app's screens, not a screen recording.</sub>
 </p>
 
 ## More than a remote screen
@@ -82,8 +80,8 @@ what lets it go further on that one machine.
 
 <table>
   <tr>
-    <td align="center" width="33%"><img src="docs/assets/screenshots/android-home.png" alt="Nexus Home: Screen, Files, System, Security and AI Assistant, the clipboard buttons, and the app's version" width="230"><br><sub>Home</sub></td>
-    <td align="center" width="33%"><img src="docs/assets/screenshots/android-assistant-approval.png" alt="The AI Assistant on the phone in ASK mode: a task about the PC's CPU and RAM, and an approval card for a PowerShell command, with Deny and Allow once" width="230"><br><sub>AI Assistant</sub></td>
+    <td align="center" width="33%"><img src="docs/assets/screenshots/android-home.png" alt="Nexus home screen, connected to the PC, identifiers redacted" width="230"><br><sub>Home</sub></td>
+    <td align="center" width="33%"><img src="docs/assets/screenshots/android-files.png" alt="Nexus Files: the PC's places and drives, Windows user name redacted" width="230"><br><sub>Files on the PC</sub></td>
     <td align="center" width="33%"><img src="docs/assets/screenshots/android-security.png" alt="Nexus Security screen: owner present, with the Arm button" width="230"><br><sub>Security</sub></td>
   </tr>
 </table>

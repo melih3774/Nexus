@@ -141,14 +141,12 @@ included, was looked at.
   maintainer's phone rather than the reader's; and the uninstall steps now include the release
   signing key. The app and the control panel had the same kind of wording ("uses no cloud
   service", "the Android app that does not exist yet"), fixed too.
-- **A click on the Secure Desktop where the owner did not aim.** Taking the captures below found it:
+- **A click on the Secure Desktop where the owner did not aim.** Taking real captures on the phone found it:
   with Direct acting as a mouse, a tap at a UAC prompt is a move, which the Secure Desktop refuses,
   and a click, which the Nexus HID mouse delivered at wherever the pointer rested. A tap on No could
   have answered Yes. An elevated window in front did the same on a PC without the input broker. PC
   Core now withholds that click until a move is delivered
   ([remote-control.md](remote-control.md#the-secure-desktop)).
-- **Real captures** of Home and the AI Assistant, taken on the maintainer's phone with Nexus 1.5.0; those screens are unchanged in 1.6.0. Each was
-  checked at full size against the redaction rules ([assets/README.md](assets/README.md)).
 
 ### Remaining in history, accepted
 
@@ -209,8 +207,7 @@ window.
 
 - [x] Choose a license: Apache 2.0
 - [x] Re-run this audit on the new commits (2026-10-02), then on the complete history (2026-10-03)
-- [x] Take the screenshot placeholder off the README, and add real captures of Home and the AI
-      Assistant (2026-10-03)
+- [x] Take the screenshot placeholder off the README (2026-10-03, with the launch README)
 - [x] Check every image against the redaction rules again (2026-10-03: every image ever committed,
       and the new captures at full size)
 - [x] Repository description, topics and Dependabot alerts (2026-10-03, while private)
