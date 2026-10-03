@@ -410,6 +410,137 @@ public sealed class InputServiceTests
         Assert.NotNull(result.Diagnostic);
     }
 
+    // --- The Secure Desktop ----------------------------------------------------------------------------
+
+    [Theory]
+    [InlineData(ButtonAction.Click)]
+    [InlineData(ButtonAction.DoubleClick)]
+    [InlineData(ButtonAction.Down)]
+    public void APressIsNotSentWhereThePointerCouldNotGo(ButtonAction action)
+    {
+        // The defect seen on the real PC: a Direct tap on a UAC prompt is a move and then a click.
+        // The HID mouse cannot carry the move, but it carries the click, at wherever the pointer
+        // was resting. A tap aimed at No answered Yes.
+        var service = Build(out var controller);
+        service.Begin(Owner);
+        controller.SecureDesktopRefusesAbsoluteMoves = true;
+
+        var moved = service.MoveAbsolute(Owner, 0, 0.6, 0.7);
+        Assert.Equal(InputDelivery.BlockedBySecureDesktop, moved.Delivery);
+
+        controller.Events.Clear();
+        var pressed = service.Button(Owner, PointerButton.Left, action);
+
+        Assert.False(pressed.Succeeded);
+        Assert.Equal(InputDelivery.BlockedBySecureDesktop, pressed.Delivery);
+        Assert.Contains("Touchpad", pressed.Diagnostic);
+        Assert.Empty(controller.Events);
+
+        // Nothing went down, so nothing is left to release.
+        Assert.Equal(0, service.ReleaseAll(Owner));
+    }
+
+    [Fact]
+    public void ATouchpadMoveAtTheSecureDesktopMakesClickingPossibleAgain()
+    {
+        // Relative steps are what the HID mouse does, so Touchpad is how the owner answers a prompt
+        // from the phone. Once they have moved the pointer, it is where they put it.
+        var service = Build(out var controller);
+        service.Begin(Owner);
+        controller.SecureDesktopRefusesAbsoluteMoves = true;
+
+        service.MoveAbsolute(Owner, 0, 0.6, 0.7);
+        service.MoveRelative(Owner, -40, 12);
+
+        controller.Events.Clear();
+        var clicked = service.Button(Owner, PointerButton.Left, ButtonAction.Click);
+
+        Assert.True(clicked.Succeeded);
+        Assert.Equal(["button Left down", "button Left up"], controller.Events);
+    }
+
+    [Fact]
+    public void AButtonIsReleasedEvenWhenThePointerCouldNotFollow()
+    {
+        // A drag held when the prompt appeared. Holding back the up would leave the button down
+        // until the session ended.
+        var service = Build(out var controller);
+        service.Begin(Owner);
+
+        service.Button(Owner, PointerButton.Left, ButtonAction.Down);
+        controller.SecureDesktopRefusesAbsoluteMoves = true;
+        service.MoveAbsolute(Owner, 0, 0.6, 0.7);
+
+        controller.Events.Clear();
+        var released = service.Button(Owner, PointerButton.Left, ButtonAction.Up);
+
+        Assert.True(released.Succeeded);
+        Assert.Equal(["button Left up"], controller.Events);
+    }
+
+    [Fact]
+    public void AnAbsoluteMoveThatLandsMakesClickingPossibleAgain()
+    {
+        // The prompt has gone and Direct's moves land again, so the next tap is where the owner
+        // aimed and is clicked.
+        var service = Build(out var controller);
+        service.Begin(Owner);
+        controller.SecureDesktopRefusesAbsoluteMoves = true;
+        service.MoveAbsolute(Owner, 0, 0.6, 0.7);
+
+        controller.SecureDesktopRefusesAbsoluteMoves = false;
+        service.MoveAbsolute(Owner, 0, 0.2, 0.3);
+
+        controller.Events.Clear();
+        var clicked = service.Button(Owner, PointerButton.Left, ButtonAction.Click);
+
+        Assert.True(clicked.Succeeded);
+        Assert.Equal(["button Left down", "button Left up"], controller.Events);
+    }
+
+    [Fact]
+    public void OnlyTheSecureDesktopHoldsBackTheNextPress()
+    {
+        // An integrity refusal is a different boundary with its own reporting. Nothing about it
+        // changes here.
+        var service = Build(out var controller);
+        service.Begin(Owner);
+
+        controller.BlockedByIntegrity = true;
+        var moved = service.MoveAbsolute(Owner, 0, 0.6, 0.7);
+        Assert.Equal(InputDelivery.BlockedByIntegrity, moved.Delivery);
+
+        controller.BlockedByIntegrity = false;
+        controller.Events.Clear();
+        var clicked = service.Button(Owner, PointerButton.Left, ButtonAction.Click);
+
+        Assert.True(clicked.Succeeded);
+        Assert.Equal(["button Left down", "button Left up"], controller.Events);
+    }
+
+    [Fact]
+    public void APressHeldBackLeavesNothingForTheDetectorToExcuse()
+    {
+        // A claim outstanding for a click that was never sent could only ever be spent excusing
+        // somebody else's. The scroll's two claims stand for input still on its way, and must
+        // survive exactly.
+        var time = new AdvanceableTimeProvider();
+        var attribution = new NexusInputAttribution(
+            new AttributionOptions(), TestLog.For<NexusInputAttribution>(), time);
+
+        var service = Build(out var controller, attribution: attribution);
+        service.Begin(Owner);
+
+        service.Scroll(Owner, 0, 1);
+        controller.SecureDesktopRefusesAbsoluteMoves = true;
+        service.MoveAbsolute(Owner, 0, 0.6, 0.7);
+        service.Button(Owner, PointerButton.Left, ButtonAction.Click);
+
+        Assert.True(attribution.TryClaim(ActivityKind.PointerActivity, time.GetUtcNow()));
+        Assert.True(attribution.TryClaim(ActivityKind.PointerActivity, time.GetUtcNow()));
+        Assert.False(attribution.TryClaim(ActivityKind.PointerActivity, time.GetUtcNow()));
+    }
+
     // --- Rate limiting -------------------------------------------------------------------------------------
 
     [Fact]

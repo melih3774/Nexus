@@ -219,7 +219,11 @@ public sealed class InputService : IInputService
         var pixelX = display.Left + (int)Math.Round(x * (display.Width - 1));
         var pixelY = display.Top + (int)Math.Round(y * (display.Height - 1));
 
-        return Perform(state, ActivityKind.PointerActivity, 1, () => _controller.MovePointerAbsolute(pixelX, pixelY));
+        var result = Perform(
+            state, ActivityKind.PointerActivity, 1, () => _controller.MovePointerAbsolute(pixelX, pixelY));
+
+        NotePointer(state, result, absolute: true);
+        return result;
     }
 
     public InputResult MoveRelative(string ownerId, double dx, double dy)
@@ -235,7 +239,11 @@ public sealed class InputService : IInputService
         var moveX = (int)Math.Round(Math.Clamp(dx, -limit, limit));
         var moveY = (int)Math.Round(Math.Clamp(dy, -limit, limit));
 
-        return Perform(state, ActivityKind.PointerActivity, 1, () => _controller.MovePointerRelative(moveX, moveY));
+        var result = Perform(
+            state, ActivityKind.PointerActivity, 1, () => _controller.MovePointerRelative(moveX, moveY));
+
+        NotePointer(state, result, absolute: false);
+        return result;
     }
 
     public InputResult Button(string ownerId, PointerButton button, ButtonAction action)
@@ -245,6 +253,23 @@ public sealed class InputService : IInputService
         if (!Enum.IsDefined(button) || !Enum.IsDefined(action))
         {
             throw new CapabilityException(ErrorCodes.InvalidParameters, "Unknown pointer button or action.");
+        }
+
+        // A press where the owner did not aim. Direct sends a move before every click, and on the
+        // Secure Desktop that move is refused while the press after it is not, so the press would
+        // land wherever the pointer was left: a tap on No could answer Yes. Refused before anything
+        // is declared, because a press that is never sent has nothing to declare. A release always
+        // goes through, or a button could be left held.
+        if (action != ButtonAction.Up && IsPointerOffTarget(state))
+        {
+            _logger.LogInformation(
+                "{Button} {Action} for {Owner} was not sent: the pointer could not be moved to where "
+                + "it was aimed on the Secure Desktop.",
+                button,
+                action,
+                state.Session.OwnerId);
+
+            return InputResult.SecureDesktop(PointerOffTargetDiagnostic);
         }
 
         InputResult result;
@@ -541,6 +566,48 @@ public sealed class InputService : IInputService
     /// </summary>
     private const int MaxTouchContacts = 10;
 
+    /// <summary>What the phone shows when a press is held back by <see cref="IsPointerOffTarget"/>.</summary>
+    private const string PointerOffTargetDiagnostic =
+        "The pointer could not be moved to where you tapped on the Secure Desktop, so the click was not "
+        + "sent. Use Touchpad to move it.";
+
+    /// <summary>
+    /// Remembers whether the pointer is where the owner last aimed it.
+    /// <para>
+    /// Set only by an absolute move refused at the Secure Desktop. A prompt there is reached through
+    /// the Nexus HID mouse, which clicks wherever the pointer is but moves only by relative steps, so
+    /// the absolute move cannot be carried and the click after it can. Cleared by any move that is
+    /// delivered, a relative one included: Touchpad on the HID mouse is how the owner reaches the
+    /// prompt's buttons, and once they have moved the pointer it is where they put it.
+    /// </para>
+    /// <para>
+    /// Touch takes no part. A contact is pressed and placed in one call: a digitizer puts it where
+    /// the finger is, and the pointer fallback presses only after its own move has landed.
+    /// </para>
+    /// </summary>
+    private void NotePointer(SessionState state, InputResult moved, bool absolute)
+    {
+        lock (_gate)
+        {
+            if (moved.Succeeded)
+            {
+                state.PointerOffTarget = false;
+            }
+            else if (absolute && moved.Delivery == InputDelivery.BlockedBySecureDesktop)
+            {
+                state.PointerOffTarget = true;
+            }
+        }
+    }
+
+    private bool IsPointerOffTarget(SessionState state)
+    {
+        lock (_gate)
+        {
+            return state.PointerOffTarget;
+        }
+    }
+
     private InputResult Chord(PointerButton button, int times)
     {
         var result = InputResult.Ok;
@@ -706,6 +773,12 @@ public sealed class InputService : IInputService
         public bool WarnedAboutIntegrity { get; set; }
 
         public bool WarnedAboutSecureDesktop { get; set; }
+
+        /// <summary>
+        /// The last absolute move was refused at the Secure Desktop and nothing has moved the pointer
+        /// since. Lives and dies with the session, like the rest of this state.
+        /// </summary>
+        public bool PointerOffTarget { get; set; }
     }
 
     /// <summary>

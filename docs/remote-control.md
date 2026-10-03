@@ -202,7 +202,9 @@ What Nexus adds is the ability to *see* the prompt and answer it yourself from t
 - **Input.** A HID device produces reports that Windows delivers to the desktop that has focus,
   including the Secure Desktop. When mouse and keyboard are Nexus HID devices, an owner-authenticated
   session can move the pointer and click inside the prompt. The injection paths cannot reach it and
-  stop there. That check lives inside the injector, below the protocol.
+  stop there. That check lives inside the injector, below the protocol. The HID mouse moves only by
+  relative steps, so use Touchpad at a prompt: a Direct tap whose move could not be carried sends no
+  click, rather than clicking wherever the pointer was. The keys work too, and Esc answers No.
 - **Picture.** Desktop Duplication stops the moment Windows switches desktops. `PcCore.SecureCapture`
   is a small LocalSystem service that starts a capture worker inside the console session, where the
   Winlogon desktop's access list admits it, and that worker returns frames.
