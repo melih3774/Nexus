@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 592" role="img" aria-label="How Nexus fits together. The Nexus app on an Android phone connects over the owner's tailnet, inside WireGuard, to PC Core on the Windows 11 PC. PC Core runs as a standard user and exposes named capabilities under one policy with no shell; its remote listener binds only to the Tailscale address. Privileged parts: the Nexus HID driver and SecureCapture, installed by the owner, plus an optional input broker and the updater's step behind its own UAC prompt. The Nexus AI Assistant is a separate process reached over an owner-only pipe; it runs Claude Code, whose model provider Anthropic is outside the PC, and its admin helper, which the owner installs, carries out the steps the owner approves at the PC. Windows' desktop, elevated apps and the UAC Secure Desktop are reached through these parts, and UAC, Memory Integrity and driver signing stay on. What leaves the PC: the encrypted link to the phone and, only with the Assistant, what Claude Code sends to Anthropic and whatever its tools reach for a task.">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 L9 5 L0 9 z" fill="#4A5868"/>
+    </marker>
+  </defs>
+
+  <rect x="1" y="1" width="998" height="590" rx="18" fill="#0B0F14" stroke="#1B232C" stroke-width="2"/>
+
+  <g font-family="Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif">
+
+    <!-- The phone -->
+    <text x="28" y="136" fill="#8A97A6" font-size="11.5" letter-spacing="2">YOUR PHONE</text>
+    <rect x="24" y="150" width="190" height="236" rx="18" fill="#12181F" stroke="#2FD8A8" stroke-width="1.8"/>
+    <path transform="translate(39.4 158.4) scale(0.5)" fill="#2FD8A8" d="M38,34h6.5l19,25.5V34H70v40h-6.5l-19,-25.5V74H38z"/>
+    <text x="84" y="190" fill="#E8EDF2" font-size="18" font-weight="600">Nexus app</text>
+    <text x="84" y="212" fill="#8A97A6" font-size="14">Android 12+</text>
+    <line x1="42" y1="234" x2="196" y2="234" stroke="#1B232C" stroke-width="1.5"/>
+    <g fill="#C9D2DC" font-size="14">
+      <text x="42" y="262">pairs once, by QR</text>
+      <text x="42" y="288">biometric / screen lock</text>
+      <text x="42" y="314">screen · input · files</text>
+      <text x="42" y="340">security · Assistant</text>
+    </g>
+
+    <!-- The private link -->
+    <line x1="216" y1="268" x2="298" y2="268" stroke="#2FD8A8" stroke-width="2.5" stroke-dasharray="6 7" stroke-linecap="round"/>
+    <g transform="translate(246 250)">
+      <rect x="0" y="0" width="22" height="34" rx="6" fill="#0B0F14"/>
+      <path d="M6 14 V10 a5 5 0 0 1 10 0 V14" fill="none" stroke="#E8EDF2" stroke-width="2"/>
+      <rect x="3.5" y="14" width="15" height="12" rx="2.5" fill="#E8EDF2"/>
+    </g>
+    <text x="257" y="238" fill="#8A97A6" font-size="12.5" text-anchor="middle" font-family="Consolas, SFMono-Regular, Menlo, monospace">tailnet</text>
+    <text x="257" y="306" fill="#8A97A6" font-size="12.5" text-anchor="middle" font-family="Consolas, SFMono-Regular, Menlo, monospace">WireGuard</text>
+
+    <!-- The PC -->
+    <rect x="300" y="24" width="500" height="490" rx="16" fill="#0E1319" stroke="#2A343F" stroke-width="1.8"/>
+    <text x="322" y="52" fill="#8A97A6" font-size="12.5" letter-spacing="2.5">YOUR WINDOWS 11 PC</text>
+
+    <!-- PC Core -->
+    <rect x="320" y="66" width="460" height="100" rx="12" fill="#12181F" stroke="#2FD8A8" stroke-width="1.8"/>
+    <text x="340" y="100" fill="#E8EDF2" font-size="20" font-weight="600">PC Core</text>
+    <rect x="646" y="82" width="118" height="26" rx="13" fill="none" stroke="#2FD8A8" stroke-opacity="0.6" stroke-width="1.2"/>
+    <text x="705" y="100" fill="#2FD8A8" font-size="13" text-anchor="middle">standard user</text>
+    <text x="340" y="128" fill="#C9D2DC" font-size="14.5">named capabilities · one policy · no shell</text>
+    <text x="340" y="151" fill="#8A97A6" font-size="14.5">remote listener: Tailscale address only</text>
+
+    <line x1="451" y1="167" x2="451" y2="184" stroke="#4A5868" stroke-width="2" marker-end="url(#a)"/>
+    <line x1="689" y1="167" x2="689" y2="184" stroke="#4A5868" stroke-width="2" marker-end="url(#a)"/>
+
+    <!-- Privileged parts, installed by the owner -->
+    <rect x="320" y="186" width="262" height="196" rx="12" fill="none" stroke="#4A5868" stroke-width="1.5" stroke-dasharray="6 5"/>
+    <text x="336" y="210" fill="#8A97A6" font-size="11.5" letter-spacing="2">PRIVILEGED PARTS</text>
+    <rect x="334" y="222" width="234" height="62" rx="10" fill="#12181F" stroke="#1B232C" stroke-width="1.5"/>
+    <text x="350" y="247" fill="#E8EDF2" font-size="16" font-weight="600">Nexus HID driver</text>
+    <text x="350" y="270" fill="#8A97A6" font-size="13.5">user-mode · mouse, keys, touch</text>
+    <rect x="334" y="292" width="234" height="62" rx="10" fill="#12181F" stroke="#1B232C" stroke-width="1.5"/>
+    <text x="350" y="317" fill="#E8EDF2" font-size="16" font-weight="600">SecureCapture</text>
+    <text x="350" y="340" fill="#8A97A6" font-size="13.5">service · sees the UAC prompt</text>
+    <text x="336" y="372" fill="#8A97A6" font-size="12.5">+ input broker · updater's UAC step</text>
+
+    <!-- The Assistant -->
+    <rect x="598" y="186" width="182" height="196" rx="12" fill="#12181F" stroke="#2FD8A8" stroke-width="1.5" stroke-opacity="0.55"/>
+    <path transform="translate(624 211)" fill="#2FD8A8" d="M0 -11 C1.4 -3.4 3.4 -1.4 11 0 C3.4 1.4 1.4 3.4 0 11 C-1.4 3.4 -3.4 1.4 -11 0 C-3.4 -1.4 -1.4 -3.4 0 -11 z"/>
+    <text x="644" y="217" fill="#E8EDF2" font-size="16" font-weight="600">AI Assistant</text>
+    <g fill="#C9D2DC" font-size="13.5">
+      <text x="614" y="246">its own process,</text>
+      <text x="614" y="267">owner-only pipe</text>
+      <text x="614" y="288">runs Claude Code</text>
+    </g>
+    <line x1="614" y1="300" x2="764" y2="300" stroke="#1B232C" stroke-width="1.5"/>
+    <g fill="#8A97A6" font-size="13.5">
+      <text x="614" y="322">admin helper: you</text>
+      <text x="614" y="342">install it, then approve</text>
+      <text x="614" y="362">each step at the PC</text>
+    </g>
+
+    <line x1="451" y1="383" x2="451" y2="400" stroke="#4A5868" stroke-width="2" marker-end="url(#a)"/>
+    <line x1="689" y1="383" x2="689" y2="400" stroke="#4A5868" stroke-width="2" marker-end="url(#a)"/>
+
+    <!-- Windows -->
+    <rect x="320" y="402" width="460" height="92" rx="12" fill="#12181F" stroke="#1B232C" stroke-width="1.5"/>
+    <g transform="translate(340 424)" fill="#8A97A6">
+      <rect x="0" y="0" width="9" height="9"/><rect x="11" y="0" width="9" height="9"/>
+      <rect x="0" y="11" width="9" height="9"/><rect x="11" y="11" width="9" height="9"/>
+    </g>
+    <text x="372" y="441" fill="#E8EDF2" font-size="18" font-weight="600">Windows</text>
+    <text x="466" y="441" fill="#C9D2DC" font-size="14.5">desktop · elevated apps · UAC prompt</text>
+    <text x="340" y="474" fill="#8A97A6" font-size="14">UAC, Memory Integrity and driver signing stay on</text>
+
+    <!-- Outside the PC -->
+    <text x="826" y="172" fill="#8A97A6" font-size="11.5" letter-spacing="2">OUTSIDE THE PC</text>
+    <line x1="782" y1="246" x2="818" y2="246" stroke="#8A97A6" stroke-width="2" stroke-dasharray="4 4"/>
+    <rect x="820" y="186" width="156" height="128" rx="12" fill="none" stroke="#8A97A6" stroke-width="1.5" stroke-dasharray="6 5"/>
+    <text x="838" y="217" fill="#E8EDF2" font-size="16" font-weight="600">Anthropic</text>
+    <g fill="#8A97A6" font-size="13.5">
+      <text x="838" y="246">Claude Code's</text>
+      <text x="838" y="267">model, under</text>
+      <text x="838" y="288">your own account</text>
+    </g>
+
+    <!-- Footer -->
+    <text x="500" y="544" fill="#8A97A6" font-size="14.5" text-anchor="middle">Leaves the PC: the encrypted link to your phone and, only if you use the Assistant,</text>
+    <text x="500" y="566" fill="#8A97A6" font-size="14.5" text-anchor="middle">what Claude Code sends to Anthropic and whatever its tools reach for a task</text>
+  </g>
+</svg>

@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 460" role="img" aria-label="Input attribution on an armed PC. Your phone's input is Nexus's own: its virtual mouse, keyboard and touch screen, recognised by device identity, or its tagged injection. It raises no incident. The Nexus AI Assistant's input is software-injected, is set aside, and raises no incident. Someone at the physical keyboard or mouse produces hardware input that nothing in Nexus declared, which opens an incident with evidence and an alert to your phone.">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 L9 5 L0 9 z" fill="#4A5868"/>
+    </marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 L9 5 L0 9 z" fill="#F0525A"/>
+    </marker>
+  </defs>
+
+  <rect x="1" y="1" width="998" height="458" rx="18" fill="#0B0F14" stroke="#1B232C" stroke-width="2"/>
+
+  <g font-family="Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif">
+    <!-- Column headings -->
+    <g fill="#8A97A6" font-size="12.5" letter-spacing="2.5">
+      <text x="28" y="44">WHO</text>
+      <text x="340" y="44">WHAT THE PC SEES</text>
+      <text x="692" y="44">RESULT WHILE ARMED</text>
+    </g>
+
+    <!-- Row 1: the owner, through the phone -->
+    <rect x="24" y="62" width="280" height="88" rx="12" fill="#12181F" stroke="#2FD8A8" stroke-width="1.5"/>
+    <g transform="translate(44 89)" fill="none" stroke="#2FD8A8" stroke-width="2.2">
+      <rect x="0" y="0" width="20" height="34" rx="4"/>
+      <path d="M7 29 H13" stroke-linecap="round"/>
+    </g>
+    <text x="84" y="100" fill="#E8EDF2" font-size="18" font-weight="600">Your phone</text>
+    <text x="84" y="124" fill="#8A97A6" font-size="14.5">biometric or screen lock</text>
+
+    <line x1="306" y1="106" x2="334" y2="106" stroke="#4A5868" stroke-width="2" marker-end="url(#a)"/>
+
+    <rect x="336" y="62" width="320" height="88" rx="12" fill="#12181F" stroke="#1B232C" stroke-width="1.5"/>
+    <text x="356" y="100" fill="#E8EDF2" font-size="18" font-weight="600">Nexus's own input</text>
+    <text x="356" y="124" fill="#8A97A6" font-size="14.5">its HID devices by identity, or its tag</text>
+
+    <line x1="658" y1="106" x2="686" y2="106" stroke="#4A5868" stroke-width="2" marker-end="url(#a)"/>
+
+    <rect x="688" y="62" width="288" height="88" rx="12" fill="#2FD8A8" fill-opacity="0.08" stroke="#2FD8A8" stroke-width="1.5"/>
+    <g transform="translate(712 94)" fill="none" stroke="#2FD8A8" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M0 7 L6 13 L18 0"/>
+    </g>
+    <text x="746" y="100" fill="#2FD8A8" font-size="18" font-weight="600">Yours</text>
+    <text x="746" y="124" fill="#8A97A6" font-size="14.5">no incident</text>
+
+    <!-- Row 2: the Assistant, working for the owner -->
+    <rect x="24" y="166" width="280" height="88" rx="12" fill="#12181F" stroke="#2FD8A8" stroke-width="1.5" stroke-opacity="0.55"/>
+    <g transform="translate(54 210)" fill="#2FD8A8">
+      <path d="M0 -16 C2 -5 5 -2 16 0 C5 2 2 5 0 16 C-2 5 -5 2 -16 0 C-5 -2 -2 -5 0 -16 z"/>
+    </g>
+    <text x="84" y="204" fill="#E8EDF2" font-size="18" font-weight="600">Nexus AI Assistant</text>
+    <text x="84" y="228" fill="#8A97A6" font-size="14.5">working on a task for you</text>
+
+    <line x1="306" y1="210" x2="334" y2="210" stroke="#4A5868" stroke-width="2" marker-end="url(#a)"/>
+
+    <rect x="336" y="166" width="320" height="88" rx="12" fill="#12181F" stroke="#1B232C" stroke-width="1.5"/>
+    <text x="356" y="204" fill="#E8EDF2" font-size="18" font-weight="600">Software-injected input</text>
+    <text x="356" y="228" fill="#8A97A6" font-size="14.5">flagged as injected, set aside</text>
+
+    <line x1="658" y1="210" x2="686" y2="210" stroke="#4A5868" stroke-width="2" marker-end="url(#a)"/>
+
+    <rect x="688" y="166" width="288" height="88" rx="12" fill="#2FD8A8" fill-opacity="0.08" stroke="#2FD8A8" stroke-width="1.5"/>
+    <g transform="translate(712 198)" fill="none" stroke="#2FD8A8" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M0 7 L6 13 L18 0"/>
+    </g>
+    <text x="746" y="204" fill="#2FD8A8" font-size="18" font-weight="600">Not a person</text>
+    <text x="746" y="228" fill="#8A97A6" font-size="14.5">no incident</text>
+
+    <!-- Row 3: someone else, at the desk -->
+    <rect x="24" y="270" width="280" height="88" rx="12" fill="#12181F" stroke="#F0525A" stroke-width="1.5" stroke-opacity="0.75"/>
+    <g transform="translate(43 295)" fill="none" stroke="#F0525A" stroke-width="2.2">
+      <rect x="0" y="0" width="22" height="34" rx="11"/>
+      <path d="M11 0 V12" />
+    </g>
+    <text x="84" y="308" fill="#E8EDF2" font-size="18" font-weight="600">Someone at the desk</text>
+    <text x="84" y="332" fill="#8A97A6" font-size="14.5">the physical keyboard or mouse</text>
+
+    <line x1="306" y1="314" x2="334" y2="314" stroke="#F0525A" stroke-width="2" marker-end="url(#r)"/>
+
+    <rect x="336" y="270" width="320" height="88" rx="12" fill="#12181F" stroke="#1B232C" stroke-width="1.5"/>
+    <text x="356" y="308" fill="#E8EDF2" font-size="18" font-weight="600">Hardware input</text>
+    <text x="356" y="332" fill="#8A97A6" font-size="14.5">from a device Nexus does not own</text>
+
+    <line x1="658" y1="314" x2="686" y2="314" stroke="#F0525A" stroke-width="2" marker-end="url(#r)"/>
+
+    <rect x="688" y="270" width="288" height="88" rx="12" fill="#F0525A" fill-opacity="0.12" stroke="#F0525A" stroke-width="1.5"/>
+    <g transform="translate(713 299)" fill="none" stroke="#F0525A" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9 0 L19 18 H-1 Z"/>
+      <path d="M9 6 V11"/>
+      <circle cx="9" cy="14.6" r="0.6" fill="#F0525A"/>
+    </g>
+    <text x="746" y="308" fill="#F0525A" font-size="18" font-weight="600">Incident</text>
+    <text x="746" y="332" fill="#C9D2DC" font-size="14.5">evidence + an alert to your phone</text>
+
+    <!-- Footer -->
+    <line x1="24" y1="388" x2="976" y2="388" stroke="#1B232C" stroke-width="1.5"/>
+    <text x="500" y="420" fill="#8A97A6" font-size="14.5" text-anchor="middle">Nexus declares its own input before sending it  ·  nothing recorded while you are present  ·  key codes never read</text>
+  </g>
+</svg>

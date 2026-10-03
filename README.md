@@ -1,248 +1,247 @@
 <p align="center">
-  <img src="docs/assets/nexus-banner.svg" alt="Nexus" width="100%">
+  <img src="docs/assets/nexus-mark.svg" alt="" width="72">
 </p>
 
 <h1 align="center">Nexus</h1>
 
 <p align="center">
-  <b>A personal Android ↔ Windows remote-control and security system built for one owner and one PC.</b>
+  <b>Your Android phone as a real mouse, keyboard and touch screen for your own Windows PC.</b><br>
+  Over your private Tailscale network, right through the UAC prompt. Nexus can also work on the PC
+  for you, and it knows when the hands on your PC aren't yours.
 </p>
 
 <p align="center">
-  <img alt="Windows 11" src="https://img.shields.io/badge/Windows-11-0078D4?logo=windows&logoColor=white">
-  <img alt="Android 12+" src="https://img.shields.io/badge/Android-12%2B-3DDC84?logo=android&logoColor=white">
-  <img alt=".NET 10" src="https://img.shields.io/badge/.NET-10-512BD4?logo=dotnet&logoColor=white">
-  <img alt="Kotlin + Compose" src="https://img.shields.io/badge/Kotlin-Compose-7F52FF?logo=kotlin&logoColor=white">
+  <a href="docs/history.md"><img alt="Version 1.6.0" src="https://img.shields.io/badge/version-1.6.0-2FD8A8"></a>
+  <a href="#status"><img alt="Windows 11 x64" src="https://img.shields.io/badge/Windows-11_x64-0078D4?logo=windows&logoColor=white"></a>
+  <a href="#status"><img alt="Android 12+" src="https://img.shields.io/badge/Android-12%2B-3DDC84?logo=android&logoColor=white"></a>
+  <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache_2.0-blue"></a>
 </p>
 
-Control your Windows PC from your phone through real virtual HID devices, all the way to the UAC
-prompt, and find out when someone else uses it while you are away.
+<p align="center">
+  <a href="#what-it-does-today">What it does</a> ·
+  <a href="#who-is-at-the-keyboard">Security</a> ·
+  <a href="#how-it-fits-together">How it works</a> ·
+  <a href="#try-it">Try it</a> ·
+  <a href="#documentation">Docs</a>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/nexus-launch-poster.jpg">
+    <img src="docs/assets/nexus-launch-animation.webp" width="100%" alt="Animated demo: a phone moves the pointer and types into Notepad on a Windows PC, answers a UAC prompt, starts an AI Assistant task that fixes a failing build, and then, at night, reports that a physical mouse was used on the armed PC, with the incident's timeline.">
+  </picture>
+  <br>
+  <sub>An animated demo that recreates the app's screens with their real strings. It is not a screen recording: <a href="#real-screens">real captures are below</a>.</sub>
+</p>
+
+## More than a remote screen
+
+Remote-desktop tools are built for everyone: help desks, fleets, strangers helping strangers. Nexus
+is built for **one owner, one Windows PC and one primary Android phone**, and that narrow scope is
+what lets it go further on that one machine.
 
 <table>
   <tr>
-    <td width="25%" valign="top"><b>Virtual HID input</b><br>A Nexus mouse, keyboard and touch screen that Windows treats as hardware</td>
-    <td width="25%" valign="top"><b>Low-latency desktop</b><br>H.264 with hardware encode and decode, measured latency, adaptive quality</td>
-    <td width="25%" valign="top"><b>UAC from the phone</b><br>See and answer real consent prompts on the Secure Desktop</td>
-    <td width="25%" valign="top"><b>Biometric owner sessions</b><br>Control requires Android's biometric prompt, verified by the PC</td>
-  </tr>
-  <tr>
-    <td valign="top"><b>Security monitoring</b><br>Arm the PC; a stranger's input opens an incident with evidence</td>
-    <td valign="top"><b>Live camera and mic</b><br>Watch the room, with a badge on the PC that cannot be hidden</td>
-    <td valign="top"><b>Files and clipboard</b><br>Browse every drive, resumable hash-checked transfers, text both ways</td>
-    <td valign="top"><b>Self-update</b><br>The PC updates itself with rollback; the phone pulls its APK from the PC</td>
+    <td width="33%" valign="top">
+      <h3>You operate it</h3>
+      The phone drives a Nexus mouse, keyboard and touch screen that Windows treats as hardware.
+      With the optional driver, elevated windows respond too, and so does the UAC prompt, which you
+      see and answer on the phone.<br><br>
+      <a href="docs/remote-control.md">Remote control →</a>
+    </td>
+    <td width="33%" valign="top">
+      <h3>It acts for you</h3>
+      Give the Nexus AI Assistant on your PC a task from the phone and watch it work: the reply,
+      each tool step, and the approval cards it asks you to answer. Administrator steps are approved
+      by you, at the PC.<br><br>
+      <a href="docs/ai-assistant.md">AI Assistant →</a>
+    </td>
+    <td width="33%" valign="top">
+      <h3>It knows it isn't you</h3>
+      Arm the PC and walk away. Your remote input and the Assistant's work are told apart from hands
+      on the physical keyboard and mouse, and only a person at the desk opens an incident, with
+      evidence and an alert on your phone.<br><br>
+      <a href="docs/security-monitoring.md">Security monitoring →</a>
+    </td>
   </tr>
 </table>
+
+## What it does today
+
+| | |
+|---|---|
+| **Live desktop** | H.264 with hardware encode where available, hardware decode, adaptive quality and measured latency. Pointer, keyboard with latched modifiers, and Direct touch |
+| **Real input devices** | A user-mode HID driver publishes the Nexus mouse, keyboard and touch screen. If PC Core stops, the devices disappear and every held key is released |
+| **UAC from the phone** | See and answer real consent prompts on the Secure Desktop, with the optional driver and SecureCapture installed. UAC stays on, and Nexus never answers a prompt itself |
+| **Owner sessions** | Pair once, by QR code at the PC. Control unlocks only after the phone's biometric or screen lock, proven to the PC with a hardware-backed key |
+| **AI Assistant** | Start and follow up tasks, switch AUTO/ASK and answer approvals from the phone. It runs Claude Code under your own Claude account |
+| **Security monitoring** | Arm the PC, detect a person, keep screenshot, camera and microphone evidence with SHA-256 digests, and answer *This was me* or *Not me* |
+| **Live camera and mic** | Watch and listen to the room. The PC shows a `Camera LIVE` or `Microphone LIVE` badge that no setting can hide |
+| **Files and clipboard** | Browse every drive; open, save and upload in resumable, hash-checked ranges; send text between the clipboards |
+| **Self-update** | The PC updates itself and rolls back on failure. The phone downloads its APK from its own PC and checks the hash and signer |
+
+Everything above is in use on the maintainer's own PC and phone, except for these, which are
+implemented and tested but not yet exercised end to end on the real phone: file transfers (browsing
+is in use), the clipboard, the live microphone, playback of evidence clips and audio, incident alerts
+while the app is closed, and answering the Assistant's approval cards or switching AUTO/ASK from the
+phone.
+
+<a id="real-screens"></a>
 
 <table>
   <tr>
-    <td align="center" width="25%"><img src="docs/assets/screenshots/android-remote-control.pending.svg" alt="Remote control screenshot (pending)" width="200"><br><sub>Remote control <i>(capture pending)</i></sub></td>
-    <td align="center" width="25%"><img src="docs/assets/screenshots/android-home.png" alt="Nexus home screen, connected, identifiers redacted" width="200"><br><sub>Home</sub></td>
-    <td align="center" width="25%"><img src="docs/assets/screenshots/android-security.png" alt="Nexus security screen, owner present" width="200"><br><sub>Security</sub></td>
-    <td align="center" width="25%"><img src="docs/assets/screenshots/android-files.png" alt="Nexus Files: the PC's places and drives, user name redacted" width="200"><br><sub>Files</sub></td>
+    <td align="center" width="33%"><img src="docs/assets/screenshots/android-home.png" alt="Nexus home screen, connected to the PC, identifiers redacted" width="230"><br><sub>Home</sub></td>
+    <td align="center" width="33%"><img src="docs/assets/screenshots/android-files.png" alt="Nexus Files: the PC's places and drives, Windows user name redacted" width="230"><br><sub>Files on the PC</sub></td>
+    <td align="center" width="33%"><img src="docs/assets/screenshots/android-security.png" alt="Nexus Security screen: owner present, with the Arm button" width="230"><br><sub>Security</sub></td>
   </tr>
 </table>
 
-<sub>Real captures of Nexus 1.4.0 on the owner's phone. Identifiers are blanked out, not made up.</sub>
+<p align="center"><sub>Real captures of Nexus 1.4.0 on the maintainer's phone. Identifiers are blanked out, not made up.</sub></p>
 
----
+## Who is at the keyboard
 
-## Why Nexus exists
+<p align="center">
+  <img src="docs/assets/nexus-attribution.svg" width="100%" alt="On an armed PC: your phone's input arrives as Nexus's own input, through its virtual devices or its tagged injection, and raises no incident. The AI Assistant's input is software-injected and set aside: no incident. Someone at the physical keyboard or mouse produces hardware input from a device Nexus does not own, which opens an incident with evidence and an alert to your phone.">
+</p>
 
-Remote-desktop products are built for everyone: help desks, fleets, strangers helping strangers. That
-shapes every trade-off. They need accounts, relay servers, device lists and a security model that
-assumes nothing about who is on either end.
+Because Nexus knows exactly who the owner is, it can also notice who isn't. Nexus declares its own
+input before Windows receives it, and recognises its virtual devices by their place in the device
+tree, not by a name another device could copy. So you can work on an armed PC from your phone, the
+Assistant can work on it for you, and neither raises anything. A person at the physical keyboard or
+mouse opens exactly one incident. Nothing is recorded while you are present, and key codes are never
+read.
 
-Nexus is built for **one person controlling their own Windows PC from their own Android phone**, and
-that assumption changes the design. There is no Nexus account and no Nexus server, because both
-devices already share your private Tailscale network. Pairing happens once, by scanning a QR code at the PC. Remote
-control is unlocked through the phone's own biometric prompt rather than yet another password. And the integration can go
-further than a general-purpose tool would: a signed input driver and a SYSTEM capture service only
-make sense on a machine whose owner deliberately installed them.
+The rest of the security model, briefly:
 
-Knowing exactly who the owner is also makes a second job possible. When the owner is away, the same
-system watches the PC, and it can tell the owner's remote input apart from a stranger's hands on the
-keyboard.
+- **Two proofs, not one.** A 256-bit pairing credential proves *which phone* is calling. A Keystore
+  signature that Android releases only after its biometric or screen-lock prompt proves *who is
+  holding it*. Without that, the phone gets a status screen and nothing more.
+- **Private network only.** PC Core's remote listener binds only to the PC's Tailscale address, so
+  nothing listens on the LAN or the internet; the PC's own control panel is loopback-only, behind a
+  token. Nexus has no server, relay or account of its own. Tailscale carries the connection,
+  encrypted end to end, and may route it through its own relays when the two devices cannot reach
+  each other directly.
+- **Windows security stays on.** UAC, the Secure Desktop, Memory Integrity and driver signing are
+  never changed. The driver runs in user mode, signed with a key your own PC creates for it.
+- **The owner holds the dangerous switches, at the PC.** Pairing happens there. Deleting evidence
+  or weakening monitoring needs Windows Hello there, so a stolen phone cannot use Nexus to erase the
+  record of its own theft; the phone can disarm, with the owner's unlock, and recorded evidence
+  stays. The Assistant's administrator steps are approved at the PC, never from the phone.
+- **Nothing is hidden.** A tray icon while Nexus runs, a badge while the phone controls the PC
+  (unless you choose tray-only, at the PC), and a `Camera LIVE` or `Microphone LIVE` badge that no
+  setting hides. There is no stealth mode.
+- **One part talks to a cloud service, and only if you set it up.** The Assistant runs Claude Code,
+  so your instructions, and the screenshots and files it works with, go to Anthropic under your
+  Claude account, and its tools can reach other sites when a task needs them. Everything else stays
+  between your phone and your PC.
 
-## What makes Nexus different
+→ [Security model](docs/security-model.md) · [Reporting a vulnerability](SECURITY.md)
 
-**Real input devices, not only `SendInput`.** A UMDF2 driver on Windows' Virtual HID Framework
-publishes a Nexus mouse, keyboard and touch screen. Input arrives as device reports, so it reaches
-elevated windows without an elevated helper process, and touch-aware apps get real touch. The driver
-runs in user mode, so it needs no kernel-mode signing and Memory Integrity stays on.
-→ [virtual-hid.md](docs/virtual-hid.md)
+## How it fits together
 
-**It knows your input from a stranger's.** Every event is attributed to its source before it reaches
-Windows: the Nexus devices are identified by their place in the PnP device tree and by Raw Input, not
-by names a device could fake. You can work on an armed PC from your phone without setting off your
-own alarm, while a person at the physical keyboard opens exactly one incident.
+<p align="center">
+  <img src="docs/assets/nexus-architecture.svg" width="100%" alt="The Nexus app on an Android phone connects over the owner's tailnet, inside WireGuard, to PC Core on a Windows 11 PC. PC Core runs as a standard user with named capabilities, one policy and no shell, with its remote listener on the Tailscale address only. Privileged parts: the Nexus HID driver and SecureCapture, installed by the owner, plus the input broker and the updater's UAC step. The AI Assistant is its own process behind an owner-only pipe; it runs Claude Code, whose model provider, Anthropic, is outside the PC, and its admin helper, installed by the owner, carries out steps approved at the PC. What leaves the PC: the encrypted link to the phone and, only with the Assistant, what Claude Code sends to Anthropic and whatever its tools reach.">
+</p>
 
-**The phone proves who is holding it.** Pairing proves *which* phone. Remote control also needs a
-signature from a hardware-backed Keystore key that Android will only use right after its own
-biometric or screen-lock prompt succeeds, and the PC verifies that signature. Enrolling a new
-fingerprint destroys the key. Someone holding the phone who cannot pass that prompt gets a status
-screen and nothing more.
+**PC Core** is one standard-user process. Every request, from the phone or the PC's own control
+panel, is a named capability checked against one policy. There is no shell, no process launch and
+no arbitrary Windows call to reach. **Everything that needs more than user rights is separate and
+small, and the owner chooses it:** the HID driver and the SecureCapture service that makes the UAC
+prompt visible, each installed deliberately; an optional input broker; one step of the updater,
+behind its own UAC prompt; and the Assistant's helper, which you install once and which then carries
+out the administrator steps you approve at the PC, without a further UAC prompt. **The AI Assistant
+is its own process.** PC Core relays the owner's requests to it over a pipe that checks both
+executables, and never runs anything itself.
 
-**UAC stays on, and you can still answer it.** Most remote tools go blind at the Secure Desktop or
-suggest turning UAC down. Nexus leaves it alone: a small LocalSystem service captures the prompt
-inside the console session, HID reports deliver your taps, and authorisation is checked on every
-frame. Nexus never approves anything itself.
+Under the hood, for the technically curious:
 
-**Devices that clean up after themselves.** The virtual devices exist only while PC Core holds the
-driver handle. A crash or kill releases every held key, button and touch contact, and the devices
-disappear. An explicit lifecycle with a neutral handshake, a failure budget and backoff keeps a
-flaky driver from bouncing input between backends or leaving Ctrl stuck on a device nobody tracks.
+- **A user-mode input driver.** UMDF2 on Windows' Virtual HID Framework, with no kernel-mode code of
+  its own, so Memory Integrity stays on. → [virtual-hid.md](docs/virtual-hid.md)
+- **Streaming built for interframe video.** A queued H.264 frame is never dropped, because that
+  would corrupt every frame until the next keyframe; Nexus skips capturing instead. Bitrate changes
+  apply to the running encoder. → [remote-control.md](docs/remote-control.md#the-video-stream)
+- **Updates without a server.** One script builds, signs, hashes and publishes a release on the PC;
+  the updater swaps only what changed and rolls back if the new build does not answer.
+  → [updating.md](docs/updating.md)
+- **One protocol, checked from both ends.** Shared protocol vectors are asserted by the C# and the
+  Kotlin test suites. → [development.md](docs/development.md#protocol-vectors)
 
-**Streaming built around interframe video.** Dropping a queued H.264 frame corrupts every frame up
-to the next keyframe, so Nexus never drops queued frames. It skips capturing instead. The phone
-reports capture-to-render latency measured against a synchronised clock, bitrate changes apply to the
-running encoder without a keyframe, and new resolutions are built beside the running encoder, not in
-place of it.
+## Try it
 
-**An incident lifecycle you can trust.** Nothing is recorded while you are present, and key codes
-are never read. Evidence gets SHA-256 digests and retention rules. Deleting evidence or weakening
-monitoring requires Windows Hello *at the PC*, so a stolen phone cannot erase the record of its own
-theft.
+Nexus publishes no binaries. You build it from this repository on your own PC, install it there,
+and put the app on your own phone.
 
-**Updates without a server.** One script builds, signs, hashes and publishes a release on the PC. A
-separate updater swaps only the files that changed and rolls back if the new build does not answer.
-The phone downloads its APK from its own PC and checks the hash and signer before Android installs
-it.
+- **A PC** with Windows 11 x64 and the .NET SDK 10.0.400 or later
+- **A phone** with Android 12 or later and a biometric or screen lock; building the app needs JDK 21
+  and the Android SDK
+- **Tailscale** signed in on both, in the same tailnet. That needs a Tailscale account; Nexus has
+  none of its own
+- *Optional:* for the HID driver, Visual Studio 2022 with the C++ workload (v143) and the Windows
+  SDK and WDK 10.0.26100; for the AI Assistant, Claude Code with a Claude account
 
-## Current capabilities
-
-**Working.** In use on the owner's own PC and phone:
-
-- Pairing by QR code over Tailscale, and biometric owner sessions
-- Live desktop over H.264 with adaptive quality, pointer, keyboard and Direct touch
-- Mouse, keyboard and touch through the Nexus virtual HID driver, including elevated windows
-- Seeing and answering UAC prompts from the phone
-- Arming the PC, incident detection and evidence recording, answering incidents from the phone
-- Live camera view on the phone
-- Tray icon, Start Menu entry, per-user install and auto-start
-- PC self-update with rollback, and phone self-update from the PC
-
-**Experimental.** Implemented and covered by tests, but not yet exercised end to end on the real
-phone:
-
-- File downloads and uploads (browsing is in use; transfers are verified on an emulator) and the
-  clipboard
-- Live microphone listening
-- Playback of evidence camera clips and audio on the phone
-- Background incident alerts while the app is closed
-- AI Assistant: instructing PC Assistant, a separate program that runs Claude Code, from the phone
-
-**Planned or not built yet:**
-
-- Delete, rename and move in Files; folder downloads; image clipboard; transfers that continue in
-  the background
-- A virtual display for using the phone as a second monitor (researched, not started)
-
-**Out of scope by design:** multiple users or devices, access from the internet or through a relay,
-a stealth mode, and anything that disables or automates Windows security prompts.
-
-## Architecture
-
-```mermaid
-flowchart TB
-    phone["<b>Nexus for Android</b><br/>biometric owner session"]
-    transport["<b>Remote transport</b><br/>Tailscale address only · device authentication"]
-    core["<b>PC Core</b><br/>capabilities + policy · standard user"]
-
-    phone == "WebSocket inside Tailscale (WireGuard)" ==> transport
-    transport --> core
-
-    core --> screen["Screen & camera<br/>H.264"]
-    core --> files["Files &<br/>clipboard"]
-    core --> security["Security<br/>incidents · evidence"]
-    core --> sensors["Live<br/>camera · mic"]
-
-    subgraph privileged["Privileged · installed by the owner"]
-        hid["<b>Nexus HID driver</b><br/>UMDF2 + VHF"]
-        capture["<b>SecureCapture</b><br/>LocalSystem service"]
-    end
-
-    core -- "input" --> hid
-    screen -- "Secure Desktop frames" --> capture
-    hid -- "mouse · keyboard · touch" --> windows["<b>Windows</b><br/>desktop · UAC Secure Desktop"]
-    capture --> windows
-    screen -. "Desktop Duplication" .-> windows
-
-    style privileged stroke-dasharray: 6 4
-```
-
-**PC Core** is one standard-user process. Every request, from the phone or from the local control
-panel, is a named capability checked against one policy. There is no shell, no process launch and no
-arbitrary Windows call to reach. The owner, authenticated on the phone, can instruct PC Assistant, a
-separate program that may run commands and tools under its own policy and approvals. PC Core only
-relays those requests ([AI Assistant](docs/ai-assistant.md)).
-
-**The privilege boundary is narrow and explicit.** Everything that runs with more than user rights
-is optional, separate, and installed deliberately by the owner. The **HID driver** publishes three
-input devices for the handle that created them and understands six fixed control operations. The
-**SecureCapture** service accepts exactly one request, "start a capture worker in the console
-session". Its worker connects back to a pipe PC Core named, proves a nonce, and returns pixels.
-PC Core checks that the peer really is SYSTEM before asking for a frame. Neither component can run
-commands or read files. The other three are the **input broker**, an elevated fallback for input
-that does ten fixed operations; one elevated step of the **updater**, behind its own UAC prompt; and
-PC Assistant's **privileged helper**, which carries out administrator operations PC Assistant asks
-for, each one approved at the PC, without a further UAC prompt.
-
-More: [security model](docs/security-model.md#privileged-components) ·
-[remote control](docs/remote-control.md) · [development](docs/development.md#repository-layout)
-
-## Security
-
-Nexus can control a computer, so its security model is part of the product, not a footnote.
-
-- **Your PC, your phone.** Exactly one paired phone, paired at the PC. The phone controls the PC, but
-  it cannot pair another device, delete evidence or change how monitoring works. Disarming from the
-  phone needs the owner's biometric or screen-lock unlock, and leaves recorded evidence alone.
-- **Private network only.** The remote listener binds only to the PC's Tailscale address. Nothing
-  listens on the LAN or the internet. Nexus runs no relay, cloud service or account of its own;
-  Tailscale carries the connection, end-to-end encrypted, and may route it through Tailscale's own
-  relays when the two devices cannot reach each other directly.
-- **The AI Assistant is the one part that uses a cloud service.** PC Assistant runs Claude Code
-  under your own Claude account, so the prompts you give it, and the screenshots and files it works
-  with, go to Anthropic. It is optional, and nothing reaches it until you set it up.
-- **Two proofs, not one.** A 256-bit pairing credential proves *which phone* (HMAC
-  challenge/response, never re-sent). A Keystore signature that Android releases only after its
-  biometric or screen-lock prompt proves *who is holding it*, and that is required for full remote
-  authority. Without it the phone sees a status screen.
-- **Windows security stays switched on.** UAC, the Secure Desktop, Memory Integrity and driver
-  signing are never changed. UAC prompts are real Windows prompts, answered by the owner.
-- **Nothing is hidden.** A tray icon while PC Core runs, an on-screen badge while the phone controls
-  the PC, and a `Camera LIVE` badge that no setting can hide. There is no stealth mode.
-- **Evidence stays on the PC.** It is never uploaded, and deleting it requires Windows Hello at the
-  machine.
-
-Details: [docs/security-model.md](docs/security-model.md) · Reporting: [SECURITY.md](SECURITY.md)
-
-## Getting started
-
-You need a Windows 11 PC with the .NET SDK 10.0.400 or later, an Android 12+ phone, and Tailscale
-signed in on both. Nexus publishes no binaries: you build it from this repository on your own PC.
-
-```bash
+```powershell
 dotnet build PcCore.slnx -c Release
+# copies the build to %LOCALAPPDATA%\Programs\Nexus, per user, without administrator rights
+src\PcCore.Host\bin\Release\net10.0-windows10.0.17763.0\PcCore.Host.exe --install-app
 ```
 
 ```powershell
-cd android/Nexus
-.\gradlew.bat :app:assembleDebug   # needs JAVA_HOME (JDK 21) and ANDROID_HOME
+cd android\Nexus
+.\gradlew.bat :app:assembleDebug        # needs JAVA_HOME (JDK 21) and ANDROID_HOME
+adb install -r app\build\outputs\apk\debug\app-debug.apk
 ```
 
-Then install PC Core (`--install-app`), install the APK, and pair by scanning the QR code in the
-local control panel. The optional HID driver needs Visual Studio 2022 and the WDK 10.0.26100 to build
-and install. That, SecureCapture, and removing everything again are described step by step in
-**[docs/getting-started.md](docs/getting-started.md)**.
+Then start **Nexus** from the Start Menu, choose **Open Nexus** in its tray menu, click
+**pairing.begin**, and scan the QR code with the app. The HID driver and SecureCapture, which bring
+elevated windows and the UAC prompt within reach, are optional, deliberate installs. The AI
+Assistant arrives with a Nexus release ([updating](docs/updating.md#publishing)) and stays off
+until you set it up on both sides. **[Getting started](docs/getting-started.md)** walks through
+every step, and how to remove all of it again.
 
-## Repository layout
+## Status
+
+**1.6.0 is the first public release** of a personal project with one maintainer. Nexus has grown
+milestone by milestone since 0.1 ([release history](docs/history.md)) and is in use on the
+maintainer's own PC and phone, but it has not been tested across a range of hardware, and it comes
+without support.
+
+| | Supported |
+|---|---|
+| **PC** | Windows 11, x64. The HID driver needs UMDF 2.33, which only Windows 11 has. PC Core alone targets Windows 10 1809 and later, but is not tested there |
+| **Phone** | Android 12 and later |
+| **Network** | Tailscale, on both devices |
+
+**Not built yet:** delete, rename and move in Files; folder downloads; an image clipboard;
+transfers that continue in the background; a virtual display for using the phone as a second
+monitor.
+
+**Out of scope by design:** more than one user, PC or phone; access from the internet or through a
+relay of Nexus's own; a stealth mode; and anything that disables or automates Windows security
+prompts.
+
+## Documentation
+
+| | |
+|---|---|
+| [Getting started](docs/getting-started.md) | build, install, Tailscale, pairing, the optional privileged parts, uninstalling |
+| [Remote control](docs/remote-control.md) | gestures, the video pipeline, cursors, input paths, the Secure Desktop |
+| [Security monitoring](docs/security-monitoring.md) | arming, detection, evidence, alerts, live camera and microphone |
+| [Files and clipboard](docs/files-and-clipboard.md) | browsing, transfers, clipboard |
+| [AI Assistant](docs/ai-assistant.md) | setting it up, using it from the phone, what leaves the PC, what the owner session guards |
+| [Updating](docs/updating.md) | publishing a release, how the PC and the phone update, rollback |
+| [Security model](docs/security-model.md) | network exposure, pairing, owner sessions, policy, privileged components, known limits |
+| [Development](docs/development.md) | repository layout, building, tests, hardware self-tests, protocol vectors |
+| [Virtual HID](docs/virtual-hid.md) · [Native input](docs/native-input.md) | the research records behind the input stack |
+| [Release history](docs/history.md) | what each milestone added, and what real hardware found |
+
+<details>
+<summary><b>Repository layout and tests</b></summary>
 
 ```
 src/            PC Core (C#): protocol, capabilities, Windows integration, transports, host,
                 SecureCapture, updater, and the UMDF2 HID driver (src/driver, C)
-src/Assistant/  the AI Assistant component (C#): its own solution, projects and tests. A separate
-                process that PC Core reaches over a local named pipe, never by reference
+src/Assistant/  the AI Assistant (C#, PcAssistant.*): its own solution and tests, and its own
+                process, reached by PC Core over a local named pipe, never by reference
 android/Nexus/  the Android app (Kotlin, Jetpack Compose)
 tests/          the .NET test suite
 shared/         protocol vectors asserted by both the C# and Kotlin tests
@@ -250,33 +249,21 @@ tools/          release publishing, Android signing, driver validation and insta
 docs/           guides, research records, design history, assets
 ```
 
-## Development
-
-```bash
+```powershell
 dotnet run --project tests/PcCore.Tests -c Release
+cd android\Nexus; .\gradlew.bat :app:testDebugUnitTest
 ```
 
-```bash
-cd android/Nexus && ./gradlew :app:testDebugUnitTest
-```
+Hardware self-tests, the phone simulator, and why `dotnet test` is not used for PC Core are covered
+in [docs/development.md](docs/development.md).
 
-Hardware self-tests (`PcCore.Host.exe --selftest-video`, `--selftest-security`, …), the phone
-simulator, protocol vectors and the reasons `dotnet test` is not used are covered in
-[docs/development.md](docs/development.md).
+</details>
 
-## Documentation
+## Reporting a vulnerability
 
-| | |
-|---|---|
-| [Getting started](docs/getting-started.md) | install, Tailscale, pairing, optional privileged parts, configuration |
-| [Remote control](docs/remote-control.md) | gestures, the video pipeline, cursors, input paths, the Secure Desktop |
-| [Security monitoring](docs/security-monitoring.md) | arming, detection, evidence, alerts, live sensors |
-| [Files and clipboard](docs/files-and-clipboard.md) | browsing, transfers, clipboard |
-| [AI Assistant](docs/ai-assistant.md) | instructing PC Assistant from the phone, and what the owner session guards |
-| [Updating](docs/updating.md) | publishing, PC and phone updates, rollback |
-| [Security model](docs/security-model.md) | network, pairing, owner sessions, policy, privileged components |
-| [Virtual HID](docs/virtual-hid.md) · [Native input](docs/native-input.md) | the research records behind the input stack |
-| [Release history](docs/history.md) | what each milestone added, and what real hardware found |
+Nexus can control a computer, read its files and turn on its camera, so please report a
+vulnerability privately, not in a public issue. [SECURITY.md](SECURITY.md) explains how, and what is
+in scope.
 
 ## License
 

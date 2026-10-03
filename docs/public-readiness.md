@@ -112,7 +112,13 @@ removed trailer. Push only `main` and tags by name; never `git push --all` or `-
 - [x] Choose a license: Apache 2.0
 - [x] Re-run this audit on the new commits since the date above (2026-10-02)
 - [ ] Decide whether the history items above are acceptable in public, or publish a fresh history
-- [ ] Replace the pending screenshot, and check every image against the redaction rules again
+- [x] Take the screenshot placeholder off the README (2026-10-03, with the launch README). A real
+      remote-control capture is still wanted ([assets/README.md](assets/README.md#still-wanted))
+- [ ] Check every image against the redaction rules again. The launch animation, its poster and the
+      social preview show only recreated screens and the repository URL; the four captures are
+      unchanged since the first audit
+- [ ] Upload `docs/assets/social-preview.png` as the repository's social preview (Settings →
+      General)
 - [ ] Right after going public: enable private vulnerability reporting (SECURITY.md depends on it),
       Dependabot alerts, and branch protection on `main`; review Actions
 - [ ] Reconsider whether design records that describe this machine's security posture in detail

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="14 14 80 80" role="img" aria-label="Nexus">
+  <!-- The app's launcher icon: ic_launcher_background and ic_launcher_foreground, cropped to the visible area -->
+  <rect x="15" y="15" width="78" height="78" rx="20" fill="#0B0F14" stroke="#2A343F" stroke-width="1.5"/>
+  <path fill="#2FD8A8" d="M38,34h6.5l19,25.5V34H70v40h-6.5l-19,-25.5V74H38z"/>
+</svg>
