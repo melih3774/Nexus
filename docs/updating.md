@@ -30,8 +30,8 @@ debug builds already carry. **Back that directory up**: without it, no future bu
 over the app on the phone. `-NewKey` creates a fresh key instead, at the cost of one reinstall and
 re-pair.
 
-The very first updater-capable APK has to reach the phone once by hand (`adb install -r <apk>`),
-because the app already installed predates the updater.
+An app installed before Nexus 1.3 has no updater, so the first updater-capable APK has to reach it
+once by hand (`adb install -r <apk>`). A build from this repository already has one.
 
 ## Publishing
 

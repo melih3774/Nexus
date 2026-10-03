@@ -232,10 +232,11 @@ need more are small, separate and installed deliberately by the owner:
 
 The driver package contains no kernel-mode code of its own. It is signed with a certificate the owner
 created and chose to trust on this machine; its private key cannot be exported. The install plan
-shows the certificate and its thumbprint before the step that trusts it. It captures Secure Boot, Memory Integrity (HVCI) and test
-signing before installing and compares them afterwards: installing Nexus must change none of them.
-It installs with Memory Integrity on and test signing off. The uninstall steps include removing the
-certificate from both stores, so the machine does not keep trusting a key after the driver is gone.
+shows the certificate and its thumbprint before the step that trusts it. It records Secure Boot,
+Memory Integrity (HVCI) and test signing before installing, and one of its last steps compares them
+afterwards: installing Nexus must change none of them. The driver installs with Memory Integrity on
+and test signing off. The uninstall steps include removing the certificate from both stores, so the
+machine does not keep trusting a key after the driver is gone.
 See [virtual-hid.md](virtual-hid.md).
 
 ## Visibility

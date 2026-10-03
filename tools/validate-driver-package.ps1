@@ -3,15 +3,16 @@
     Builds the Nexus HID driver, stages the package, and validates it. Installs nothing.
 
 .DESCRIPTION
-    The WDK's MSBuild integration ships as a Visual Studio extension and this machine has Build
-    Tools rather than full Visual Studio, so the driver project builds with the v143 toolset and the
+    The WDK's MSBuild integration ships as a Visual Studio extension that a Build Tools install does
+    not have, so the driver project builds with the plain v143 toolset on any edition and the
     packaging pipeline is not run for it. This script is that pipeline, invoked directly:
 
         build -> stage -> StampInf -> Inf2Cat
 
     It deliberately stops before signing. Creating a certificate and trusting it in the machine's
     stores is the one step that changes what this computer trusts, and it belongs to a deliberate
-    owner-driven install pass, not to a validation script. See docs/virtual-hid.md section 11.
+    owner-driven install pass, not to a validation script. See tools/nexus-hid-install.ps1 and
+    docs/getting-started.md.
 
     Nothing here touches the Driver Store, the certificate stores, Secure Boot, HVCI or TESTSIGNING.
 

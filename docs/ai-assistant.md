@@ -48,7 +48,8 @@ continued from either place.
 ## What leaves the PC
 
 **This is the one part of Nexus that uses a cloud service.** The rest of Nexus stays between your
-phone and your PC. PC Assistant runs Claude Code, signed in with your own Claude account, and
+phone and your PC, over Tailscale, which may relay the encrypted connection when the two cannot
+connect directly. PC Assistant runs Claude Code, signed in with your own Claude account, and
 Claude Code sends Anthropic what the model needs to work: your instructions, the conversation, and
 whatever its tools read for it, including screenshots of windows and the screen, text from
 applications and the contents of files it opens. Anthropic's terms for your Claude account apply to

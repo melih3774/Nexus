@@ -91,7 +91,8 @@ anywhere.
 - **Destructive changes need Windows Hello at the PC.** Deleting evidence, disabling a camera or
   microphone source, turning detection off and shortening retention all require it. Viewing does
   not. The phone can do none of these things, because a stolen phone must not be able to destroy the
-  recording of its own theft.
+  recording of its own theft. It can disarm, with the owner session, and evidence already recorded
+  stays.
 
 ## Answering an incident
 
@@ -109,8 +110,8 @@ shutdown, no lock, no wipe. You are the one holding the device that can act.
 Turn on **Alert me on this phone** in the Security screen. It keeps a connection open and shows a
 permanent notification while it does. Without a push service, that is the only way Android will
 wake an app for a network event, and a push service would mean routing a signal about your home
-through a third party. There is no cloud, no account and no server. You can stop it from the
-notification at any time.
+through a third party. Nexus has no server, relay or account of its own: the alert comes from your
+PC, over Tailscale. You can stop it from the notification at any time.
 
 ## Looking at evidence on the phone
 

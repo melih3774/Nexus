@@ -107,8 +107,8 @@ the phone, instead of failing vaguely.
 
 ## 5. Optional: the privileged parts
 
-Everything above works without administrator rights. Two optional components add reach, and each is
-installed deliberately, once, from an elevated terminal.
+Everything above works without administrator rights. Two optional components add reach to remote
+control, and each is installed deliberately, once, from an elevated terminal.
 
 **The Nexus HID driver** (mouse, keyboard and touch as real devices, and the only path that reaches
 the UAC prompt):
@@ -139,10 +139,11 @@ path. Run those commands in one elevated PowerShell, in order, checking each res
 **The signing key is yours.** Nexus publishes no signed driver. Each PC creates its own key
 (`CN=Nexus Driver Signing`, code signing only, private key not exportable, in your personal
 certificate store) and trusts it on that PC only. From then on this PC accepts code and driver
-packages signed by that key, which is why the key never leaves it. Releases you publish later on the
-same PC are signed with the same key ([updating.md](updating.md)), and the uninstall plan below
-removes the trust. The script refuses to plan an install under test signing or over an existing
-Nexus device, and nothing in it changes Secure Boot, Memory Integrity, test signing or UAC.
+packages signed by that key, which is why the key never leaves it. A release you publish later on
+the same PC carries the package as you signed it; a rebuilt driver has to be signed again with the
+same key (step 2) before a release includes it ([updating.md](updating.md)). The uninstall plan
+below removes the trust. The script refuses to plan an install under test signing or over an
+existing Nexus device, and nothing in it changes Secure Boot, Memory Integrity, test signing or UAC.
 
 **SecureCapture** (lets the phone see UAC prompts and the lock screen), from an elevated terminal.
 It copies itself to `%ProgramFiles%\Nexus\SecureCapture` and registers the `NexusSecureCapture`
@@ -155,6 +156,10 @@ src\PcCore.SecureCapture\bin\Release\net10.0-windows10.0.17763.0\PcCore.SecureCa
 A machine with neither still gets remote control, through injection, of everything except elevated
 windows and the Secure Desktop. The elevated input broker (`--install-native-input`) is a middle
 option. See [remote-control.md](remote-control.md#how-input-reaches-windows).
+
+Those are three of Nexus's five privileged parts. The other two are the updater's one elevated step
+and PC Assistant's privileged helper, which you install from PC Assistant if you want it
+([security-model.md](security-model.md#privileged-components)).
 
 ## Starting at sign-in
 
@@ -273,6 +278,9 @@ installed.
    Remove-Item -Recurse "$env:LOCALAPPDATA\Nexus", "$env:LOCALAPPDATA\PcCore"
    Remove-Item -Recurse "$env:LOCALAPPDATA\PcAssistant"   # only if you used PC Assistant
    ```
+
+   If you set up release signing ([updating.md](updating.md#one-time-setup)), its key is in
+   `%USERPROFILE%\.nexus`; delete that folder too.
 
 7. **The phone:** uninstall the Nexus app. Tailscale is yours, and Nexus never changed it.
 

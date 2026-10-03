@@ -30,8 +30,9 @@
     Nexus publishes no signed driver. Each PC signs the package it built with a key of its own,
     created here on first install (CN=Nexus Driver Signing, RSA 3072, code signing only, the private
     key not exportable) in the installing account's personal store, and trusts that one certificate
-    in two Local Machine stores. Releases built on this PC are signed with the same key afterwards
-    (tools\publish-release.ps1 requires a valid signature).
+    in two Local Machine stores. A driver rebuilt on this PC later is signed with the same key, by
+    hand as in the plan's step 2: tools\publish-release.ps1 leaves out a package without a valid
+    signature.
 
 .PARAMETER Action
     Inspect (default), Install, Repair, Uninstall.

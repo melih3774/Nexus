@@ -15,8 +15,10 @@ A Nexus release builds it, and the Nexus updater installs it at
 ([../../docs/updating.md](../../docs/updating.md#pc-assistant)).
 The `PcAssistant.*` project and namespace names are unchanged on purpose.
 
-**Version 0.10.1** · Windows only · one owner · local only · no network listener, no
-telemetry, no API keys.
+**Version 0.10.1** · Windows only · one owner · no network listener, no telemetry, no API
+keys. Claude Code, signed in with your Claude account, sends Anthropic your instructions and the
+screenshots and files it works with
+([what leaves the PC](../../docs/ai-assistant.md#what-leaves-the-pc)).
 
 Version 0.10.1 adds one thing: before a Nexus update replaces this copy, it asks. PC Assistant closes
 only when no task is running and no approval is waiting, and says no otherwise; the update then waits,
@@ -569,8 +571,9 @@ the result, and closed only its own tab.
   Documents. Claude's ordinary file tools handle deeper targeted searches.
 - Abrupt app exit may retain the last streaming checkpoint rather than the final sub-500 ms
   fragment; Stop flushes the partial reply before cancellation.
-- Single window, single owner, no networking. The Nexus bridge is a local named pipe for one trusted
-  local client, not a network listener.
+- Single window, single owner, and no networking of PC Assistant's own: Claude Code is what talks to
+  Anthropic. The Nexus bridge is a local named pipe for one trusted local client, not a network
+  listener.
 - **Approvals answered from the phone** have no click at the PC behind them, so PC Assistant cannot
   hand the foreground on. Bringing the target forward still worked with an ordinary application in
   front. It did not work while the Quick Settings flyout held the foreground; that is refused as a
@@ -586,7 +589,8 @@ the result, and closed only its own tab.
 - **A GPT advisor.** Later, Claude could call an `AskAdvisor(question)` tool for a short
   independent second opinion. That is one optional tool, not multi-agent orchestration.
   There is no OpenAI dependency and no placeholder for one today.
-- **A network client.** There is no networking. The one external client is Nexus PC Core on the same
-  PC, over the [Nexus bridge](docs/NEXUS-BRIDGE.md).
+- **A network client.** PC Assistant has no networking of its own; Claude Code is what talks to
+  Anthropic. The one external client is Nexus PC Core on the same PC, over the
+  [Nexus bridge](docs/NEXUS-BRIDGE.md).
 - **A packaged Claude Code plugin.** The skill and hooks are used directly until the
   architecture is proven.
