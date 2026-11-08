@@ -304,7 +304,7 @@ internal sealed class DxgiCaptureSource : IDesktopCaptureSource
                         "The display is already being duplicated by another application.",
                     DxgiInterop.DxgiErrorAccessDenied =>
                         "Windows denied access to the desktop, most likely a secure desktop.",
-                    _ => "The display could not be duplicated.",
+                    _ => $"The display could not be duplicated (0x{hr:x8}).",
                 });
         }
 

@@ -124,9 +124,9 @@ internal static unsafe class MediaFoundationInterop
     public static readonly Guid CodecApiMeanBitRate = new("f7222374-2144-4815-b550-a37f8e12ee52");
     public static readonly Guid CodecApiMaxBitRate = new("9651eae4-39b9-4ebf-85ef-d7f444ec7465");
     public static readonly Guid CodecApiQualityVsSpeed = new("98332df8-03cd-476b-89fa-3f9e442dec9f");
-    public static readonly Guid CodecApiGopSize = new("95152910-855b-4a1c-a035-9d6d6dc0ac0e");
-    public static readonly Guid CodecApiBPictureCount = new("8d390aac-dc5c-4200-b57f-814d04bab74c");
-    public static readonly Guid CodecApiLowLatency = new("9d3ecd55-89e8-490a-970a-0c9548d5a56e");
+    public static readonly Guid CodecApiGopSize = new("95f31b26-95a4-41aa-9303-246a7fc6eef1");
+    public static readonly Guid CodecApiBPictureCount = new("8d390aac-dc5c-4200-b57f-814d04babab2");
+    public static readonly Guid CodecApiLowLatency = new("9c27891a-ed7a-40e1-88e8-b22727a024ee");
     public static readonly Guid CodecApiForceKeyFrame = new("398c1b98-8353-475a-9ef2-8f265d260345");
     public static readonly Guid CodecApiRealTime = new("143a0ff6-a131-43da-b81e-98fbb8ec378e");
 

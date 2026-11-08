@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Imaging;
 using System.Runtime.Versioning;
 
 using Microsoft.Extensions.Logging;
@@ -70,6 +72,16 @@ internal static class VideoSelfTest
         if (args.Contains("--bitrate-change"))
         {
             return BitrateChange(factory);
+        }
+
+        if (args.Contains("--still-refresh"))
+        {
+            return StillRefresh(factory, args);
+        }
+
+        if (args.Contains("--gpu-scale"))
+        {
+            return GpuScale(args);
         }
 
         var stream = new DxgiDesktopStream(loggers);
@@ -243,10 +255,10 @@ internal static class VideoSelfTest
 
         if (encoder is MediaFoundationVideoEncoder detailed)
         {
-            var (convert, wait, submit) = detailed.StageTimings();
+            var (convert, wait, submit, output, late) = detailed.StageTimings();
             Console.WriteLine(
                 $"    [{plan.Label}] capture wait {captureMs / Math.Max(1, encoded):F1} ms, convert {convert:F1} ms, "
-                + $"encoder wait {wait:F1} ms, submit {submit:F1} ms");
+                + $"encoder wait {wait:F1} ms, submit {submit:F1} ms, output {output:F1} ms, {late} late");
         }
 
         // The converter is measured separately against the same frame size, because inside the
@@ -393,6 +405,405 @@ internal static class VideoSelfTest
 
         Console.WriteLine("  PASS  the running encoder follows a new bitrate, down and up, without being rebuilt.");
         return 0;
+    }
+
+    /// <summary>
+    /// What this machine's encoder does with the same picture, submitted again and again.
+    /// <para>
+    /// Whether a still desktop gets sharper by re-encoding it is a property of the encoder's rate
+    /// control and cannot be read off a data sheet. So: a second of scrolling text at the plan's
+    /// bitrate, which leaves the rate controller at the coarse quantiser a real scroll does, then one
+    /// picture held still, and how many bytes every repeat of it costs. Bytes say that the encoder is
+    /// still refining; <c>--dump=directory</c> writes the bitstream and the reference picture, so that
+    /// a decoder can say whether what it spent them on is visible.
+    /// </para>
+    /// <para>
+    /// The pictures are drawn rather than captured, so the numbers can be compared between runs and a
+    /// dump never contains what happened to be on the owner's screen.
+    /// </para>
+    /// </summary>
+    private static int StillRefresh(IVideoEncoderFactory factory, string[] args)
+    {
+        const int SourceWidth = 2560;
+        const int SourceHeight = 1440;
+        const int Fps = 30;
+        const int ScrollFrames = Fps;
+        const int Repeats = 150;
+
+        var dump = args.FirstOrDefault(a => a.StartsWith("--dump=", StringComparison.Ordinal))?["--dump=".Length..];
+        var requested = args.FirstOrDefault(a => a.StartsWith("--plan=", StringComparison.Ordinal));
+
+        var plans = requested is null
+            ? new List<Plan> { new("720p", 1280, 720, Fps, 2500), new("1080p", 1920, 1080, Fps, 5000) }
+            : [Parse(requested["--plan=".Length..], new DisplayInfo(0, "drawn", 0, 0, SourceWidth, SourceHeight, true))];
+
+        var held = DrawTextPage(SourceWidth, SourceHeight, 0, 1);
+        var gopSeconds = Argument(args, "--gop", MediaPlanner.GopSeconds);
+        var ok = true;
+
+        foreach (var plan in plans)
+        {
+            var (width, height) = Fit(SourceWidth, SourceHeight, plan.Width, plan.Height);
+            using var encoder = factory.Create(new VideoEncoderSettings(width, height, Fps, plan.Kbps, gopSeconds));
+
+            var packets = new List<VideoPacket>();
+            var stream = new List<byte[]>();
+            var sizes = new List<(int Bytes, bool Keyframe)>();
+            var origin = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var clock = 0L;
+
+            void Submit(byte[] picture, bool still)
+            {
+                packets.Clear();
+                encoder.Encode(picture, SourceWidth, SourceHeight, SourceWidth * 4, origin + (clock++ * 1000 / Fps), packets);
+
+                foreach (var packet in packets)
+                {
+                    stream.Add(packet.Bytes);
+
+                    if (packet.Flags.HasFlag(VideoPacketFlags.Keyframe))
+                    {
+                        Console.WriteLine($"    keyframe at output #{stream.Count - 1}");
+                    }
+
+                    if (still)
+                    {
+                        sizes.Add((packet.Bytes.Length, packet.Flags.HasFlag(VideoPacketFlags.Keyframe)));
+                    }
+                }
+            }
+
+            encoder.RequestKeyframe();
+
+            for (var i = 0; i < ScrollFrames; i++)
+            {
+                Submit(DrawTextPage(SourceWidth, SourceHeight, i * 18, 2), still: false);
+            }
+
+            var beforeStill = stream.Count;
+
+            for (var i = 0; i <= Repeats; i++)
+            {
+                Submit(held, still: true);
+            }
+
+            Console.WriteLine($"  {plan.Label} {width}x{height} at {plan.Kbps} kbit/s: {encoder.BackendName}");
+            Console.WriteLine("    repeat   bytes  keyframe");
+
+            for (var i = 0; i < sizes.Count; i++)
+            {
+                if (i < 12 || i % 10 == 0 || sizes[i].Keyframe)
+                {
+                    Console.WriteLine($"    {i,6} {sizes[i].Bytes,7}  {(sizes[i].Keyframe ? "yes" : "")}");
+                }
+            }
+
+            Console.WriteLine($"    {sizes.Sum(s => s.Bytes) / 1024} KB over {sizes.Count} still frames.");
+            Console.WriteLine($"    {ScrollFrames + Repeats + 1} frames in, {stream.Count} packets out.");
+
+            if (encoder is MediaFoundationVideoEncoder detailed)
+            {
+                var (convert, wait, submit, output, late) = detailed.StageTimings();
+                Console.WriteLine(
+                    $"    convert {convert:F1} ms, encoder wait {wait:F1} ms, submit {submit:F1} ms, "
+                    + $"waiting for output {output:F1} ms, {late} packets missed their frame.");
+            }
+
+            // A long GOP is only safe if a keyframe can still be had on demand.
+            var forced = 0;
+            encoder.RequestKeyframe();
+
+            for (var i = 0; i < 3; i++)
+            {
+                packets.Clear();
+                encoder.Encode(held, SourceWidth, SourceHeight, SourceWidth * 4, origin + (clock++ * 1000 / Fps), packets);
+                forced += packets.Count(p => p.Flags.HasFlag(VideoPacketFlags.Keyframe));
+            }
+
+            Console.WriteLine(forced > 0
+                ? "    a keyframe asked for mid-stream arrived."
+                : "    FAIL  a keyframe asked for mid-stream did not arrive.");
+
+            ok &= forced > 0;
+            Console.WriteLine();
+
+            if (dump is not null)
+            {
+                Directory.CreateDirectory(dump);
+
+                File.WriteAllBytes(
+                    Path.Combine(dump, $"{plan.Label}.h264"),
+                    [.. stream.SelectMany(static bytes => bytes)]);
+
+                var reference = new byte[Nv12Converter.FrameBytes(width, height)];
+                new Nv12Converter().Convert(held, SourceWidth, SourceHeight, SourceWidth * 4, reference, width, height);
+                File.WriteAllBytes(Path.Combine(dump, $"{plan.Label}.nv12"), reference);
+
+                Console.WriteLine($"    {beforeStill} scrolling frames precede the still ones in {plan.Label}.h264.");
+                Console.WriteLine();
+            }
+        }
+
+        return ok ? 0 : 1;
+    }
+
+    /// <summary>
+    /// The driver's video processor against <see cref="Nv12Converter"/>, on the same drawn page.
+    /// <para>
+    /// Whether the stream should leave the CPU depends on two numbers and a picture: how much time it
+    /// saves, how far the driver's scaler lands from the converter's area average, and what small
+    /// text looks like afterwards. <c>--dump=directory</c> writes a magnified crop of each.
+    /// </para>
+    /// </summary>
+    private static int GpuScale(string[] args)
+    {
+        const int Runs = 20;
+
+        var dump = args.FirstOrDefault(a => a.StartsWith("--dump=", StringComparison.Ordinal))?["--dump=".Length..];
+
+        var cases = new (int SourceWidth, int SourceHeight, int Width, int Height)[]
+        {
+            (1920, 1080, 1280, 720),
+            (2560, 1440, 1280, 720),
+            (2560, 1440, 1920, 1080),
+            (3840, 2160, 1280, 720),
+            (3840, 2160, 1920, 1080),
+            (5120, 2880, 1280, 720),
+            (5120, 2880, 1920, 1080),
+        };
+
+        Console.WriteLine(
+            "  {0,-22} {1,10} {2,10} {3,9} {4,9} {5,9} {6,8} {7,8} {8,8}",
+            "scale",
+            "cpu now",
+            "convert",
+            "gpu spd",
+            "gpu qual",
+            "psnr s/q",
+            "sharp c",
+            "sharp s",
+            "sharp q");
+        Console.WriteLine("  " + new string('-', 112));
+
+        foreach (var (sourceWidth, sourceHeight, width, height) in cases)
+        {
+            var page = DrawTextPage(sourceWidth, sourceHeight, 0, 1);
+            var cpu = new byte[Nv12Converter.FrameBytes(width, height)];
+            var fast = new byte[cpu.Length];
+            var best = new byte[cpu.Length];
+            var readBack = new byte[page.Length];
+            var composed = new byte[page.Length];
+
+            var converter = new Nv12Converter();
+            var convert = new double[Runs];
+
+            converter.Convert(page, sourceWidth, sourceHeight, sourceWidth * 4, cpu, width, height);
+
+            for (var i = 0; i < Runs; i++)
+            {
+                var started = Stopwatch.GetTimestamp();
+                converter.Convert(page, sourceWidth, sourceHeight, sourceWidth * 4, cpu, width, height);
+                convert[i] = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            }
+
+            double median(double[] values)
+            {
+                Array.Sort(values);
+                return values[values.Length / 2];
+            }
+
+            // What the frame costs today before the converter starts: out of the GPU, then the second
+            // copy the pointer is composited into.
+            double capture;
+            double spd;
+            double qual;
+            string adapter;
+
+            using (var scaler = D3D11FrameScaler.Create(sourceWidth, sourceHeight, width, height, optimalQuality: false))
+            {
+                adapter = scaler.Adapter;
+                scaler.Upload(page);
+
+                var samples = new double[Runs];
+                var captures = new double[Runs];
+
+                for (var i = 0; i < Runs; i++)
+                {
+                    samples[i] = scaler.Process();
+
+                    var started = Stopwatch.GetTimestamp();
+                    scaler.ReadBackSource(readBack);
+                    Buffer.BlockCopy(readBack, 0, composed, 0, readBack.Length);
+                    captures[i] = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+                }
+
+                spd = median(samples);
+                capture = median(captures);
+                scaler.ReadBackResult(fast);
+            }
+
+            using (var scaler = D3D11FrameScaler.Create(sourceWidth, sourceHeight, width, height, optimalQuality: true))
+            {
+                scaler.Upload(page);
+
+                var samples = new double[Runs];
+
+                for (var i = 0; i < Runs; i++)
+                {
+                    samples[i] = scaler.Process();
+                }
+
+                qual = median(samples);
+                scaler.ReadBackResult(best);
+            }
+
+            var cpuMs = median(convert);
+
+            Console.WriteLine(
+                "  {0,-22} {1,10} {2,10} {3,9} {4,9} {5,9} {6,8:F1} {7,8:F1} {8,8:F1}",
+                $"{sourceWidth}x{sourceHeight}>{width}x{height}",
+                $"{capture + cpuMs:F1} ms",
+                $"{cpuMs:F1} ms",
+                $"{spd:F1} ms",
+                $"{qual:F1} ms",
+                $"{LumaPsnr(cpu, fast, width, height):F0}/{LumaPsnr(cpu, best, width, height):F0}",
+                Sharpness(cpu, width, height),
+                Sharpness(fast, width, height),
+                Sharpness(best, width, height));
+
+            if (dump is not null)
+            {
+                Directory.CreateDirectory(dump);
+                SaveComparison(Path.Combine(dump, $"{sourceWidth}x{sourceHeight}-to-{height}.png"), width, cpu, fast, best);
+            }
+
+            if (cases[0] == (sourceWidth, sourceHeight, width, height))
+            {
+                Console.WriteLine($"  on {adapter}");
+            }
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("  'cpu now' is the GPU readback, the copy for the pointer and the converter; 'convert' the");
+        Console.WriteLine("  converter alone. 'psnr' is how close each GPU mode lands to the converter's area average, and");
+        Console.WriteLine("  'sharp' the mean absolute Laplacian of luma: higher is crisper, or has more aliasing.");
+
+        return 0;
+    }
+
+    private static double LumaPsnr(byte[] a, byte[] b, int width, int height)
+    {
+        double sum = 0;
+
+        for (var i = 0; i < width * height; i++)
+        {
+            var d = a[i] - b[i];
+            sum += d * d;
+        }
+
+        return sum == 0 ? 99 : 10 * Math.Log10(255.0 * 255.0 * width * height / sum);
+    }
+
+    private static double Sharpness(byte[] nv12, int width, int height)
+    {
+        double sum = 0;
+
+        for (var y = 1; y < height - 1; y++)
+        {
+            for (var x = 1; x < width - 1; x++)
+            {
+                var at = (y * width) + x;
+                sum += Math.Abs((4 * nv12[at]) - nv12[at - 1] - nv12[at + 1] - nv12[at - width] - nv12[at + width]);
+            }
+        }
+
+        return sum / ((width - 2) * (height - 2));
+    }
+
+    /// <summary>A crop of the luma of each picture, magnified, one above the other.</summary>
+    private static void SaveComparison(string path, int width, params byte[][] pictures)
+    {
+        const int CropWidth = 300;
+        const int CropHeight = 60;
+        const int Zoom = 4;
+        const int Gap = 6;
+
+        var outputHeight = (pictures.Length * ((CropHeight * Zoom) + Gap)) - Gap;
+
+        using var bitmap = new Bitmap(CropWidth * Zoom, outputHeight, PixelFormat.Format32bppArgb);
+
+        for (var p = 0; p < pictures.Length; p++)
+        {
+            for (var y = 0; y < CropHeight; y++)
+            {
+                for (var x = 0; x < CropWidth; x++)
+                {
+                    var luma = pictures[p][((y + 10) * width) + x + 10];
+                    var level = Math.Clamp((luma - 16) * 255 / 219, 0, 255);
+                    var color = Color.FromArgb(level, level, level);
+
+                    for (var zy = 0; zy < Zoom; zy++)
+                    {
+                        for (var zx = 0; zx < Zoom; zx++)
+                        {
+                            bitmap.SetPixel((x * Zoom) + zx, (p * ((CropHeight * Zoom) + Gap)) + (y * Zoom) + zy, color);
+                        }
+                    }
+                }
+            }
+        }
+
+        bitmap.Save(path, ImageFormat.Png);
+    }
+
+    /// <summary>A page of dense small text on white, shifted by <paramref name="scroll"/> pixels.</summary>
+    private static byte[] DrawTextPage(int width, int height, int scroll, int seed)
+    {
+        const int LineHeight = 18;
+
+        using var bitmap = new Bitmap(width, height, PixelFormat.Format32bppArgb);
+
+        using (var graphics = Graphics.FromImage(bitmap))
+        using (var font = new Font("Segoe UI", 9.5f, GraphicsUnit.Point))
+        {
+            graphics.Clear(Color.White);
+            graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+            var random = new Random(seed);
+            var words = "stream capture encoder keyframe bitrate display desktop owner pointer phone quality frame"
+                .Split(' ');
+            var firstLine = scroll / LineHeight;
+
+            // Lines before the first visible one still consume the random sequence, so scrolling
+            // moves the text rather than replacing it.
+            for (var line = 0; line < firstLine + (height / LineHeight) + 2; line++)
+            {
+                var text = string.Join(' ', Enumerable.Range(0, 28).Select(_ => words[random.Next(words.Length)]));
+
+                if (line >= firstLine)
+                {
+                    graphics.DrawString(text, font, Brushes.Black, 12, (line * LineHeight) - scroll);
+                }
+            }
+        }
+
+        var data = bitmap.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+
+        try
+        {
+            var pixels = new byte[width * height * 4];
+
+            for (var y = 0; y < height; y++)
+            {
+                System.Runtime.InteropServices.Marshal.Copy(data.Scan0 + (y * data.Stride), pixels, y * width * 4, width * 4);
+            }
+
+            return pixels;
+        }
+        finally
+        {
+            bitmap.UnlockBits(data);
+        }
     }
 
     /// <summary>

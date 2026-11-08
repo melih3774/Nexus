@@ -44,7 +44,9 @@ latched Ctrl. Neither side trusts the other to have cleaned up.
 
 **Direct** puts the pointer where your finger is and carries it as touch, so touch-aware
 applications get real touch. **Touchpad** moves the pointer by how far your finger moved, which is
-easier for precise work when a fingertip covers forty pixels of desktop.
+easier for precise work when a fingertip covers forty pixels of desktop. As on a laptop's touchpad,
+tap and then touch again and move to drag with the left button held, for selecting text or moving a
+window. In either mode, a tap on the black area around the picture shows or hides the control panel.
 
 **Modifiers latch**, because you cannot hold Ctrl and tap C at the same time on a touchscreen. Tap
 `Ctrl`, it lights up, and the next key or click is wrapped in it, so Ctrl+C, Alt+Tab and Win+R all
@@ -78,9 +80,19 @@ pipeline.
 **On the PC.** Frames are captured with Desktop Duplication, scaled and colour-converted in one pass
 across up to four row bands, and encoded as H.264 by whichever Media Foundation encoder the machine
 has. On the development PC that is Intel Quick Sync, with Microsoft's software encoder behind it and
-JPEG as the last fallback. The encoder runs in low-latency mode: no B-frames, a two-second GOP, and
+JPEG as the last fallback. The encoder runs in low-latency mode: no B-frames, a ten-second GOP, and
 keyframes on demand. Frame pacing aims at deadlines rather than sleeping for "interval minus work",
 because Windows rounds timer waits up to its 15.6 ms tick.
+
+**A still screen keeps getting sharper.** The last frame of a burst of change is the one the encoder
+had the least budget for, and it is the frame the owner then reads. Once the desktop has been quiet
+for 100 ms, a frame that used at least half its share of the bitrate is encoded again, at the stream's
+frame rate, for four seconds at most. Each repeat corrects a little more of the picture until the
+encoder stops spending: on Quick Sync at 720p and 2.5 Mbit/s a screenful of new text went from 21 dB to
+45 dB in about three and a half seconds. Typing or a blinking caret costs too little to start this.
+Pictures of the Secure Desktop are never repeated. `--selftest-video --still-refresh` measures it on
+any machine, and `--dump=<directory>` writes the bitstream and reference picture for a decoder to
+compare.
 
 **Backpressure inverts the usual rule.** Dropping the oldest frame is safe when every frame stands
 alone. With an interframe codec, dropping a queued frame corrupts everything up to the next keyframe.
@@ -119,7 +131,9 @@ between two frames.
 
 **Measured** on the development PC (Release build, Intel Quick Sync) with `--selftest-video`: 360p,
 720p, 1080p and native desktop all encoded at 29.2–29.4 fps with 3.3–4.9 ms per frame and no drops.
-These figures come from one machine, not a benchmark.
+That is the time to hand a frame to the encoder; the bitstream comes back 10–14 ms after that, and
+each frame now waits for its own packet as far as its frame time allows. These figures come from one
+machine, not a benchmark.
 
 The commits `8c274de`, `2be8ac0`, `41c1697` and `804435b` record how the pipeline was measured and
 what the measurements found, including an adaptive controller that was mostly reacting to strain it

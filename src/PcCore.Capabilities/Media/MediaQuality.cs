@@ -133,15 +133,17 @@ public sealed record MediaPlan(int Width, int Height, int Fps, int BitrateKbps, 
 public static class MediaPlanner
 {
     /// <summary>
-    /// Two seconds between unforced keyframes.
+    /// Ten seconds between unforced keyframes.
     /// <para>
     /// Shorter spends real bandwidth — an IDR is several times the size of a predicted frame — and
     /// buys very little, because every event that actually needs one (a client joining, a dropped
-    /// packet, a resolution change) asks for one explicitly. Longer would leave a client that
-    /// somehow missed the request staring at a frozen picture for too long.
+    /// packet, a resolution change) asks for one explicitly. It also costs picture quality: an IDR
+    /// throws away what <see cref="StillRefinement"/> has built up, and at two seconds it did so
+    /// before a still screen had finished sharpening. Longer would leave a client whose encoder
+    /// refused a forced keyframe staring at a frozen picture for too long.
     /// </para>
     /// </summary>
-    public const int GopSeconds = 2;
+    public const int GopSeconds = 10;
 
     /// <summary>Nothing is asked to encode more than this, whatever the display is.</summary>
     public const int MaxHeight = 1440;

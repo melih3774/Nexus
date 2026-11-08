@@ -79,7 +79,7 @@ internal static class MediaFoundationPlatform
 /// <para>
 /// <b>Configured for a pointer, not a film.</b> No B-frames, so nothing is ever held back waiting
 /// for a later picture; low-latency mode, so the rate controller does not buffer to smooth its
-/// output; and a two-second GOP with keyframes on demand, so a client that joins or loses a frame
+/// output; and a ten-second GOP with keyframes on demand, so a client that joins or loses a frame
 /// recovers in well under a second instead of waiting for the next scheduled one.
 /// </para>
 /// </summary>
@@ -88,6 +88,9 @@ public sealed unsafe class MediaFoundationVideoEncoder : IVideoEncoder
 {
     /// <summary>How long a frame waits for the encoder to ask for input before being abandoned.</summary>
     private static readonly TimeSpan InputWait = TimeSpan.FromMilliseconds(120);
+
+    /// <summary>Milliseconds of a frame's time that waiting for its output leaves for the rest of the loop.</summary>
+    private const double OutputWaitMargin = 3;
 
     /// <summary>
     /// Transforms that refused to activate, and when.
@@ -108,6 +111,7 @@ public sealed unsafe class MediaFoundationVideoEncoder : IVideoEncoder
     private readonly ConcurrentQueue<VideoPacket> _ready = new();
     private readonly ConcurrentQueue<long> _pendingCaptureTimes = new();
     private readonly SemaphoreSlim _needInput = new(0);
+    private readonly ManualResetEventSlim _outputArrived = new(false);
     private readonly Lock _gate = new();
     private readonly List<string> _notes = [];
 
@@ -126,6 +130,8 @@ public sealed unsafe class MediaFoundationVideoEncoder : IVideoEncoder
     private long _convertTicks;
     private long _waitTicks;
     private long _submitTicks;
+    private long _outputTicks;
+    private long _outputLate;
     private long _timedFrames;
     private long _startedUnixMs = -1;
     private int _forceKeyframe;
@@ -177,20 +183,22 @@ public sealed unsafe class MediaFoundationVideoEncoder : IVideoEncoder
         + Notes();
 
     /// <summary>Where an encode call's time goes, averaged: conversion, waiting for the encoder, handing over.</summary>
-    public (double ConvertMs, double WaitMs, double SubmitMs) StageTimings()
+    public (double ConvertMs, double WaitMs, double SubmitMs, double OutputMs, long OutputLate) StageTimings()
     {
         var frames = Math.Max(1, Interlocked.Read(ref _timedFrames));
         var toMs = 1000.0 / System.Diagnostics.Stopwatch.Frequency / frames;
 
         return (Interlocked.Read(ref _convertTicks) * toMs,
             Interlocked.Read(ref _waitTicks) * toMs,
-            Interlocked.Read(ref _submitTicks) * toMs);
+            Interlocked.Read(ref _submitTicks) * toMs,
+            Interlocked.Read(ref _outputTicks) * toMs,
+            Interlocked.Read(ref _outputLate));
     }
 
     private string Timings()
     {
-        var (convert, wait, submit) = StageTimings();
-        return $", convert {convert:F1} ms, wait {wait:F1} ms, submit {submit:F1} ms";
+        var (convert, wait, submit, output, late) = StageTimings();
+        return $", convert {convert:F1} ms, wait {wait:F1} ms, submit {submit:F1} ms, output {output:F1} ms, {late} late";
     }
 
     private string Notes()
@@ -322,6 +330,8 @@ public sealed unsafe class MediaFoundationVideoEncoder : IVideoEncoder
                 Drain(output);
                 return;
             }
+
+            _outputArrived.Reset();
         }
 
         var t2 = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -336,6 +346,33 @@ public sealed unsafe class MediaFoundationVideoEncoder : IVideoEncoder
         if (_events == IntPtr.Zero)
         {
             DrainSynchronous();
+        }
+        else
+        {
+            // The packet for this frame is still inside the encoder at this point, and collecting
+            // only what was already finished left every frame queued here until the next one pushed
+            // it out: a frame of latency while the desktop moved, and on a desktop that then stopped
+            // moving, the last change held back until something else happened. Only the time this
+            // frame has left over is spent waiting, so that the wait can never lower the frame rate;
+            // a packet that takes longer goes out with the next frame, as it did before.
+            var spent = System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
+            var spare = (1000.0 / Math.Max(1, Settings.Fps)) - spent - OutputWaitMargin;
+
+            if (spare > 0)
+            {
+                var t3 = System.Diagnostics.Stopwatch.GetTimestamp();
+
+                if (!_outputArrived.Wait(TimeSpan.FromMilliseconds(spare)))
+                {
+                    Interlocked.Increment(ref _outputLate);
+                }
+
+                Interlocked.Add(ref _outputTicks, System.Diagnostics.Stopwatch.GetTimestamp() - t3);
+            }
+            else
+            {
+                Interlocked.Increment(ref _outputLate);
+            }
         }
 
         Drain(output);
@@ -627,6 +664,8 @@ public sealed unsafe class MediaFoundationVideoEncoder : IVideoEncoder
                 bytes,
                 keyframe ? VideoPacketFlags.Keyframe : VideoPacketFlags.None,
                 captured));
+
+            _outputArrived.Set();
         }
         finally
         {
@@ -1294,6 +1333,7 @@ public sealed unsafe class MediaFoundationVideoEncoder : IVideoEncoder
             // violation that would take the whole of PC Core with it.
             _logger.LogWarning("The H.264 encoder's event thread did not stop; its handles are being left alone.");
             _needInput.Dispose();
+            _outputArrived.Dispose();
             _ready.Clear();
             _pendingCaptureTimes.Clear();
             return;
@@ -1313,6 +1353,7 @@ public sealed unsafe class MediaFoundationVideoEncoder : IVideoEncoder
         Release(ref _transform);
 
         _needInput.Dispose();
+        _outputArrived.Dispose();
         _ready.Clear();
         _pendingCaptureTimes.Clear();
 

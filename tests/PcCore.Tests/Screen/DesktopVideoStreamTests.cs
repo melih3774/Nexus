@@ -21,7 +21,11 @@ public sealed class DesktopVideoStreamTests
 {
     private sealed class Rig : IAsyncDisposable
     {
-        public Rig(bool videoAvailable = true, Action<MediaQualityStore>? configure = null, bool acceptsBitrateChanges = true)
+        public Rig(
+            bool videoAvailable = true,
+            Action<MediaQualityStore>? configure = null,
+            bool acceptsBitrateChanges = true,
+            double stillRefinementSeconds = 0)
         {
             Capture = new FakeDesktopStream();
             Encoders = new FakeVideoEncoderFactory(videoAvailable, acceptsBitrateChanges: acceptsBitrateChanges);
@@ -33,7 +37,13 @@ public sealed class DesktopVideoStreamTests
                 new FakeFrameEncoder(),
                 Encoders,
                 Quality,
-                new StreamOptions { FrameTimeoutMs = 20, DiagnosticsIntervalSeconds = 0, MaxBacklog = 2 },
+                new StreamOptions
+                {
+                    FrameTimeoutMs = 20,
+                    DiagnosticsIntervalSeconds = 0,
+                    MaxBacklog = 2,
+                    StillRefinementSeconds = stillRefinementSeconds,
+                },
                 TestLog.For<DesktopStreamService>());
         }
 
@@ -179,6 +189,101 @@ public sealed class DesktopVideoStreamTests
 
         Assert.All(frames, f => Assert.Equal(FrameEncoding.Jpeg, f.Header.Encoding));
         Assert.Equal("JPEG still frames", session.Encoder);
+
+        await rig.Service.StopAsync("conn-1");
+    }
+
+    private static RawFrame StillPicture(DateTimeOffset capturedAt, bool mayRepeat = true) =>
+        new(new byte[1920 * 1080 * 4], 1920, 1080, 1920 * 4, capturedAt, 10, 20, true, mayRepeat);
+
+    /// <summary>A stream on a desktop that shows one picture and then never changes.</summary>
+    private static Rig StillRig(RawFrame picture, double refinementSeconds, int padding = 20_000)
+    {
+        var rig = new Rig(stillRefinementSeconds: refinementSeconds);
+
+        rig.Encoders.Padding = padding;
+        rig.Capture.StillAfterScript = true;
+        rig.Capture.Script(CaptureResult.Captured(picture));
+
+        return rig;
+    }
+
+    [Fact]
+    public async Task AScreenThatStopsChangingIsEncodedAgainStampedNowAndThenLeftAlone()
+    {
+        var capturedLongAgo = DateTimeOffset.UtcNow.AddHours(-1);
+
+        await using var rig = StillRig(StillPicture(capturedLongAgo), refinementSeconds: 0.4);
+
+        var session = rig.Service.Start("conn-1", null);
+        var pictures = await ReadUntilAsync(session, f => f.Count(x => !x.Header.Flags.HasFlag(FrameFlags.CodecConfig)) >= 3);
+        var repeat = pictures.Last(f => !f.Header.Flags.HasFlag(FrameFlags.CodecConfig));
+
+        // The phone reports capture to render from this. A repeat stamped with the original capture
+        // would read as an hour of latency and push the stream down the ladder.
+        Assert.True(
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - repeat.Header.TimestampUnixMs < 30_000,
+            "the repeat kept the original capture time");
+
+        // Twelve repeats at 30 fps, one way or another, and then nothing.
+        await Task.Delay(1500, TestContext.Current.CancellationToken);
+
+        var encoder = rig.Encoders.Created[0];
+        var settled = encoder.Submitted;
+
+        Assert.InRange(settled, 2, 13);
+
+        await Task.Delay(400, TestContext.Current.CancellationToken);
+        Assert.Equal(settled, encoder.Submitted);
+
+        await rig.Service.StopAsync("conn-1");
+    }
+
+    [Fact]
+    public async Task AFrameThatWasCheapToEncodeIsNotRepeated()
+    {
+        await using var rig = StillRig(StillPicture(DateTimeOffset.UtcNow), refinementSeconds: 0.4, padding: 0);
+
+        var session = rig.Service.Start("conn-1", null);
+        await ReadUntilAsync(session, f => f.Count >= 2);
+
+        await Task.Delay(500, TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, rig.Encoders.Created[0].Submitted);
+
+        await rig.Service.StopAsync("conn-1");
+    }
+
+    [Fact]
+    public async Task APictureOfTheSecureDesktopIsNeverSentAgainOnItsOwn()
+    {
+        await using var rig = StillRig(StillPicture(DateTimeOffset.UtcNow, mayRepeat: false), refinementSeconds: 0.4);
+
+        var session = rig.Service.Start("conn-1", null);
+        await ReadUntilAsync(session, f => f.Count >= 2);
+
+        session.RequestKeyframe();
+        await Task.Delay(500, TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, rig.Encoders.Created[0].Submitted);
+
+        await rig.Service.StopAsync("conn-1");
+    }
+
+    [Fact]
+    public async Task AKeyframeAskedForOnAStillDesktopArrivesWithoutWaitingForItToMove()
+    {
+        await using var rig = StillRig(StillPicture(DateTimeOffset.UtcNow), refinementSeconds: 0, padding: 0);
+
+        var session = rig.Service.Start("conn-1", null);
+        await ReadUntilAsync(session, f => f.Any(x => x.Header.Flags.HasFlag(FrameFlags.Keyframe)));
+
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+        session.RequestKeyframe();
+
+        var after = await ReadUntilAsync(session, f => f.Any(x => x.Header.Flags.HasFlag(FrameFlags.Keyframe)), 2000);
+
+        Assert.Contains(after, f => f.Header.Flags.HasFlag(FrameFlags.Keyframe));
 
         await rig.Service.StopAsync("conn-1");
     }

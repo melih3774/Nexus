@@ -135,7 +135,7 @@ and print measurements:
 | Command | What it proves |
 |---|---|
 | `--selftest-remote-control` | display capture and encoding, pointer injection, indicator modes |
-| `--selftest-video` | H.264 encoder, conversion and pacing figures; `--bitrate-change` checks in-place bitrate |
+| `--selftest-video` | H.264 encoder, conversion and pacing figures; `--bitrate-change` checks in-place bitrate, `--still-refresh` what repeating a still picture costs, `--gpu-scale` the GPU video processor against the CPU converter |
 | `--selftest-native-input` | typing into a real window, touch injection, attribution while armed |
 | `--selftest-secure-capture` | a real consent prompt photographed through SecureCapture |
 | `--selftest-security` | real hooks, attribution, camera and microphone evidence, digests; `--prompt-hello` |

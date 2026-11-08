@@ -51,6 +51,12 @@ public sealed class FakeVideoEncoder : IVideoEncoder
     /// <summary>Every bitrate this encoder was switched to in place.</summary>
     public List<int> BitrateChanges { get; } = [];
 
+    /// <summary>Extra bytes per packet, for a test that needs a frame to have cost something.</summary>
+    public int Padding { get; set; }
+
+    /// <summary>How many frames have been submitted, whether or not anything came out yet.</summary>
+    public int Submitted { get; private set; }
+
     public void RequestKeyframe()
     {
         KeyframeRequests++;
@@ -79,6 +85,7 @@ public sealed class FakeVideoEncoder : IVideoEncoder
     {
         ArgumentNullException.ThrowIfNull(output);
 
+        Submitted++;
         _pending.Enqueue(captureUnixMs);
 
         // A hardware encoder holds the first frames while its pipeline fills. Modelled so that
@@ -104,7 +111,7 @@ public sealed class FakeVideoEncoder : IVideoEncoder
             (byte)(height & 0xFF),
         };
 
-        var bytes = keyframe ? [.. CodecConfig, .. slice] : slice;
+        byte[] bytes = keyframe ? [.. CodecConfig, .. slice, .. new byte[Padding]] : [.. slice, .. new byte[Padding]];
 
         output.Add(new VideoPacket(
             bytes,
@@ -136,6 +143,9 @@ public sealed class FakeVideoEncoderFactory : IVideoEncoderFactory
 
     public bool IsAvailable { get; set; }
 
+    /// <summary>Given to every encoder made from now on. See <see cref="FakeVideoEncoder.Padding"/>.</summary>
+    public int Padding { get; set; }
+
     /// <summary>Every encoder this has made, so a test can assert one was replaced rather than leaked.</summary>
     public List<FakeVideoEncoder> Created { get; } = [];
 
@@ -150,7 +160,7 @@ public sealed class FakeVideoEncoderFactory : IVideoEncoderFactory
 
         CreationGate?.Wait(TimeSpan.FromSeconds(30));
 
-        var encoder = new FakeVideoEncoder(settings, _pipelineDelay, _acceptsBitrateChanges);
+        var encoder = new FakeVideoEncoder(settings, _pipelineDelay, _acceptsBitrateChanges) { Padding = Padding };
 
         lock (Created)
         {

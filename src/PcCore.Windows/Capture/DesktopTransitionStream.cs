@@ -234,7 +234,7 @@ internal sealed class DesktopTransitionSource : IDesktopCaptureSource
         PixelWidth = frame.Width;
         PixelHeight = frame.Height;
 
-        return CaptureResult.Captured(frame);
+        return CaptureResult.Captured(frame with { MayRepeat = false });
     }
 
     public void Dispose()

@@ -29,6 +29,11 @@ public sealed record DisplayInfo(
 
 /// <summary>A captured desktop image in BGRA, before encoding.</summary>
 /// <param name="Pixels">BGRA rows, <paramref name="Stride"/> bytes apart. May be longer than needed.</param>
+/// <param name="MayRepeat">
+/// False when this picture must only be sent while the source is still producing it. A frame from the
+/// Secure Desktop is the case that matters: the authorisation to capture it is checked on every
+/// frame, and the stream must not go on sending a consent prompt after that check has stopped passing.
+/// </param>
 public sealed record RawFrame(
     byte[] Pixels,
     int Width,
@@ -37,7 +42,8 @@ public sealed record RawFrame(
     DateTimeOffset CapturedAtUtc,
     int CursorX,
     int CursorY,
-    bool CursorVisible);
+    bool CursorVisible,
+    bool MayRepeat = true);
 
 /// <summary>What one attempt to take a frame produced.</summary>
 public enum CaptureStatus

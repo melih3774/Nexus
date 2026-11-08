@@ -53,6 +53,15 @@ public sealed class StreamOptions
     /// </para>
     /// </summary>
     public int MaxBacklog { get; set; } = 2;
+
+    /// <summary>
+    /// How long a picture that has stopped changing goes on being refined. Zero turns it off.
+    /// <para>
+    /// Long enough for the encoder to reach the quality it stops spending at: about three and a half
+    /// seconds on Quick Sync at 720p and 2.5 Mbit/s. See <see cref="StillRefinement"/>.
+    /// </para>
+    /// </summary>
+    public double StillRefinementSeconds { get; set; } = 4;
 }
 
 /// <summary>What the phone reports about what it did with the frames it was sent.</summary>
@@ -92,7 +101,7 @@ public sealed record StreamStatistics(
 /// path. Staleness is controlled upstream instead — see <see cref="StreamOptions.MaxBacklog"/> — by
 /// not capturing a frame that would arrive late rather than by dropping it afterwards. A drop here
 /// is a last resort, and when it happens the encoder is asked for a keyframe so the damage lasts one
-/// frame instead of two seconds.
+/// frame instead of a whole GOP.
 /// </para>
 /// </summary>
 public sealed class DesktopStreamSession : IAsyncDisposable
@@ -182,6 +191,9 @@ public sealed class DesktopStreamSession : IAsyncDisposable
     public void RequestKeyframe() => Interlocked.Exchange(ref _keyframeWanted, 1);
 
     internal bool TakeKeyframeRequest() => Interlocked.Exchange(ref _keyframeWanted, 0) == 1;
+
+    /// <summary>True when a keyframe has been asked for and has not yet been produced.</summary>
+    internal bool KeyframeWanted => Volatile.Read(ref _keyframeWanted) == 1;
 
     /// <summary>Records what the phone says it is experiencing. Feeds the adaptive controller.</summary>
     public void ReportClient(ClientPlayback playback)
@@ -545,8 +557,13 @@ public sealed class DesktopStreamService : IAsyncDisposable
         var pacer = new FramePacer();
         var packets = new List<VideoPacket>();
         var state = new EncoderState { Plan = session.Plan };
+        var still = new StillRefinement(_options.StillRefinementSeconds);
+        var quietClock = Stopwatch.StartNew();
 
         IDesktopCaptureSource? source = null;
+
+        // The last picture the capture produced, for encoding again once it has stopped changing.
+        RawFrame? held = null;
 
         var sequence = 0UL;
         var screenQuality = _quality.Current.Screen;
@@ -632,19 +649,55 @@ public sealed class DesktopStreamService : IAsyncDisposable
                 }
                 else
                 {
+                    // Repeats are owed at the frame rate, so news is not waited for any longer than one
+                    // frame while they are. Otherwise the timeout is only how often the loop looks up.
+                    var waitMs = Math.Clamp(_options.FrameTimeoutMs, 20, 2000);
                     var result = source.TryGetFrame(TimeSpan.FromMilliseconds(
-                        Math.Clamp(_options.FrameTimeoutMs, 20, 2000)));
+                        still.IsPending ? Math.Min(waitMs, interval.TotalMilliseconds) : waitMs));
 
                     switch (result.Status)
                     {
                         case CaptureStatus.Frame:
                             session.CountCapture();
                             Encode(session, result.Frame!, ref sequence, state, packets);
+
+                            if (result.Frame!.MayRepeat)
+                            {
+                                held = result.Frame;
+                                still.Changed(state.Plan, LargestPacket(packets), quietClock.Elapsed);
+                            }
+                            else
+                            {
+                                held = null;
+                                still.Stop();
+                            }
+
                             break;
 
                         case CaptureStatus.Timeout:
-                            // Nothing changed. The client keeps showing the last frame, which is still
-                            // correct, so there is nothing to send.
+                            // Nothing changed, so what the client is showing is still correct. What
+                            // may be left to do is show it better, or give a client that has lost
+                            // its place a keyframe of it rather than waiting for the desktop to move.
+                            if (held is not null
+                                && state.Video is not null
+                                && (session.KeyframeWanted || still.IsDue(quietClock.Elapsed)))
+                            {
+                                // Stamped now rather than when the pixels were first taken. The phone
+                                // measures capture to render from this, and four seconds of the same
+                                // picture is not four seconds of latency.
+                                Encode(
+                                    session,
+                                    held with { CapturedAtUtc = DateTimeOffset.UtcNow },
+                                    ref sequence,
+                                    state,
+                                    packets);
+
+                                still.Repeated(
+                                    state.Plan,
+                                    LargestPacket(packets),
+                                    packets.Exists(p => p.Flags.HasFlag(VideoPacketFlags.Keyframe)));
+                            }
+
                             break;
 
                         case CaptureStatus.Lost:
@@ -654,6 +707,8 @@ public sealed class DesktopStreamService : IAsyncDisposable
                                 session.StreamId, result.Diagnostic);
                             source.Dispose();
                             source = null;
+                            held = null;
+                            still.Stop();
 
                             // A new capture may be a new size, so the encoder is rebuilt from the
                             // display as it is now and the client is told with a fresh configuration.
@@ -671,6 +726,8 @@ public sealed class DesktopStreamService : IAsyncDisposable
                                 session.StreamId, result.Diagnostic);
                             source.Dispose();
                             source = null;
+                            held = null;
+                            still.Stop();
                             adaptive.NoteDisruption();
                             await Task.Delay(TimeSpan.FromSeconds(1), token).ConfigureAwait(false);
                             break;
@@ -942,6 +999,18 @@ public sealed class DesktopStreamService : IAsyncDisposable
     private static string Describe(IVideoEncoder encoder) =>
         $"{encoder.BackendName} ({(encoder.IsHardware ? "hardware" : "software")})";
 
+    private static int LargestPacket(List<VideoPacket> packets)
+    {
+        var largest = 0;
+
+        foreach (var packet in packets)
+        {
+            largest = Math.Max(largest, packet.Bytes.Length);
+        }
+
+        return largest;
+    }
+
     private void Encode(
         DesktopStreamSession session,
         RawFrame frame,
@@ -950,6 +1019,9 @@ public sealed class DesktopStreamService : IAsyncDisposable
         List<VideoPacket> packets)
     {
         var started = Stopwatch.GetTimestamp();
+
+        // Before anything can return: the caller reads this list to see what the frame cost.
+        packets.Clear();
 
         if (state.Video is null
             && _videoEncoders.IsAvailable
@@ -984,8 +1056,6 @@ public sealed class DesktopStreamService : IAsyncDisposable
         {
             video.RequestKeyframe();
         }
-
-        packets.Clear();
 
         try
         {

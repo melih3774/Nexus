@@ -36,6 +36,9 @@ public sealed class FakeDesktopStream : IDesktopStream
 
     public int OpenFailures { get; set; }
 
+    /// <summary>Once the script runs out, report that nothing changed rather than generating frames.</summary>
+    public bool StillAfterScript { get; set; }
+
     /// <summary>Returned in order; once empty, the source produces generated frames forever.</summary>
     public void Script(params CaptureResult[] results)
     {
@@ -58,7 +61,7 @@ public sealed class FakeDesktopStream : IDesktopStream
         var display = Displays.FirstOrDefault(d => d.Index == displayIndex)
             ?? throw new CapabilityException(ErrorCodes.InvalidParameters, "no such display");
 
-        var source = new FakeCaptureSource(display, _scripted);
+        var source = new FakeCaptureSource(display, _scripted) { StillAfterScript = StillAfterScript };
         Opened.Add(source);
 
         return source;
@@ -88,6 +91,8 @@ public sealed class FakeCaptureSource : IDesktopCaptureSource
 
     public int FramesProduced => _frames;
 
+    internal bool StillAfterScript { get; init; }
+
     public CaptureResult TryGetFrame(TimeSpan timeout)
     {
         if (_scripted.TryDequeue(out var scripted))
@@ -98,6 +103,13 @@ public sealed class FakeCaptureSource : IDesktopCaptureSource
             }
 
             return scripted;
+        }
+
+        if (StillAfterScript)
+        {
+            // As the real capture does: nothing changed, after waiting for news that never came.
+            Thread.Sleep(timeout);
+            return CaptureResult.TimedOut;
         }
 
         Interlocked.Increment(ref _frames);
