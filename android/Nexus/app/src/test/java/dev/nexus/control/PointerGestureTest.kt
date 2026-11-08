@@ -269,6 +269,88 @@ class PointerGestureTest {
         assertEquals("200 pixels at 48 per notch", 4, notches)
     }
 
+    // --- tap, then touch again (Touchpad) -------------------------------------------------------
+
+    private fun afterTap() = PointerGestureRecognizer(touchSlop = slop, longPressMs = 450L, afterTap = true)
+
+    @Test
+    fun `a touch that follows a tap and moves drags at once with no wait`() {
+        val gesture = afterTap()
+        gesture.down(100f, 100f, 0L)
+
+        val started = gesture.move(130f, 100f, 40L, pointerCount = 1)
+
+        assertEquals(GestureOutcome.DragStart(100f, 100f), started.first())
+        assertEquals(GestureOutcome.Move(130f, 100f, 30f, 0f), started.last())
+        assertTrue(gesture.isDragging)
+
+        val continued = gesture.move(170f, 120f, 60L, pointerCount = 1)
+
+        assertEquals(listOf<GestureOutcome>(GestureOutcome.Move(170f, 120f, 40f, 20f)), continued)
+        assertEquals(listOf<GestureOutcome>(GestureOutcome.DragEnd), gesture.up(80L))
+    }
+
+    @Test
+    fun `a touch that follows a tap and lifts in place is a double tap`() {
+        val gesture = afterTap()
+        gesture.down(100f, 100f, 0L)
+
+        assertTrue(gesture.move(100f + slop / 3f, 100f, 20L, pointerCount = 1).isEmpty())
+        assertEquals(listOf<GestureOutcome>(GestureOutcome.DoubleTap(100f, 100f)), gesture.up(60L))
+    }
+
+    @Test
+    fun `resting on the second touch does not turn it into a right click`() {
+        val gesture = afterTap()
+        gesture.down(100f, 100f, 0L)
+
+        assertEquals(listOf<GestureOutcome>(GestureOutcome.DoubleTap(100f, 100f)), gesture.up(900L))
+    }
+
+    @Test
+    fun `resting on the second touch and then moving still drags`() {
+        val gesture = afterTap()
+        gesture.down(100f, 100f, 0L)
+
+        assertTrue(gesture.move(100f, 100f, 800L, pointerCount = 1).isEmpty())
+        assertTrue(gesture.move(160f, 100f, 820L, pointerCount = 1).first() is GestureOutcome.DragStart)
+        assertEquals(listOf<GestureOutcome>(GestureOutcome.DragEnd), gesture.up(840L))
+    }
+
+    @Test
+    fun `a scroll right after a tap still clicks once and presses nothing`() {
+        val gesture = afterTap()
+        gesture.down(100f, 100f, 0L)
+
+        val outcomes = buildList {
+            for (step in 1..4) {
+                addAll(gesture.move(100f, 100f + step * 30f, step * 16L, pointerCount = 2))
+            }
+            addAll(gesture.up(100L))
+        }
+
+        assertEquals(1, outcomes.count { it is GestureOutcome.Tap })
+        assertTrue(outcomes.any { it is GestureOutcome.Scroll })
+        assertFalse(outcomes.any { it is GestureOutcome.DragStart || it is GestureOutcome.DoubleTap })
+    }
+
+    @Test
+    fun `a second finger during a tap drag does not click and still releases`() {
+        val gesture = afterTap()
+        gesture.down(100f, 100f, 0L)
+        gesture.move(140f, 100f, 20L, pointerCount = 1)
+
+        val outcomes = gesture.move(140f, 160f, 40L, pointerCount = 2)
+
+        assertFalse(outcomes.any { it is GestureOutcome.Tap })
+        assertEquals(listOf<GestureOutcome>(GestureOutcome.DragEnd), gesture.up(60L))
+    }
+
+    @Test
+    fun `an ordinary touch still needs the wait before it can drag`() {
+        assertFalse(swipe().any { it is GestureOutcome.DragStart || it is GestureOutcome.DoubleTap })
+    }
+
     // --- the two modes share this model ---------------------------------------------------------
 
     @Test

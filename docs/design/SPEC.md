@@ -1530,8 +1530,9 @@ diagnosis harder.
 | Double tap | move there, double click | double click |
 | Long press | move there, right click | right click |
 | Drag | button down, follow the finger | button down, pointer moves by the delta |
+| Tap, then touch again and move | — | button down at once, pointer moves by the delta |
 | Two fingers vertically | scroll | scroll |
-| Tap on the letterbox | show or hide the controls | — |
+| Tap on the letterbox | show or hide the controls | show or hide the controls |
 
 Small and mostly what a phone already teaches. There are no three-finger chords or edge swipes to
 memorise, because a remote desktop is already unfamiliar to operate and a gesture nobody remembers

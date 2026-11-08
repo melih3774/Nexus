@@ -122,16 +122,13 @@ fun DesktopSurface(
 
                     val tap = tapped ?: return@awaitEachGesture
 
-                    // A plain tap. Outside the image it means "show or hide the controls" rather
-                    // than a click somewhere the owner did not touch.
+                    // A plain tap. Outside the image it means "show or hide the controls" in both
+                    // modes, and with control on or off: it is the only way to get the panel out of
+                    // the way in landscape without giving up control. Only a tap: a finger moving
+                    // across the black bars in Touchpad mode still moves the pointer.
                     val point = current.toDesktop(tap.x, tap.y)
 
-                    if (point == null && mode == PointerModeUi.DIRECT) {
-                        onBackgroundTap()
-                        return@awaitEachGesture
-                    }
-
-                    if (!enabled) {
+                    if (point == null || !enabled) {
                         onBackgroundTap()
                         return@awaitEachGesture
                     }
@@ -141,7 +138,46 @@ fun DesktopSurface(
                         awaitFirstDown(requireUnconsumed = false)
                     }
 
-                    if (second != null) onDoubleTap(point) else onTap(point)
+                    if (second == null) {
+                        onTap(point)
+                        return@awaitEachGesture
+                    }
+
+                    if (mode != PointerModeUi.TOUCHPAD) {
+                        onDoubleTap(point)
+                        return@awaitEachGesture
+                    }
+
+                    // On a touchpad the second touch is not over yet: what it does next decides
+                    // whether this was a double click or the start of a drag.
+                    val following = PointerGestureRecognizer(touchSlop, afterTap = true)
+
+                    following.down(second.position.x, second.position.y, System.currentTimeMillis())
+
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val changes = event.changes.filter { it.pressed }
+                        val now = System.currentTimeMillis()
+
+                        val outcomes = if (changes.isEmpty()) {
+                            following.up(now)
+                        } else {
+                            val primary = changes.first()
+                            following.move(primary.position.x, primary.position.y, now, changes.size)
+                        }
+
+                        outcomes.forEach {
+                            when (it) {
+                                is GestureOutcome.Tap -> onTap(point)
+                                is GestureOutcome.DoubleTap -> onDoubleTap(point)
+                                else -> dispatch(it, current, onDragStart, onMove, onDragEnd, onScroll, onLongPress)
+                            }
+                        }
+
+                        if (changes.isEmpty()) break
+
+                        if (outcomes.isNotEmpty()) changes.forEach { it.consume() }
+                    }
                 }
             },
         contentAlignment = Alignment.Center,
@@ -195,9 +231,9 @@ fun DesktopSurface(
 /**
  * Turns one recogniser answer into the matching callback.
  *
- * Every branch is a straight hand-off. [GestureOutcome.Tap] is the exception and is handled by the
- * caller, because deciding between one click and two means waiting, and waiting belongs in the
- * gesture coroutine rather than here.
+ * Every branch is a straight hand-off. [GestureOutcome.Tap] and [GestureOutcome.DoubleTap] are the
+ * exceptions and are handled by the caller, because deciding between one click and two means
+ * waiting, and waiting belongs in the gesture coroutine rather than here.
  */
 private fun dispatch(
     outcome: GestureOutcome,
@@ -223,7 +259,7 @@ private fun dispatch(
 
         is GestureOutcome.RightClick -> onLongPress(rendered.toDesktop(outcome.x, outcome.y))
 
-        is GestureOutcome.Tap -> Unit
+        is GestureOutcome.Tap, is GestureOutcome.DoubleTap -> Unit
     }
 }
 

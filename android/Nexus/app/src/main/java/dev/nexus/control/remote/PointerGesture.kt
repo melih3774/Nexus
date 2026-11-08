@@ -18,6 +18,8 @@ package dev.nexus.control.remote
  *   when the finger lifts
  * - hold still, then lift — right click
  * - two fingers — scroll
+ * - in Touchpad mode, tap and then touch again and move — drag, as on a laptop's touchpad. The tap
+ *   before it is what asks for the button, so no wait is needed
  *
  * Holding still is what separates a drag from a move, and it is the same wait that already meant
  * "right click", so nothing new has to be learned: a long press that goes somewhere is a drag, a
@@ -51,6 +53,9 @@ sealed interface GestureOutcome {
      * second one is coming, and that wait belongs to the caller's coroutine, not to this.
      */
     data class Tap(val x: Float, val y: Float) : GestureOutcome
+
+    /** A second touch right after a tap, lifted where it landed. */
+    data class DoubleTap(val x: Float, val y: Float) : GestureOutcome
 }
 
 /**
@@ -58,11 +63,15 @@ sealed interface GestureOutcome {
  *
  * Fed raw positions and timestamps by the surface. One instance per gesture: it carries the state
  * of a single touch and is thrown away when that touch ends.
+ *
+ * @param afterTap this touch landed right after a tap, in Touchpad mode. Moving it drags at once,
+ * and lifting it without moving is a double tap however long it rested.
  */
 class PointerGestureRecognizer(
     private val touchSlop: Float,
     private val longPressMs: Long = LONG_PRESS_MS,
     private val scrollPixelsPerNotch: Float = SCROLL_PIXELS_PER_NOTCH,
+    private val afterTap: Boolean = false,
 ) {
     private var downX = 0f
     private var downY = 0f
@@ -76,8 +85,8 @@ class PointerGestureRecognizer(
     private var scrolled = false
     private var multiTouch = false
 
-    /** Held still long enough that a drag is now available. Set once, never cleared. */
-    private var dragArmed = false
+    /** A drag is available: the finger held still long enough, or a tap came just before it. */
+    private var dragArmed = afterTap
 
     /** The left button is down because of [dragArmed] followed by movement. */
     private var dragging = false
@@ -103,6 +112,14 @@ class PointerGestureRecognizer(
      */
     fun move(x: Float, y: Float, atMs: Long, pointerCount: Int): List<GestureOutcome> {
         if (pointerCount >= 2) {
+            // The tap before this touch was waiting to see what followed it. A scroll is not a
+            // second click, so the first one is still owed.
+            val owed = if (afterTap && !multiTouch && !dragging) {
+                listOf(GestureOutcome.Tap(downX, downY))
+            } else {
+                emptyList()
+            }
+
             multiTouch = true
             scrolled = true
 
@@ -114,10 +131,10 @@ class PointerGestureRecognizer(
 
             val notches = (scrollRemainder / scrollPixelsPerNotch).toInt()
 
-            if (notches == 0) return emptyList()
+            if (notches == 0) return owed
 
             scrollRemainder -= notches * scrollPixelsPerNotch
-            return listOf(GestureOutcome.Scroll(notches.toFloat()))
+            return owed + GestureOutcome.Scroll(notches.toFloat())
         }
 
         val dx = x - lastX
@@ -178,6 +195,9 @@ class PointerGestureRecognizer(
         if (dragging) return listOf(GestureOutcome.DragEnd)
 
         if (scrolled || multiTouch) return emptyList()
+
+        // It never moved far enough to drag, so it was the second half of a double tap.
+        if (afterTap) return listOf(GestureOutcome.DoubleTap(downX, downY))
 
         // Held in place and let go without ever moving.
         if (dragArmed) return listOf(GestureOutcome.RightClick(downX, downY))

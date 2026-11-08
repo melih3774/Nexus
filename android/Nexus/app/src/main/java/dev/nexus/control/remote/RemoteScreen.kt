@@ -28,6 +28,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.style.TextAlign
@@ -124,7 +125,8 @@ fun RemoteScreen(
                 if (state.pointerMode == PointerModeUi.DIRECT && point != null) viewModel.moveTo(point)
                 viewModel.click(PointerButton.RIGHT)
             },
-            // Only ever reached after a deliberate hold-then-move. Ordinary movement goes through
+            // Only ever reached after a deliberate hold-then-move or, in Touchpad mode, a tap and
+            // then a touch that moves. Ordinary movement goes through
             // onMove and never touches a button — the two are separate actions, which is the whole
             // point of the v0.7.1 gesture fix.
             onDragStart = { point ->
@@ -215,6 +217,9 @@ fun RemoteScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f))
+                    // Claims the touches on the panel's own gaps, which would otherwise fall through
+                    // to the desktop underneath: a near miss on a button must not close the panel.
+                    .pointerInput(Unit) {}
                     .navigationBarsPadding()
                     .padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
