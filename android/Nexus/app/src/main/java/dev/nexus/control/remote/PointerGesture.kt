@@ -17,7 +17,8 @@ package dev.nexus.control.remote
  * - hold still, then move — drag: the left button goes down, the pointer moves, and it comes up
  *   when the finger lifts
  * - hold still, then lift — right click
- * - two fingers — scroll
+ * - two fingers moving together — scroll
+ * - two fingers spreading or closing — zoom the picture
  * - in Touchpad mode, tap and then touch again and move — drag, as on a laptop's touchpad. The tap
  *   before it is what asks for the button, so no wait is needed
  *
@@ -56,6 +57,15 @@ sealed interface GestureOutcome {
 
     /** A second touch right after a tap, lifted where it landed. */
     data class DoubleTap(val x: Float, val y: Float) : GestureOutcome
+
+    /**
+     * Two fingers spreading or closing: zoom the picture by [factor] around the point between them,
+     * and follow that point by [dx] and [dy].
+     */
+    data class Pinch(val factor: Float, val focusX: Float, val focusY: Float, val dx: Float, val dy: Float) : GestureOutcome
+
+    /** Two fingers moving together, for a surface that would rather move the picture than scroll. */
+    data class Pan(val dx: Float, val dy: Float) : GestureOutcome
 }
 
 /**
@@ -94,6 +104,19 @@ class PointerGestureRecognizer(
     /** True once the finger has travelled past the slop, which rules the gesture out as a tap. */
     private var moved = false
 
+    /** What two fingers are doing. Decided once, so that a scroll cannot wander into a zoom. */
+    private var twoFingers: TwoFingers? = null
+
+    private var twoFingerStarted = false
+    private var startSpan = 0f
+    private var startCentreX = 0f
+    private var startCentreY = 0f
+    private var lastSpan = 0f
+    private var lastCentreX = 0f
+    private var lastCentreY = 0f
+
+    private enum class TwoFingers { ZOOM, SCROLL }
+
     val isDragging: Boolean get() = dragging
 
     fun down(x: Float, y: Float, atMs: Long) {
@@ -108,9 +131,17 @@ class PointerGestureRecognizer(
      * One pointer update.
      *
      * @param pointerCount how many fingers are currently down.
+     * @param secondX where the second finger is, when there is one.
      * @return everything that should happen as a result, in order.
      */
-    fun move(x: Float, y: Float, atMs: Long, pointerCount: Int): List<GestureOutcome> {
+    fun move(
+        x: Float,
+        y: Float,
+        atMs: Long,
+        pointerCount: Int,
+        secondX: Float = x,
+        secondY: Float = y,
+    ): List<GestureOutcome> {
         if (pointerCount >= 2) {
             // The tap before this touch was waiting to see what followed it. A scroll is not a
             // second click, so the first one is still owed.
@@ -122,19 +153,59 @@ class PointerGestureRecognizer(
 
             multiTouch = true
             scrolled = true
-
-            // Accumulated rather than rounded per event, so a slow drag still produces whole
-            // notches instead of being truncated to nothing over and over.
-            scrollRemainder += y - lastY
             lastX = x
             lastY = y
 
-            val notches = (scrollRemainder / scrollPixelsPerNotch).toInt()
+            val span = kotlin.math.hypot(x - secondX, y - secondY)
+            val centreX = (x + secondX) / 2f
+            val centreY = (y + secondY) / 2f
 
-            if (notches == 0) return owed
+            // The first report with both fingers down only says where they start.
+            if (!twoFingerStarted) {
+                twoFingerStarted = true
+                startSpan = span
+                startCentreX = centreX
+                startCentreY = centreY
+                lastSpan = span
+                lastCentreX = centreX
+                lastCentreY = centreY
+                return owed
+            }
+
+            if (twoFingers == null) {
+                val spread = kotlin.math.abs(span - startSpan)
+                val travel = kotlin.math.hypot(centreX - startCentreX, centreY - startCentreY)
+
+                twoFingers = when {
+                    spread >= touchSlop * 2 && spread > travel -> TwoFingers.ZOOM
+                    travel >= touchSlop -> TwoFingers.SCROLL
+                    else -> return owed
+                }
+            }
+
+            val dx = centreX - lastCentreX
+            val dy = centreY - lastCentreY
+            val factor = if (lastSpan > 0f) span / lastSpan else 1f
+
+            lastSpan = span
+            lastCentreX = centreX
+            lastCentreY = centreY
+
+            if (twoFingers == TwoFingers.ZOOM) {
+                return owed + GestureOutcome.Pinch(factor, centreX, centreY, dx, dy)
+            }
+
+            // Accumulated rather than rounded per event, so a slow drag still produces whole
+            // notches instead of being truncated to nothing over and over.
+            scrollRemainder += dy
+
+            val notches = (scrollRemainder / scrollPixelsPerNotch).toInt()
+            val pan = GestureOutcome.Pan(dx, dy)
+
+            if (notches == 0) return owed + pan
 
             scrollRemainder -= notches * scrollPixelsPerNotch
-            return owed + GestureOutcome.Scroll(notches.toFloat())
+            return owed + pan + GestureOutcome.Scroll(notches.toFloat())
         }
 
         val dx = x - lastX

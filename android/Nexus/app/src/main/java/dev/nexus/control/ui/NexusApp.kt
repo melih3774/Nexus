@@ -259,7 +259,8 @@ private fun PairedFlow(
 
     Scaffold(
         topBar = {
-            if (current != Destination.Home) {
+            // The remote screen gives the bar's height to the desktop; Android's back still leaves it.
+            if (current != Destination.Home && current != Destination.Screen) {
                 TopAppBar(
                     title = { Text(current.title) },
                     navigationIcon = {

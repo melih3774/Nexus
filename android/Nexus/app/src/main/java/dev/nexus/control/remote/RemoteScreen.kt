@@ -59,6 +59,7 @@ fun RemoteScreen(
     val stats by viewModel.stats.collectAsStateWithLifecycle()
     val quality by viewModel.quality.collectAsStateWithLifecycle()
     var qualityVisible by remember { mutableStateOf(false) }
+    val pointerRemainder = remember { PointerRemainder() }
 
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -161,7 +162,8 @@ fun RemoteScreen(
                     )
 
                     val scale = if (rendered.imageWidth > 0) TOUCHPAD_SENSITIVITY else 0f
-                    viewModel.moveBy((dx * scale).toDouble(), (dy * scale).toDouble())
+                    val (wholeX, wholeY) = pointerRemainder.take((dx * scale).toDouble(), (dy * scale).toDouble())
+                    viewModel.moveBy(wholeX, wholeY)
                 }
             },
             onDragEnd = {
@@ -173,6 +175,7 @@ fun RemoteScreen(
             },
             onScroll = { notches -> viewModel.scroll(notches.toDouble()) },
             onBackgroundTap = { viewModel.toggleChrome() },
+            cursor = viewModel.cursor,
         )
 
         if (state.starting && frame == null) {

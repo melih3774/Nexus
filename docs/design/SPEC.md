@@ -1532,6 +1532,8 @@ diagnosis harder.
 | Drag | button down, follow the finger | button down, pointer moves by the delta |
 | Tap, then touch again and move | — | button down at once, pointer moves by the delta |
 | Two fingers vertically | scroll | scroll |
+| Two fingers apart or together | zoom the picture | zoom the picture |
+| Two fingers together, zoomed in | move the picture | scroll; the pointer moves the picture |
 | Tap on the letterbox | show or hide the controls | show or hide the controls |
 
 Small and mostly what a phone already teaches. There are no three-finger chords or edge swipes to

@@ -118,6 +118,7 @@ class RemoteControlViewModel(
     val state: StateFlow<RemoteUiState> = _state.asStateFlow()
 
     val frames = pipeline.frames
+    val cursor = pipeline.cursor
     val stats = pipeline.stats
 
     /**

@@ -110,6 +110,11 @@ class FramePipeline(
     private val _frames = MutableStateFlow<DecodedFrame?>(null)
     val frames: StateFlow<DecodedFrame?> = _frames.asStateFlow()
 
+    private val _cursor = MutableStateFlow<DesktopPoint?>(null)
+
+    /** Where the PC's pointer is on the display, or null when it is hidden. */
+    val cursor: StateFlow<DesktopPoint?> = _cursor.asStateFlow()
+
     private val _stats = MutableStateFlow(FrameStats())
     val stats: StateFlow<FrameStats> = _stats.asStateFlow()
 
@@ -178,6 +183,15 @@ class FramePipeline(
         }
 
         lastSequence = header.sequence
+
+        _cursor.value = if (header.cursorVisible && header.desktopWidth > 0 && header.desktopHeight > 0) {
+            DesktopPoint(
+                header.cursorX.toDouble() / header.desktopWidth,
+                header.cursorY.toDouble() / header.desktopHeight,
+            )
+        } else {
+            null
+        }
 
         synchronized(lock) {
             windowReceived++

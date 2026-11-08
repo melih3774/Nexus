@@ -259,14 +259,104 @@ class PointerGestureTest {
         val gesture = recognizer()
         gesture.down(100f, 100f, 0L)
 
-        // Each step is well under one notch. Rounding per event would discard all of it.
+        // Each step is well under one notch. Rounding per event would discard all of it. Step 0 is
+        // the report that says where the two fingers start.
         val notches = buildList {
-            for (step in 1..20) {
+            for (step in 0..20) {
                 addAll(gesture.move(100f, 100f + step * 10f, step * 16L, pointerCount = 2))
             }
         }.filterIsInstance<GestureOutcome.Scroll>().sumOf { it.notches.toInt() }
 
         assertEquals("200 pixels at 48 per notch", 4, notches)
+    }
+
+    // --- two real fingers -----------------------------------------------------------------------
+
+    /** Two fingers on a horizontal line [span] apart, centred on ([cx], [cy]). */
+    private fun PointerGestureRecognizer.twoFingers(cx: Float, cy: Float, span: Float, atMs: Long) =
+        move(cx - span / 2f, cy, atMs, pointerCount = 2, secondX = cx + span / 2f, secondY = cy)
+
+    @Test
+    fun `spreading two fingers zooms in around the point between them and never scrolls`() {
+        val gesture = recognizer()
+        gesture.down(400f, 500f, 0L)
+
+        val outcomes = buildList {
+            for (step in 0..5) addAll(gesture.twoFingers(500f, 500f, 200f + step * 40f, step * 16L))
+        }
+
+        val pinches = outcomes.filterIsInstance<GestureOutcome.Pinch>()
+
+        assertTrue("spreading must zoom: $outcomes", pinches.isNotEmpty())
+        assertTrue(pinches.all { it.factor > 1f })
+        assertEquals(500f, pinches.last().focusX, 0.01f)
+        assertFalse(outcomes.any { it is GestureOutcome.Scroll || it is GestureOutcome.Move })
+
+        // Multiplying the steps gives the whole change, so no part of the gesture is lost.
+        assertEquals(400f / 200f, pinches.fold(1f) { total, pinch -> total * pinch.factor }, 0.01f)
+    }
+
+    @Test
+    fun `closing two fingers zooms out`() {
+        val gesture = recognizer()
+        gesture.down(400f, 500f, 0L)
+
+        val pinches = buildList {
+            for (step in 0..5) addAll(gesture.twoFingers(500f, 500f, 400f - step * 40f, step * 16L))
+        }.filterIsInstance<GestureOutcome.Pinch>()
+
+        assertTrue(pinches.isNotEmpty())
+        assertTrue(pinches.all { it.factor < 1f })
+    }
+
+    @Test
+    fun `two fingers moving together scroll and offer the movement as a pan`() {
+        val gesture = recognizer()
+        gesture.down(400f, 100f, 0L)
+
+        val outcomes = buildList {
+            for (step in 0..6) addAll(gesture.twoFingers(500f, 100f + step * 40f, 200f, step * 16L))
+        }
+
+        assertTrue(outcomes.any { it is GestureOutcome.Scroll })
+        assertEquals(240f, outcomes.filterIsInstance<GestureOutcome.Pan>().sumOf { it.dy.toDouble() }.toFloat(), 0.01f)
+        assertFalse(outcomes.any { it is GestureOutcome.Pinch })
+    }
+
+    @Test
+    fun `a scroll stays a scroll even if the fingers drift apart later`() {
+        val gesture = recognizer()
+        gesture.down(400f, 100f, 0L)
+
+        val outcomes = buildList {
+            for (step in 0..4) addAll(gesture.twoFingers(500f, 100f + step * 40f, 200f, step * 16L))
+            for (step in 5..9) addAll(gesture.twoFingers(500f, 260f, 200f + (step - 4) * 80f, step * 16L))
+        }
+
+        assertFalse("the decision is made once: $outcomes", outcomes.any { it is GestureOutcome.Pinch })
+    }
+
+    @Test
+    fun `a pinch presses nothing and lifting it clicks nothing`() {
+        val gesture = recognizer()
+        gesture.down(400f, 500f, 0L)
+
+        val outcomes = buildList {
+            for (step in 0..5) addAll(gesture.twoFingers(500f, 500f, 200f + step * 40f, step * 16L))
+            addAll(gesture.up(120L))
+        }
+
+        assertFalse(outcomes.any { it is GestureOutcome.DragStart || it is GestureOutcome.Tap || it is GestureOutcome.RightClick })
+    }
+
+    @Test
+    fun `the finger left behind after a pinch does not move the pointer`() {
+        val gesture = recognizer()
+        gesture.down(400f, 500f, 0L)
+
+        for (step in 0..5) gesture.twoFingers(500f, 500f, 200f + step * 40f, step * 16L)
+
+        assertTrue(gesture.move(300f, 300f, 200L, pointerCount = 1).isEmpty())
     }
 
     // --- tap, then touch again (Touchpad) -------------------------------------------------------

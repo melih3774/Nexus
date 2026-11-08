@@ -6,8 +6,10 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -15,22 +17,27 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.viewinterop.AndroidView
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.Surface
+import kotlin.math.roundToInt
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * What the owner touches: the PC's desktop, and the gestures over it.
  *
  * The gesture set is deliberately small and mostly what a phone already teaches — tap, long press,
- * drag, two-finger scroll. There are no three-finger chords or edge swipes to memorise, because a
+ * drag, two-finger scroll, pinch. There are no three-finger chords or edge swipes to memorise, because a
  * remote desktop is already an unfamiliar thing to operate and a gesture nobody can remember is a
  * feature nobody uses. Anything ambiguous has an explicit button on the toolbar instead.
  *
@@ -53,27 +60,80 @@ fun DesktopSurface(
     onDragEnd: () -> Unit,
     onScroll: (Float) -> Unit,
     onBackgroundTap: () -> Unit,
+    cursor: StateFlow<DesktopPoint?>,
     modifier: Modifier = Modifier,
 ) {
     var viewport by remember { mutableStateOf(0f to 0f) }
+    var view by remember { mutableStateOf(DesktopView()) }
 
-    val rendered = RenderedDesktop(
+    val fitted = RenderedDesktop(
         viewportWidth = viewport.first,
         viewportHeight = viewport.second,
         imageWidth = frame?.width ?: 0,
         imageHeight = frame?.height ?: 0,
     )
 
+    val rendered = view.within(fitted).applyTo(fitted)
+
     // Read inside the gesture loop, which never restarts, so it must see the current values rather
     // than the ones captured when it started.
     val current by rememberUpdatedState(rendered)
+    val currentFit by rememberUpdatedState(fitted)
     val mode by rememberUpdatedState(pointerMode)
     val enabled by rememberUpdatedState(inputEnabled)
     val touchSlop = LocalViewConfiguration.current.touchSlop
 
+    // On a zoomed picture the touchpad's pointer would leave the screen; it pushes the view along.
+    // Collected here rather than read as state, because the pointer moves on nearly every frame and
+    // most of those moves change nothing about the view.
+    LaunchedEffect(cursor) {
+        cursor.collect { point ->
+            if (point != null && mode == PointerModeUi.TOUCHPAD) {
+                view = view.revealing(point, currentFit)
+            }
+        }
+    }
+
+    fun act(outcome: GestureOutcome) {
+        // With control off nothing else can reach the rest of a zoomed picture, and in Direct mode
+        // one finger is already the pointer. A touchpad keeps its scroll: its pointer moves the view.
+        val twoFingersMoveThePicture = view.isZoomed && (mode == PointerModeUi.DIRECT || !enabled)
+
+        when (outcome) {
+            is GestureOutcome.Pinch -> {
+                view = view.pinched(outcome.factor, outcome.focusX, outcome.focusY, currentFit)
+                    .panned(outcome.dx, outcome.dy, currentFit)
+            }
+
+            is GestureOutcome.Pan -> if (twoFingersMoveThePicture) {
+                view = view.panned(outcome.dx, outcome.dy, currentFit)
+            }
+
+            is GestureOutcome.Scroll -> if (!twoFingersMoveThePicture) onScroll(outcome.notches)
+
+            is GestureOutcome.Move -> if (!enabled && view.isZoomed) {
+                view = view.panned(outcome.dx, outcome.dy, currentFit)
+            } else {
+                // Divided by the zoom so that a finger's movement crosses the same part of the
+                // screen however far in the picture is.
+                onMove(current.toDesktop(outcome.x, outcome.y), outcome.dx / view.zoom, outcome.dy / view.zoom)
+            }
+
+            is GestureOutcome.DragStart -> onDragStart(current.toDesktop(outcome.x, outcome.y))
+
+            GestureOutcome.DragEnd -> onDragEnd()
+
+            is GestureOutcome.RightClick -> onLongPress(current.toDesktop(outcome.x, outcome.y))
+
+            // Handled by the gesture loop, because deciding between one click and two means waiting.
+            is GestureOutcome.Tap, is GestureOutcome.DoubleTap -> Unit
+        }
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
+            .clipToBounds()
             .background(Color.Black)
             .onSizeChanged { viewport = it.width.toFloat() to it.height.toFloat() }
             .pointerInput(Unit) {
@@ -91,7 +151,7 @@ fun DesktopSurface(
 
                         if (changes.isEmpty()) {
                             tapped = gesture.up(System.currentTimeMillis())
-                                .onEach { dispatch(it, current, onDragStart, onMove, onDragEnd, onScroll, onLongPress) }
+                                .onEach(::act)
                                 .filterIsInstance<GestureOutcome.Tap>()
                                 .firstOrNull()
 
@@ -105,11 +165,11 @@ fun DesktopSurface(
                             primary.position.y,
                             System.currentTimeMillis(),
                             changes.size,
+                            changes.getOrNull(1)?.position?.x ?: primary.position.x,
+                            changes.getOrNull(1)?.position?.y ?: primary.position.y,
                         )
 
-                        outcomes.forEach {
-                            dispatch(it, current, onDragStart, onMove, onDragEnd, onScroll, onLongPress)
-                        }
+                        outcomes.forEach(::act)
 
                         // Consumed once the gesture is doing something, so a parent scroll container
                         // cannot take the rest of it away mid-drag.
@@ -163,14 +223,21 @@ fun DesktopSurface(
                             following.up(now)
                         } else {
                             val primary = changes.first()
-                            following.move(primary.position.x, primary.position.y, now, changes.size)
+                            following.move(
+                                primary.position.x,
+                                primary.position.y,
+                                now,
+                                changes.size,
+                                changes.getOrNull(1)?.position?.x ?: primary.position.x,
+                                changes.getOrNull(1)?.position?.y ?: primary.position.y,
+                            )
                         }
 
                         outcomes.forEach {
                             when (it) {
                                 is GestureOutcome.Tap -> onTap(point)
                                 is GestureOutcome.DoubleTap -> onDoubleTap(point)
-                                else -> dispatch(it, current, onDragStart, onMove, onDragEnd, onScroll, onLongPress)
+                                else -> act(it)
                             }
                         }
 
@@ -193,7 +260,12 @@ fun DesktopSurface(
         val currentOnSurface by rememberUpdatedState(onSurface)
 
         val videoModifier = if (rendered.isUsable) {
-            with(density) { Modifier.size(rendered.drawnWidth.toDp(), rendered.drawnHeight.toDp()) }
+            with(density) {
+                // requiredSize, because a zoomed picture is larger than the space it is laid out in.
+                Modifier
+                    .offset { IntOffset(rendered.panX.roundToInt(), rendered.panY.roundToInt()) }
+                    .requiredSize(rendered.drawnWidth.toDp(), rendered.drawnHeight.toDp())
+            }
         } else {
             Modifier.fillMaxSize()
         }
@@ -219,47 +291,19 @@ fun DesktopSurface(
             Image(
                 bitmap = frame.image,
                 contentDescription = "The PC screen",
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        scaleX = rendered.zoom
+                        scaleY = rendered.zoom
+                        translationX = rendered.panX
+                        translationY = rendered.panY
+                    },
                 // Fit, never Crop: a desktop is wide and a phone is tall, and cropping would hide
                 // the parts of the screen the owner is most likely checking on.
                 contentScale = ContentScale.Fit,
             )
         }
-    }
-}
-
-/**
- * Turns one recogniser answer into the matching callback.
- *
- * Every branch is a straight hand-off. [GestureOutcome.Tap] and [GestureOutcome.DoubleTap] are the
- * exceptions and are handled by the caller, because deciding between one click and two means
- * waiting, and waiting belongs in the gesture coroutine rather than here.
- */
-private fun dispatch(
-    outcome: GestureOutcome,
-    rendered: RenderedDesktop,
-    onDragStart: (DesktopPoint?) -> Unit,
-    onMove: (DesktopPoint?, Float, Float) -> Unit,
-    onDragEnd: () -> Unit,
-    onScroll: (Float) -> Unit,
-    onLongPress: (DesktopPoint?) -> Unit,
-) {
-    when (outcome) {
-        is GestureOutcome.Move -> onMove(
-            rendered.toDesktop(outcome.x, outcome.y),
-            outcome.dx,
-            outcome.dy,
-        )
-
-        is GestureOutcome.DragStart -> onDragStart(rendered.toDesktop(outcome.x, outcome.y))
-
-        GestureOutcome.DragEnd -> onDragEnd()
-
-        is GestureOutcome.Scroll -> onScroll(outcome.notches)
-
-        is GestureOutcome.RightClick -> onLongPress(rendered.toDesktop(outcome.x, outcome.y))
-
-        is GestureOutcome.Tap, is GestureOutcome.DoubleTap -> Unit
     }
 }
 

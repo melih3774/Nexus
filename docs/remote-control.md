@@ -48,6 +48,10 @@ easier for precise work when a fingertip covers forty pixels of desktop. As on a
 tap and then touch again and move to drag with the left button held, for selecting text or moving a
 window. In either mode, a tap on the black area around the picture shows or hides the control panel.
 
+**Zoom** by spreading two fingers, up to five times, and close them to go back. It only changes how
+the phone draws the picture; the stream stays the same. In Touchpad mode the view follows the pointer
+and two fingers still scroll. In Direct mode, or with control off, two fingers move a zoomed picture.
+
 **Modifiers latch**, because you cannot hold Ctrl and tap C at the same time on a touchscreen. Tap
 `Ctrl`, it lights up, and the next key or click is wrapped in it, so Ctrl+C, Alt+Tab and Win+R all
 work. The action it modified uses the latch up.
